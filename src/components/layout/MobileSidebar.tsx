@@ -38,7 +38,9 @@ export function MobileSidebar() {
           <Menu className="w-5 h-5" />
         </Button>
       </SheetTrigger>
-      <SheetContent side="left" className="w-56 p-0">
+      {/* pt-safe: Sheet 이 열렸을 때 상단 로고/닫기 X 버튼이 iOS 상태바에
+          가리지 않도록 safe-area-inset-top 만큼 위쪽 여백 확보. */}
+      <SheetContent side="left" className="w-56 p-0 pt-safe">
         <div className="flex items-center gap-2.5 px-5 py-4 border-b">
           <div className="w-7 h-7 bg-primary rounded-lg flex items-center justify-center">
             <Mail className="w-4 h-4 text-white" />
