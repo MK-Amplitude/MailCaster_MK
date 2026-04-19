@@ -136,7 +136,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           access_type: 'offline',
           prompt: 'consent',
         },
-        redirectTo: `${window.location.origin}/`,
+        // BASE_URL = Vite 의 `base` 값. 끝에 `/` 포함.
+        //   dev : `/`                    → http://localhost:5173/
+        //   prod: `/MailCaster_MK/`      → https://mk-amplitude.github.io/MailCaster_MK/
+        // 하드코딩하면 GH Pages 배포 시 루트로 돌려보내져 Supabase
+        // Redirect URLs 화이트리스트 매칭 실패.
+        redirectTo: `${window.location.origin}${import.meta.env.BASE_URL}`,
       },
     })
   }
