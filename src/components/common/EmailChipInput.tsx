@@ -145,6 +145,14 @@ export function EmailChipInput({
         id={inputId}
         aria-label={ariaLabel}
         type="email"
+        // 모바일: inputMode=email → 즉시 @ 키 노출된 키보드.
+        // autoComplete=email → 로그인된 메일 제안. autoCapitalize/autoCorrect=off
+        // → 이메일 주소가 자동으로 대문자화/철자 수정되는 것 방지.
+        inputMode="email"
+        autoComplete="email"
+        autoCapitalize="none"
+        autoCorrect="off"
+        spellCheck={false}
         className={cn(
           'flex-1 min-w-[120px] bg-transparent outline-none placeholder:text-muted-foreground',
           draftInvalid && 'text-destructive',

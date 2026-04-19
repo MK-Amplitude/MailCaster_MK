@@ -338,9 +338,10 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      {/* 변경 사항 저장 바 — dirty 일 때만 등장 */}
+      {/* 변경 사항 저장 바 — dirty 일 때만 등장.
+          pb-3-safe: 하단 padding 에 iOS 홈바 inset 을 더해 버튼이 가려지지 않음. */}
       {dirty && (
-        <div className="border-t bg-card px-6 py-3 flex items-center justify-between gap-3 sticky bottom-0">
+        <div className="border-t bg-card px-6 pt-3 pb-3-safe flex items-center justify-between gap-3 sticky bottom-0">
           <span className="text-sm text-muted-foreground">
             저장되지 않은 변경 사항이 있습니다.
           </span>

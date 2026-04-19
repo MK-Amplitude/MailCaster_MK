@@ -55,6 +55,54 @@
   }
   body {
     @apply bg-background text-foreground;
+    /* iOS Safari 에서 터치 하이라이트 박스 제거 — 탭할 때 회색 네모 번쩍임 방지 */
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* 접근성: 사용자가 OS 에서 "모션 감소" 를 켰으면 애니메이션 비활성화 */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/* ------------------------------------------------------------
+ * Safe-area utilities — iOS 노치/홈바 영역 회피
+ * ------------------------------------------------------------
+ * 사용:
+ *   <div className="fixed bottom-0 pb-safe">
+ *     홈바 위쪽으로 자동 padding
+ *   </div>
+ *
+ * `max(...)` 로 기본값을 함께 지정해 PC/Android 에서도 최소 여백을 보장.
+ * Tailwind 의 arbitrary value (`pb-[env(...)]`) 로도 가능하지만, 공통
+ * 패턴이라 유틸 클래스로 뽑아 가독성을 올린다.
+ * ------------------------------------------------------------ */
+@layer utilities {
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .pt-safe {
+    padding-top: env(safe-area-inset-top);
+  }
+  .pl-safe {
+    padding-left: env(safe-area-inset-left);
+  }
+  .pr-safe {
+    padding-right: env(safe-area-inset-right);
+  }
+  /* 기존 padding 과 safe-area 를 합친 변형 — 하단 고정 바들에서 주로 사용 */
+  .pb-3-safe {
+    padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));
+  }
+  .bottom-6-safe {
+    bottom: calc(1.5rem + env(safe-area-inset-bottom));
   }
 }
 

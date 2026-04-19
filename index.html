@@ -2,8 +2,39 @@
 <html lang="ko">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      viewport-fit=cover 는 iPhone 노치/홈바 영역까지 화면을 확장 — 이 설정이
+      있어야 CSS `env(safe-area-inset-*)` 가 실제 값을 반환한다. 본문의 하단
+      고정 바들은 이 safe-area 값을 padding/bottom 에 더해 홈바 위로 올라간다.
+    -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+
+    <!-- 주 아이콘 (모든 모던 브라우저가 SVG 파비콘 지원) -->
     <link rel="icon" type="image/svg+xml" href="/mailcaster.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!-- iOS 홈 화면 아이콘. 최신 iOS 는 SVG 도 허용하나, 구형 호환성이 필요할
+         경우 추후 PNG (180x180) 로 교체 — README 의 "PWA 아이콘 품질 개선"
+         섹션 참고. -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.svg" />
+
+    <!-- PWA manifest — 홈 화면 추가 시 앱 이름/아이콘/테마 등 기술 -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+
+    <!-- 모바일 상단 주소창/상태바 색상. 다크 톤으로 맞춤. -->
+    <meta name="theme-color" content="#09090B" />
+
+    <!-- iOS Safari 에서 "홈 화면에 추가" 시 브라우저 chrome 제거. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <!-- 상단 상태바 스타일. black-translucent 는 앱 본문이 상태바 뒤로
+         확장되게 하므로 safe-area 처리와 함께 사용해야 가려지지 않는다. -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <!-- 홈 화면 아이콘 아래 표시될 짧은 이름 -->
+    <meta name="apple-mobile-web-app-title" content="MailCaster" />
+
+    <!-- SEO / 공유 -->
+    <meta name="description" content="MailCaster — Gmail 기반 개인화 대량 메일 발송 서비스" />
+    <meta name="robots" content="noindex, nofollow" />
+
     <title>MailCaster — 개인화 대량 메일 발송</title>
   </head>
   <body>

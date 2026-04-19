@@ -202,7 +202,7 @@ export default function UnsubscribesPage() {
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="h-7 text-xs"
+                      className="h-9 md:h-7 text-xs"
                       onClick={() => setToDelete(u)}
                       title="수신거부 해제"
                     >
@@ -326,6 +326,11 @@ function AddUnsubscribeDialog({
             <Input
               id="uns-email"
               type="email"
+              inputMode="email"
+              autoComplete="email"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="user@example.com"

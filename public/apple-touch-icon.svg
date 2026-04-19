@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180" aria-label="MailCaster iOS icon">
+  <!--
+    iOS 홈 화면 아이콘:
+      - iOS 는 자체적으로 모서리 라운딩/마스킹 을 적용하므로 여기선 꽉 찬 사각형
+        배경 + 중앙 봉투 아이콘만. 180x180 은 iOS Retina 권장치.
+  -->
+  <rect width="180" height="180" fill="#2563EB"/>
+  <g stroke="#FFFFFF" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <rect x="31" y="53" width="118" height="76" rx="8"/>
+    <path d="M 31 60 L 90 103 L 149 60"/>
+  </g>
+</svg>

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" aria-label="MailCaster logo">
+  <!--
+    MailCaster 브랜드 아이콘:
+      - 파란 라운드 스퀘어 배경 (primary brand)
+      - 흰색 봉투 실루엣 + 하단 우측 방송(신호) 호 3 개
+      - "개인화 대량 메일 발송" 의 비유 — 봉투를 캐스팅(broadcast)
+  -->
+  <rect width="512" height="512" rx="96" fill="#2563EB"/>
+  <g stroke="#FFFFFF" stroke-width="28" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <!-- 봉투 본체 -->
+    <rect x="88" y="148" width="336" height="216" rx="20"/>
+    <!-- 봉투 플랩(V 자) -->
+    <path d="M 88 168 L 256 292 L 424 168"/>
+  </g>
+</svg>

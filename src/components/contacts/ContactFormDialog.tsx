@@ -96,6 +96,11 @@ export function ContactFormDialog({ open, onOpenChange, contact }: ContactFormDi
               id="email"
               type="email"
               placeholder="name@company.com"
+              inputMode="email"
+              autoComplete="email"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
               {...register('email')}
               disabled={isEdit}
             />
@@ -111,7 +116,14 @@ export function ContactFormDialog({ open, onOpenChange, contact }: ContactFormDi
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="phone">전화번호</Label>
-              <Input id="phone" placeholder="010-0000-0000" {...register('phone')} />
+              <Input
+                id="phone"
+                type="tel"
+                inputMode="tel"
+                autoComplete="tel"
+                placeholder="010-0000-0000"
+                {...register('phone')}
+              />
             </div>
           </div>
 
