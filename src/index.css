@@ -1,0 +1,267 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+    --primary: 221.2 83.2% 53.3%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 221.2 83.2% 53.3%;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+    --card: 222.2 84% 4.9%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222.2 84% 4.9%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 217.2 91.2% 59.8%;
+    --primary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+    --accent: 217.2 32.6% 17.5%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 224.3 76.3% 48%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* ------------------------------------------------------------
+ * TipTap editor styles
+ * ------------------------------------------------------------
+ * Tailwind 기본값(preflight)이 h1~h6, ul/ol, blockquote 등의 margin / padding /
+ * list-style / font-size 를 전부 reset 해버려서, TipTap 이 만들어낸 노드가
+ * "에디터 안에서는" 문단과 구분되지 않아 보인다. 아래 규칙으로 에디터 내부에서만
+ * 시각적 구분이 살아나도록 복구한다.
+ *
+ * 주의:
+ *   - 이 스타일은 에디터 프리뷰 전용(.tiptap-editor .ProseMirror 하위).
+ *   - 실제 이메일 본문으로 보낼 때는 Gmail 등이 자체 기본 스타일을 적용하므로
+ *     렌더링은 별개. editor.getHTML() 이 뱉는 HTML 에는 인라인 style 이
+ *     들어가지 않고 순수 태그(<h1>, <ul>, <blockquote> ...)만 들어가며,
+ *     수신자 환경에서 자연스럽게 표현된다.
+ * ------------------------------------------------------------ */
+.tiptap-editor .ProseMirror {
+  @apply min-h-[200px] p-3 focus:outline-none;
+}
+
+.tiptap-editor .ProseMirror p.is-editor-empty:first-child::before {
+  @apply text-muted-foreground pointer-events-none float-left h-0;
+  content: attr(data-placeholder);
+}
+
+.tiptap-editor .ProseMirror a {
+  @apply text-primary underline cursor-pointer;
+}
+
+.tiptap-editor .ProseMirror img {
+  @apply max-w-full h-auto rounded;
+}
+
+.tiptap-editor .ProseMirror table {
+  @apply border-collapse w-full;
+}
+
+.tiptap-editor .ProseMirror th,
+.tiptap-editor .ProseMirror td {
+  @apply border border-border p-2;
+}
+
+/* 본문 paragraph — 문단 사이 숨쉴 공간 */
+.tiptap-editor .ProseMirror p {
+  @apply my-2 leading-relaxed;
+}
+
+/* Heading — Tailwind preflight 가 지우는 크기/굵기를 에디터 내부에서 복구.
+ * 실제 출력은 <h1>/<h2>/<h3> 태그라 수신자 클라이언트에서도 의도대로 렌더됨. */
+.tiptap-editor .ProseMirror h1 {
+  @apply text-2xl font-bold mt-4 mb-2 leading-tight;
+}
+
+.tiptap-editor .ProseMirror h2 {
+  @apply text-xl font-bold mt-3 mb-2 leading-tight;
+}
+
+.tiptap-editor .ProseMirror h3 {
+  @apply text-lg font-semibold mt-3 mb-1 leading-snug;
+}
+
+/* List — disc / decimal 을 명시. my-2 로 리스트 블록 간격 유지,
+ * pl-6 으로 bullet 공간 확보. ml-* 을 쓰지 않는 이유는 중첩 리스트 때 padding
+ * 이 누적돼야 자연스럽기 때문. */
+.tiptap-editor .ProseMirror ul {
+  @apply list-disc pl-6 my-2;
+}
+
+.tiptap-editor .ProseMirror ol {
+  @apply list-decimal pl-6 my-2;
+}
+
+.tiptap-editor .ProseMirror li {
+  @apply my-0.5;
+}
+
+.tiptap-editor .ProseMirror li > p {
+  /* 리스트 항목 안의 p 는 자체 margin 제거 — "• 한 줄" 로 붙게 */
+  @apply my-0;
+}
+
+/* 중첩 리스트 — 상위 리스트의 bullet 과 구분되도록 차수에 따라 스타일 변경.
+ * 1차: disc / decimal, 2차: circle / lower-alpha, 3차+: square / lower-roman */
+.tiptap-editor .ProseMirror ul ul {
+  list-style-type: circle;
+}
+
+.tiptap-editor .ProseMirror ul ul ul {
+  list-style-type: square;
+}
+
+.tiptap-editor .ProseMirror ol ol {
+  list-style-type: lower-alpha;
+}
+
+.tiptap-editor .ProseMirror ol ol ol {
+  list-style-type: lower-roman;
+}
+
+/* Blockquote — 좌측 세로 바 + 약간 들여쓰기 + 회색 톤. 이메일 인용 관행. */
+.tiptap-editor .ProseMirror blockquote {
+  @apply border-l-4 border-border pl-4 my-3 text-muted-foreground italic;
+}
+
+/* Inline code (백틱으로 감싸진 것) */
+.tiptap-editor .ProseMirror code {
+  @apply bg-muted px-1 py-0.5 rounded text-[0.875em] font-mono;
+}
+
+/* Code block — 배경 + 모노스페이스 + 줄바꿈 보존 */
+.tiptap-editor .ProseMirror pre {
+  @apply bg-muted rounded p-3 my-3 overflow-x-auto text-sm font-mono leading-relaxed;
+}
+
+.tiptap-editor .ProseMirror pre code {
+  /* pre 안의 code 는 배경/padding 이미 pre 가 갖고 있으므로 reset */
+  @apply bg-transparent p-0 rounded-none text-inherit;
+}
+
+/* Horizontal rule — Tailwind preflight 가 border-top-width:0 을 걸어
+ * 안보이게 만드므로 명시적으로 복구 */
+.tiptap-editor .ProseMirror hr {
+  @apply border-0 border-t border-border my-4;
+}
+
+/* ------------------------------------------------------------
+ * Resizable image (ResizableImageView NodeView)
+ * ------------------------------------------------------------
+ * 이미지 노드를 감싸는 래퍼(.resizable-image) 가 position context 역할을
+ * 하고, 그 내부에 절대 위치된 핸들 4 개가 모서리마다 붙는다.
+ *
+ * `display: inline-block` 은 노드가 block 이어도 수평 중앙 정렬 등의 이메일
+ * 스타일을 망가뜨리지 않게 한다. `line-height: 0` 은 img 아래에 남는
+ * 베이스라인 공백(1~5px) 을 제거.
+ * ------------------------------------------------------------ */
+.tiptap-editor .ProseMirror .resizable-image {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  line-height: 0;
+}
+
+.tiptap-editor .ProseMirror .resizable-image img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.375rem;
+  user-select: none;
+  /* inline style(width/height) 는 이 규칙들보다 specificity 가 높아 자동으로 우선 */
+}
+
+.tiptap-editor .ProseMirror .resizable-image-selected {
+  outline: 2px solid hsl(var(--primary));
+  outline-offset: 1px;
+}
+
+.tiptap-editor .ProseMirror .resize-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  background-color: hsl(var(--primary));
+  border: 2px solid hsl(var(--background));
+  border-radius: 2px;
+  z-index: 10;
+  user-select: none;
+  touch-action: none;
+  /* 다크모드에서도 핸들이 배경과 구분되도록 background/border 색을 테마 토큰으로 */
+}
+
+.tiptap-editor .ProseMirror .resize-handle-tl {
+  top: -6px;
+  left: -6px;
+  cursor: nwse-resize;
+}
+
+.tiptap-editor .ProseMirror .resize-handle-tr {
+  top: -6px;
+  right: -6px;
+  cursor: nesw-resize;
+}
+
+.tiptap-editor .ProseMirror .resize-handle-bl {
+  bottom: -6px;
+  left: -6px;
+  cursor: nesw-resize;
+}
+
+.tiptap-editor .ProseMirror .resize-handle-br {
+  bottom: -6px;
+  right: -6px;
+  cursor: nwse-resize;
+}
+
+/* 리사이즈 중 우하단에 현재 크기 표시 — 정확한 픽셀 값을 눈으로 확인 */
+.tiptap-editor .ProseMirror .resize-dimensions {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+  line-height: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: hsl(var(--primary-foreground));
+  background-color: hsl(var(--primary) / 0.9);
+  border-radius: 3px;
+  pointer-events: none;
+  z-index: 11;
+}

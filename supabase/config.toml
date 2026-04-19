@@ -1,0 +1,9 @@
+[functions.resolve-company]
+verify_jwt = false
+
+[functions.resolve-pending-companies]
+# pg_cron 이 Bearer <CRON_SECRET> 으로 자체 인증하므로 jwt 검증은 끈다.
+verify_jwt = false
+
+[functions.refresh-google-token]
+verify_jwt = false
