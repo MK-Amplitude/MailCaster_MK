@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MailCaster</title>
+    <!--
+      ============================================================
+      GitHub Pages SPA 라우팅 대응
+      ------------------------------------------------------------
+      GH Pages 는 정적 호스팅이라 `/contacts`, `/campaigns/:id` 같은
+      SPA 경로에 직접 접근하면 404 를 반환한다. 이 404.html 이 모든
+      미등록 경로를 가로채서:
+        1) 원래 경로를 쿼리스트링으로 인코딩
+        2) 사이트 루트(/MailCaster_MK/) 로 리다이렉트
+      루트의 index.html 안에 있는 짝 스크립트가 쿼리를 해석해 원래
+      경로로 history.replaceState 한 뒤 React Router 가 렌더.
+      (Rafgraph spa-github-pages 패턴)
+
+      segmentCount = 1:
+        https://<user>.github.io/<repo>/... 의 경우 보존할 path
+        segment 수 (= 레포 이름). 커스텀 도메인이면 0.
+      ============================================================
+    -->
+    <script>
+      (function () {
+        var segmentCount = 1
+        var l = window.location
+        l.replace(
+          l.protocol +
+            '//' +
+            l.hostname +
+            (l.port ? ':' + l.port : '') +
+            l.pathname.split('/').slice(0, 1 + segmentCount).join('/') +
+            '/?/' +
+            l.pathname
+              .slice(1)
+              .split('/')
+              .slice(segmentCount)
+              .join('/')
+              .replace(/&/g, '~and~') +
+            (l.search ? '&' + l.search.slice(1).replace(/&/g, '~and~') : '') +
+            l.hash,
+        )
+      })()
+    </script>
+  </head>
+  <body></body>
+</html>
