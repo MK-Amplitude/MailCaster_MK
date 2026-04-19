@@ -9,7 +9,7 @@ export default function DashboardPage() {
   const name = (user?.user_metadata?.full_name as string)?.split(' ')[0] ?? '사용자'
 
   return (
-    <div className="p-6 max-w-5xl mx-auto space-y-6">
+    <div className="p-4 sm:p-6 max-w-5xl mx-auto space-y-6">
       <div>
         <h1 className="text-2xl font-bold">안녕하세요, {name}님 👋</h1>
         <p className="text-muted-foreground mt-1">MailCaster에 오신 것을 환영합니다.</p>

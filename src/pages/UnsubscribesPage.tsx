@@ -112,10 +112,10 @@ export default function UnsubscribesPage() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="px-6 py-4 border-b flex items-center justify-between">
-        <div>
+      <div className="px-4 sm:px-6 py-4 border-b flex items-start sm:items-center justify-between gap-2">
+        <div className="min-w-0">
           <h1 className="text-xl font-bold flex items-center gap-2">
-            <Ban className="w-5 h-5" />
+            <Ban className="w-5 h-5 shrink-0" />
             수신거부 관리
           </h1>
           <p className="text-sm text-muted-foreground mt-0.5">
@@ -123,13 +123,13 @@ export default function UnsubscribesPage() {
             캠페인에서 자동 제외됩니다.
           </p>
         </div>
-        <Button size="sm" onClick={() => setAddOpen(true)}>
+        <Button size="sm" onClick={() => setAddOpen(true)} className="shrink-0">
           <Plus className="w-4 h-4 mr-1.5" />
           추가
         </Button>
       </div>
 
-      <div className="px-6 py-3 border-b">
+      <div className="px-4 sm:px-6 py-3 border-b">
         <div className="relative max-w-md">
           <Search className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-muted-foreground" />
           <Input
@@ -143,7 +143,7 @@ export default function UnsubscribesPage() {
 
       <div className="flex-1 overflow-y-auto">
         {isLoading ? (
-          <div className="p-6 space-y-2">
+          <div className="p-4 sm:p-6 space-y-2">
             {Array.from({ length: 6 }).map((_, i) => (
               <Skeleton key={i} className="h-12 w-full" />
             ))}
@@ -162,58 +162,72 @@ export default function UnsubscribesPage() {
             description={`"${query}" 에 해당하는 수신거부가 없습니다.`}
           />
         ) : (
-          <Table>
-            <TableHeader className="sticky top-0 bg-card z-10">
-              <TableRow>
-                <TableHead className="w-10">
-                  <Checkbox
-                    checked={allVisibleSelected}
-                    onCheckedChange={toggleAll}
-                    aria-label="모두 선택"
-                  />
-                </TableHead>
-                <TableHead>이메일</TableHead>
-                <TableHead className="w-[40%]">사유</TableHead>
-                <TableHead className="w-[180px]">수신거부 시각</TableHead>
-                <TableHead className="w-[80px]" />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filtered.map((u) => (
-                <TableRow
-                  key={u.id}
-                  data-state={selected.has(u.id) ? 'selected' : undefined}
-                >
-                  <TableCell>
+          // overflow-x-auto: 좁은 뷰포트에서 가로 스크롤 허용 (테이블 컬럼이 뷰포트를
+          // 넘어설 때 레이아웃이 깨지지 않도록). 모바일에서는 "사유" 컬럼을 숨겨
+          // 스크롤 없이도 핵심 정보(이메일 + 시각 + 해제버튼)만 보이도록 함.
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader className="sticky top-0 bg-card z-10">
+                <TableRow>
+                  <TableHead className="w-10">
                     <Checkbox
-                      checked={selected.has(u.id)}
-                      onCheckedChange={() => toggleOne(u.id)}
-                      aria-label={`${u.email} 선택`}
+                      checked={allVisibleSelected}
+                      onCheckedChange={toggleAll}
+                      aria-label="모두 선택"
                     />
-                  </TableCell>
-                  <TableCell className="font-medium">{u.email}</TableCell>
-                  <TableCell className="text-muted-foreground text-sm">
-                    {u.reason || <span className="italic">—</span>}
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground tabular-nums">
-                    {formatDateTime(u.unsubscribed_at)}
-                  </TableCell>
-                  <TableCell>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-9 md:h-7 text-xs"
-                      onClick={() => setToDelete(u)}
-                      title="수신거부 해제"
-                    >
-                      <Undo2 className="w-3.5 h-3.5 mr-1" />
-                      해제
-                    </Button>
-                  </TableCell>
+                  </TableHead>
+                  <TableHead>이메일</TableHead>
+                  <TableHead className="w-[40%] hidden md:table-cell">사유</TableHead>
+                  <TableHead className="w-[180px] hidden sm:table-cell">수신거부 시각</TableHead>
+                  <TableHead className="w-[80px]" />
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {filtered.map((u) => (
+                  <TableRow
+                    key={u.id}
+                    data-state={selected.has(u.id) ? 'selected' : undefined}
+                  >
+                    <TableCell>
+                      <Checkbox
+                        checked={selected.has(u.id)}
+                        onCheckedChange={() => toggleOne(u.id)}
+                        aria-label={`${u.email} 선택`}
+                      />
+                    </TableCell>
+                    <TableCell className="font-medium">
+                      <div className="flex flex-col gap-0.5">
+                        <span className="truncate max-w-[200px] sm:max-w-none">{u.email}</span>
+                        {/* 모바일에서 사유/시각이 숨겨지므로 이메일 셀 안에 간소화 버전 노출 */}
+                        <div className="sm:hidden text-[10px] text-muted-foreground tabular-nums">
+                          {formatDateTime(u.unsubscribed_at)}
+                          {u.reason && <span className="ml-1">· {u.reason}</span>}
+                        </div>
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground text-sm hidden md:table-cell">
+                      {u.reason || <span className="italic">—</span>}
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground tabular-nums hidden sm:table-cell">
+                      {formatDateTime(u.unsubscribed_at)}
+                    </TableCell>
+                    <TableCell>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-9 md:h-7 text-xs"
+                        onClick={() => setToDelete(u)}
+                        title="수신거부 해제"
+                      >
+                        <Undo2 className="w-3.5 h-3.5 mr-1" />
+                        해제
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
         )}
       </div>
 

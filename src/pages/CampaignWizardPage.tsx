@@ -1424,12 +1424,12 @@ export default function CampaignWizardPage() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="px-6 py-4 border-b">
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => navigate('/campaigns')}>
+      <div className="px-4 sm:px-6 py-4 border-b">
+        <div className="flex items-center gap-2 flex-wrap">
+          <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={() => navigate('/campaigns')}>
             <ArrowLeft className="w-4 h-4" />
           </Button>
-          <h1 className="text-xl font-bold">
+          <h1 className="text-xl font-bold min-w-0 truncate">
             {isEditMode
               ? '메일 발송 편집'
               : reuseMode === 'failed'
@@ -1439,7 +1439,7 @@ export default function CampaignWizardPage() {
                   : '새 메일 발송'}
           </h1>
           {reuseSourceName && (
-            <Badge variant="secondary" className="text-xs">
+            <Badge variant="secondary" className="text-xs truncate max-w-[200px]">
               {isEditMode ? '편집 중' : '원본'}: {reuseSourceName}
             </Badge>
           )}
@@ -1448,7 +1448,7 @@ export default function CampaignWizardPage() {
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        <div className="max-w-3xl mx-auto p-6 space-y-4">
+        <div className="max-w-3xl mx-auto p-4 sm:p-6 space-y-4">
           {reuseLoading && (
             <div className="space-y-3">
               <Skeleton className="h-10 w-full" />
@@ -1545,7 +1545,7 @@ export default function CampaignWizardPage() {
         </div>
       </div>
 
-      <div className="px-6 py-3 border-t flex items-center justify-between bg-card">
+      <div className="px-4 sm:px-6 py-3 border-t flex items-center justify-between bg-card">
         <Button
           variant="outline"
           onClick={() => {

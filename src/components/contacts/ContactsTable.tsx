@@ -94,7 +94,7 @@ export function ContactsTable({
               <TableCell>
                 <div className="flex flex-col gap-0.5">
                   <div className="flex items-center gap-1.5">
-                    <span className="font-medium text-sm">
+                    <span className="font-medium text-sm truncate max-w-[180px] sm:max-w-none">
                       {contact.name ?? '이름 없음'}
                     </span>
                     <StatusBadge
@@ -102,7 +102,43 @@ export function ContactsTable({
                       isBounced={contact.is_bounced}
                     />
                   </div>
-                  <span className="text-xs text-muted-foreground">{contact.email}</span>
+                  <span className="text-xs text-muted-foreground truncate max-w-[200px] sm:max-w-none">
+                    {contact.email}
+                  </span>
+                  {/* 모바일 전용: 회사/그룹 컬럼이 숨겨지므로 이름 셀 안에 요약 표시.
+                      - 회사 + 직책이 있으면 한 줄로, 아래에 그룹 뱃지 최대 2개 */}
+                  <div className="sm:hidden flex flex-col gap-1 mt-0.5">
+                    {(contact.company || contact.job_title) && (
+                      <span className="text-[10px] text-muted-foreground truncate max-w-[220px]">
+                        {contact.company ?? ''}
+                        {contact.company && contact.job_title ? ' · ' : ''}
+                        {contact.job_title ?? ''}
+                      </span>
+                    )}
+                    {contact.groups.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {contact.groups.slice(0, 2).map((g) => (
+                          <Badge
+                            key={g.group_id}
+                            variant="outline"
+                            className="text-[10px] py-0 px-1.5 h-4"
+                            style={
+                              g.category_color
+                                ? { borderColor: g.category_color, color: g.category_color }
+                                : undefined
+                            }
+                          >
+                            {g.group_name}
+                          </Badge>
+                        ))}
+                        {contact.groups.length > 2 && (
+                          <Badge variant="outline" className="text-[10px] py-0 px-1.5 h-4">
+                            +{contact.groups.length - 2}
+                          </Badge>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </TableCell>
               <TableCell className="hidden sm:table-cell">

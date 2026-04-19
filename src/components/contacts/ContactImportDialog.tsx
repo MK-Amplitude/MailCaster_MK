@@ -196,7 +196,7 @@ export function ContactImportDialog({ open, onOpenChange }: ContactImportDialogP
             <p className="text-sm text-muted-foreground">
               총 {rows.length}행이 파싱되었습니다. 각 필드에 해당하는 컬럼을 선택하세요.
             </p>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {Object.entries(FIELD_LABELS).map(([field, label]) => (
                 <div key={field} className="space-y-1">
                   <Label className="text-xs">{label}</Label>

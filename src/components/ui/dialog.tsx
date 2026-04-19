@@ -36,7 +36,13 @@ const DialogContent = React.forwardRef<
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
-        "fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] sm:rounded-lg",
+        // 모바일 너비/패딩 처리:
+        //  - w-[calc(100vw-1rem)]: 뷰포트에서 좌우 0.5rem(8px) 씩 숨쉴 공간 확보.
+        //    w-full 을 쓰면 100vw 로 꽉 차서 overlay 가장자리가 화면 끝에 달라붙음.
+        //  - max-w-lg: 데스크톱에서는 32rem=512px 까지만. (개별 Dialog 가 max-w-md 등으로
+        //    override 하면 tailwind-merge 가 그걸로 교체)
+        //  - p-4 sm:p-6: 모바일 16px, 데스크톱 24px (폼 필드에 8px 씩 추가 공간 확보).
+        "fixed left-[50%] top-[50%] z-50 grid w-[calc(100vw-1rem)] max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background p-4 sm:p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=closed]:slide-out-to-left-1/2 data-[state=closed]:slide-out-to-top-[48%] data-[state=open]:slide-in-from-left-1/2 data-[state=open]:slide-in-from-top-[48%] rounded-lg",
         className
       )}
       {...props}
@@ -71,7 +77,9 @@ const DialogFooter = ({
 }: React.HTMLAttributes<HTMLDivElement>) => (
   <div
     className={cn(
-      "flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2",
+      // gap-2: 모바일(세로 스택) 에서도 버튼 사이 8px 간격 확보.
+      // flex-col-reverse: 모바일에선 primary(submit) 를 위쪽에, cancel 을 아래쪽에 표시.
+      "flex flex-col-reverse gap-2 sm:flex-row sm:justify-end",
       className
     )}
     {...props}

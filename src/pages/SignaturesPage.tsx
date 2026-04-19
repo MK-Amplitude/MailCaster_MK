@@ -36,20 +36,20 @@ export default function SignaturesPage() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="px-6 py-4 border-b flex items-center justify-between">
-        <div>
+      <div className="px-4 sm:px-6 py-4 border-b flex items-center justify-between gap-2">
+        <div className="min-w-0">
           <h1 className="text-xl font-bold">서명 관리</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
             {signatures.length}개의 서명
           </p>
         </div>
-        <Button size="sm" onClick={openCreate}>
+        <Button size="sm" onClick={openCreate} className="shrink-0">
           <Plus className="w-4 h-4 mr-1.5" />
           서명 추가
         </Button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6">
+      <div className="flex-1 overflow-y-auto p-4 sm:p-6">
         {isLoading ? (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {Array.from({ length: 4 }).map((_, i) => (

@@ -116,7 +116,7 @@ export default function SettingsPage() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="px-6 py-4 border-b">
+      <div className="px-4 sm:px-6 py-4 border-b">
         <h1 className="text-xl font-bold flex items-center gap-2">
           <SettingsIcon className="w-5 h-5" />
           설정
@@ -127,7 +127,7 @@ export default function SettingsPage() {
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        <div className="max-w-3xl mx-auto p-6 space-y-6 pb-28">
+        <div className="max-w-3xl mx-auto p-4 sm:p-6 space-y-6 pb-28">
           {isLoading || !profile ? (
             <div className="space-y-4">
               <Skeleton className="h-40 w-full" />

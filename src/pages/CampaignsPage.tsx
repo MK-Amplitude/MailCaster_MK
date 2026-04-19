@@ -50,17 +50,18 @@ export default function CampaignsPage() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="px-6 py-4 border-b">
-        <div className="flex items-center justify-between mb-4">
-          <div>
+      <div className="px-4 sm:px-6 py-4 border-b">
+        <div className="flex items-center justify-between mb-4 gap-2">
+          <div className="min-w-0">
             <h1 className="text-xl font-bold">메일 발송</h1>
             <p className="text-sm text-muted-foreground mt-0.5">
               {campaigns.length}건의 메일 발송
             </p>
           </div>
-          <Button size="sm" onClick={() => navigate('/campaigns/new')}>
-            <Plus className="w-4 h-4 mr-1.5" />
-            새 메일 발송
+          <Button size="sm" onClick={() => navigate('/campaigns/new')} className="shrink-0">
+            <Plus className="w-4 h-4 sm:mr-1.5" />
+            <span className="hidden sm:inline">새 메일 발송</span>
+            <span className="sm:hidden">새 발송</span>
           </Button>
         </div>
 
@@ -88,7 +89,7 @@ export default function CampaignsPage() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6">
+      <div className="flex-1 overflow-y-auto p-4 sm:p-6">
         {isLoading ? (
           <div className="space-y-3">
             {Array.from({ length: 3 }).map((_, i) => (

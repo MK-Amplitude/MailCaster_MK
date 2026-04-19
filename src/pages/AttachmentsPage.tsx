@@ -76,7 +76,7 @@ export default function AttachmentsPage() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="px-6 py-4 border-b">
+      <div className="px-4 sm:px-6 py-4 border-b">
         <h1 className="text-xl font-bold flex items-center gap-2">
           <Paperclip className="w-5 h-5" />
           첨부 파일
@@ -86,7 +86,7 @@ export default function AttachmentsPage() {
         </p>
       </div>
 
-      <div className="px-6 py-3 border-b flex items-center gap-2 flex-wrap">
+      <div className="px-4 sm:px-6 py-3 border-b flex items-center gap-2 flex-wrap">
         <div className="relative flex-1 min-w-[200px]">
           <Search className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-muted-foreground" />
           <Input
@@ -112,7 +112,7 @@ export default function AttachmentsPage() {
 
       <div className="flex-1 overflow-y-auto">
         {isLoading ? (
-          <div className="p-6 space-y-2">
+          <div className="p-4 sm:p-6 space-y-2">
             {Array.from({ length: 6 }).map((_, i) => (
               <Skeleton key={i} className="h-16 w-full" />
             ))}
@@ -128,7 +128,7 @@ export default function AttachmentsPage() {
             }
           />
         ) : (
-          <div className="p-6 space-y-2">
+          <div className="p-4 sm:p-6 space-y-2">
             {filtered.map((s) => {
               const deleted = !!s.deleted_from_drive_at
               return (
@@ -139,33 +139,50 @@ export default function AttachmentsPage() {
                   }`}
                   onClick={() => setSelectedId(s.attachment_id ?? null)}
                 >
-                  <CardContent className="p-3 flex items-center gap-3">
-                    <div className="w-10 h-10 bg-muted rounded-lg flex items-center justify-center shrink-0">
-                      <Paperclip className="w-4 h-4 text-muted-foreground" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="font-medium truncate flex items-center gap-1.5">
-                        {s.file_name}
-                        {deleted && (
-                          <Badge variant="destructive" className="text-[10px] h-4 px-1">
-                            <AlertTriangle className="w-2.5 h-2.5 mr-0.5" />
-                            삭제됨
-                          </Badge>
-                        )}
+                  {/* 모바일: 상단 = 아이콘 + 파일명 + 외부링크, 하단 = Stat 3개 한 줄
+                      데스크톱: 모두 가로 한 줄 (기존 레이아웃) */}
+                  <CardContent className="p-3 flex flex-col sm:flex-row sm:items-center gap-3">
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <div className="w-10 h-10 bg-muted rounded-lg flex items-center justify-center shrink-0">
+                        <Paperclip className="w-4 h-4 text-muted-foreground" />
                       </div>
-                      <div className="text-xs text-muted-foreground flex items-center gap-2 flex-wrap mt-0.5">
-                        <span>{formatBytes(s.file_size)}</span>
-                        <span>·</span>
-                        <span>{s.mime_type ?? 'unknown'}</span>
-                        {s.last_sent_at && (
-                          <>
-                            <span>·</span>
-                            <span>{formatRelative(s.last_sent_at)} 발송</span>
-                          </>
-                        )}
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium truncate flex items-center gap-1.5">
+                          {s.file_name}
+                          {deleted && (
+                            <Badge variant="destructive" className="text-[10px] h-4 px-1 shrink-0">
+                              <AlertTriangle className="w-2.5 h-2.5 mr-0.5" />
+                              삭제됨
+                            </Badge>
+                          )}
+                        </div>
+                        <div className="text-xs text-muted-foreground flex items-center gap-2 flex-wrap mt-0.5">
+                          <span>{formatBytes(s.file_size)}</span>
+                          <span>·</span>
+                          <span className="truncate max-w-[120px] sm:max-w-none">{s.mime_type ?? 'unknown'}</span>
+                          {s.last_sent_at && (
+                            <>
+                              <span>·</span>
+                              <span>{formatRelative(s.last_sent_at)} 발송</span>
+                            </>
+                          )}
+                        </div>
                       </div>
+                      {s.web_view_link && (
+                        <a
+                          href={s.web_view_link}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-muted-foreground hover:text-foreground shrink-0 sm:hidden"
+                          onClick={(e) => e.stopPropagation()}
+                          title="Google Drive 에서 열기"
+                        >
+                          <ExternalLink className="w-4 h-4" />
+                        </a>
+                      )}
                     </div>
-                    <div className="flex items-center gap-3 shrink-0 text-xs">
+                    {/* 모바일에서는 아이콘 블록 아래에 별도 줄로, 데스크톱에서는 같은 줄 오른쪽에 */}
+                    <div className="flex items-center justify-around sm:justify-end gap-3 shrink-0 text-xs border-t sm:border-t-0 pt-2 sm:pt-0">
                       <Stat
                         icon={<Send className="w-3 h-3" />}
                         value={s.total_sends ?? 0}
@@ -187,7 +204,7 @@ export default function AttachmentsPage() {
                         href={s.web_view_link}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-muted-foreground hover:text-foreground shrink-0"
+                        className="text-muted-foreground hover:text-foreground shrink-0 hidden sm:block"
                         onClick={(e) => e.stopPropagation()}
                       >
                         <ExternalLink className="w-4 h-4" />

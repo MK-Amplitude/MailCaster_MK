@@ -52,17 +52,17 @@ export default function TemplatesPage() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="px-6 py-4 border-b">
-        <div className="flex items-center justify-between mb-4">
-          <div>
+      <div className="px-4 sm:px-6 py-4 border-b">
+        <div className="flex items-center justify-between mb-4 gap-2">
+          <div className="min-w-0">
             <h1 className="text-xl font-bold">템플릿</h1>
             <p className="text-sm text-muted-foreground mt-0.5">
               {templates.length}개의 템플릿
             </p>
           </div>
-          <Button size="sm" onClick={openCreate}>
-            <Plus className="w-4 h-4 mr-1.5" />
-            템플릿 추가
+          <Button size="sm" onClick={openCreate} className="shrink-0">
+            <Plus className="w-4 h-4 sm:mr-1.5" />
+            <span className="hidden sm:inline">템플릿 추가</span>
           </Button>
         </div>
         <div className="relative max-w-sm">
@@ -76,7 +76,7 @@ export default function TemplatesPage() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6">
+      <div className="flex-1 overflow-y-auto p-4 sm:p-6">
         {isLoading ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {Array.from({ length: 3 }).map((_, i) => (

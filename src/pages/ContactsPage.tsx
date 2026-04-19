@@ -102,22 +102,22 @@ export default function ContactsPage() {
   return (
     <div className="flex flex-col h-full">
       {/* 헤더 */}
-      <div className="px-6 py-4 border-b">
-        <div className="flex items-center justify-between mb-4">
-          <div>
+      <div className="px-4 sm:px-6 py-4 border-b">
+        <div className="flex items-center justify-between mb-4 gap-2">
+          <div className="min-w-0">
             <h1 className="text-xl font-bold">연락처</h1>
             <p className="text-sm text-muted-foreground mt-0.5">
               총 {contacts.length}명
             </p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 shrink-0">
             <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
-              <Upload className="w-4 h-4 mr-1.5" />
-              가져오기
+              <Upload className="w-4 h-4 sm:mr-1.5" />
+              <span className="hidden sm:inline">가져오기</span>
             </Button>
             <Button size="sm" onClick={openNewForm}>
-              <UserPlus className="w-4 h-4 mr-1.5" />
-              연락처 추가
+              <UserPlus className="w-4 h-4 sm:mr-1.5" />
+              <span className="hidden sm:inline">연락처 추가</span>
             </Button>
           </div>
         </div>

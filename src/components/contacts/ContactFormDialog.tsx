@@ -109,7 +109,7 @@ export function ContactFormDialog({ open, onOpenChange, contact }: ContactFormDi
             )}
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label htmlFor="name">이름</Label>
               <Input id="name" placeholder="홍길동" {...register('name')} />
@@ -151,7 +151,7 @@ export function ContactFormDialog({ open, onOpenChange, contact }: ContactFormDi
             )}
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label htmlFor="department">부서</Label>
               <Input id="department" placeholder="마케팅팀" {...register('department')} />
