@@ -36,6 +36,37 @@
     <meta name="robots" content="noindex, nofollow" />
 
     <title>MailCaster — 개인화 대량 메일 발송</title>
+
+    <!--
+      ============================================================
+      GitHub Pages SPA 라우팅 복원 스크립트
+      ------------------------------------------------------------
+      public/404.html 이 존재하지 않는 경로를 `/?/<encoded-path>` 로
+      리다이렉트한다. 아래 스크립트는 루트 로드 직후 이 쿼리를 감지해
+      진짜 경로로 history.replaceState — React Router 가 정상 라우팅.
+
+      `/?/` 패턴일 때만 동작하므로 일반 쿼리스트링은 건드리지 않는다.
+      React 렌더보다 먼저 실행돼야 해서 <script type="module"> 위에 둠.
+      ============================================================
+    -->
+    <script>
+      ;(function (l) {
+        if (l.search[1] === '/') {
+          var decoded = l.search
+            .slice(1)
+            .split('&')
+            .map(function (s) {
+              return s.replace(/~and~/g, '&')
+            })
+            .join('?')
+          window.history.replaceState(
+            null,
+            '',
+            l.pathname.slice(0, -1) + decoded + l.hash,
+          )
+        }
+      })(window.location)
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -1,0 +1,86 @@
+# ============================================================
+# GitHub Pages 배포 워크플로우
+# ------------------------------------------------------------
+# 트리거:
+#   - main 브랜치에 push 될 때마다 자동
+#   - Actions 탭에서 수동 실행(workflow_dispatch) 가능
+#
+# 동작:
+#   1) Node 20 설치 + npm ci
+#   2) VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY 를 환경변수로 주입
+#      (레포 Settings > Secrets and variables > Actions 에서 등록)
+#   3) npm run build → dist/
+#   4) dist/ 를 GitHub Pages 로 배포
+#
+# 최초 1회 설정 (레포 Settings 에서 사용자가 직접):
+#   - Settings > Pages > Source: "GitHub Actions"
+#   - Settings > Secrets and variables > Actions > New repository secret:
+#       VITE_SUPABASE_URL   = .env.local 의 값
+#       VITE_SUPABASE_ANON_KEY = .env.local 의 값
+#
+# 배포 후 URL:
+#   https://mk-amplitude.github.io/MailCaster_MK/
+# ============================================================
+
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Pages 배포에 필요한 권한. 기본 workflow 토큰에 부여.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 동시 배포 1건 제한 — 연속 커밋 시 뒤의 것이 앞을 취소하지 않고 줄세움.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        env:
+          # 프론트엔드 번들에 포함될 Supabase 연결 정보.
+          # anon key 는 브라우저 노출이 안전 — RLS 가 보호함.
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+        run: npm run build
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./dist
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

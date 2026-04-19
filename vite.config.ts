@@ -28,8 +28,17 @@ import path from 'path'
 //   구체 패턴을 먼저 둘 필요는 없지만, 다른 벤더 청크와 겹치면 순서 중요).
 // ------------------------------------------------------------
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   plugins: [react()],
+  // ------------------------------------------------------------
+  // base: GitHub Pages 프로젝트 사이트 경로
+  //   빌드(`vite build`)일 때만 `/MailCaster_MK/` 로 설정 — 사이트는
+  //   `https://mk-amplitude.github.io/MailCaster_MK/` 에서 서빙된다.
+  //   개발(`vite dev`) 중에는 `/` 로 두어 `http://localhost:5173/` 에서
+  //   바로 접근 가능. `npm run preview` 는 빌드 결과를 그대로 띄우므로
+  //   `/MailCaster_MK/` 로 열린다 — 프로덕션 경로 검증에 유용.
+  // ------------------------------------------------------------
+  base: command === 'build' ? '/MailCaster_MK/' : '/',
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
@@ -74,4 +83,4 @@ export default defineConfig({
       },
     },
   },
-})
+}))

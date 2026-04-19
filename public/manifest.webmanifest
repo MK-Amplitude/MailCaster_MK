@@ -2,8 +2,8 @@
   "name": "MailCaster",
   "short_name": "MailCaster",
   "description": "개인화 대량 메일 발송 서비스 (Gmail 기반)",
-  "start_url": "/",
-  "scope": "/",
+  "start_url": "/MailCaster_MK/",
+  "scope": "/MailCaster_MK/",
   "display": "standalone",
   "orientation": "portrait-primary",
   "theme_color": "#09090B",
@@ -12,19 +12,19 @@
   "dir": "ltr",
   "icons": [
     {
-      "src": "/mailcaster.svg",
+      "src": "/MailCaster_MK/mailcaster.svg",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any"
     },
     {
-      "src": "/mailcaster.svg",
+      "src": "/MailCaster_MK/mailcaster.svg",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "maskable"
     },
     {
-      "src": "/apple-touch-icon.svg",
+      "src": "/MailCaster_MK/apple-touch-icon.svg",
       "sizes": "180x180",
       "type": "image/svg+xml",
       "purpose": "any"
