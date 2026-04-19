@@ -31,7 +31,15 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <BrowserRouter>
+        {/*
+          basename = Vite 의 `base` 값과 동일하게 유지해야 한다.
+          import.meta.env.BASE_URL 은 Vite 가 자동 주입:
+            - `npm run dev`  → `/`
+            - `npm run build`(GH Pages 용) → `/MailCaster_MK/`
+          이 prop 이 없으면 GH Pages 경로(`/MailCaster_MK/`) 에서 앱이 열릴 때
+          Router 가 그 prefix 를 라우트로 해석해 NotFoundPage 로 빠진다.
+        */}
+        <BrowserRouter basename={import.meta.env.BASE_URL}>
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route
