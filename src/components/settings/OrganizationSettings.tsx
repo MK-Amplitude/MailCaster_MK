@@ -49,6 +49,8 @@ import {
   XCircle,
   LogOut,
   AlertTriangle,
+  Copy,
+  Info,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { formatDate, isValidEmail } from '@/lib/utils'
@@ -80,6 +82,20 @@ export function OrganizationSettings() {
   // 초대 form
   const [inviteEmail, setInviteEmail] = useState('')
   const [inviteRole, setInviteRole] = useState<OrgInviteRole>('member')
+
+  // 공유용 앱 URL — 초대 = 레코드 생성일 뿐, 실제 이메일 발송은 없으므로
+  // 관리자가 직접 이 URL 을 상대방에게 전달해야 한다.
+  const appUrl = typeof window !== 'undefined' ? window.location.origin : ''
+
+  const handleCopyAppUrl = async () => {
+    if (!appUrl) return
+    try {
+      await navigator.clipboard.writeText(appUrl)
+      toast.success('링크가 복사되었습니다')
+    } catch {
+      toast.error('링크 복사에 실패했습니다')
+    }
+  }
 
   // 확인 다이얼로그들
   const [deleteOrgOpen, setDeleteOrgOpen] = useState(false)
@@ -259,12 +275,22 @@ export function OrganizationSettings() {
               <UserPlus className="w-4 h-4" />
               멤버 초대
             </CardTitle>
-            <p className="text-xs text-muted-foreground">
-              이메일로 초대 레코드를 생성합니다. 해당 이메일로 로그인하면 조직에
-              자동으로 합류됩니다.
-            </p>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-3">
+            {/* 초대 방식 안내 — "메일이 안 온다"는 오해를 막기 위한 명시적 문구 */}
+            <div className="flex items-start gap-2 rounded-md border border-blue-200 dark:border-blue-900 bg-blue-50/50 dark:bg-blue-950/20 p-2.5 text-xs">
+              <Info className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" />
+              <div className="space-y-0.5 text-blue-900 dark:text-blue-200">
+                <p className="font-medium">초대는 메일을 발송하지 않습니다</p>
+                <p>
+                  "로그인 시 자동 합류" 레코드만 생성됩니다. 아래 앱 주소를 직접
+                  공유하고 상대방이 <strong>같은 이메일로 Google 로그인</strong>
+                  하도록 안내해주세요.
+                </p>
+              </div>
+            </div>
+
+            {/* 초대 폼 */}
             <div className="flex flex-wrap items-end gap-2">
               <div className="flex-1 min-w-[240px] space-y-1.5">
                 <Label htmlFor="invite-email">이메일</Label>
@@ -300,6 +326,26 @@ export function OrganizationSettings() {
               >
                 <Mail className="w-3.5 h-3.5 mr-1.5" />
                 {inviteMember.isPending ? '초대 중...' : '초대'}
+              </Button>
+            </div>
+
+            {/* 공유 링크 — 초대 후 바로 복사할 수 있게 상시 노출 */}
+            <div className="flex items-center gap-2 rounded-md border bg-muted/30 p-2.5 text-xs">
+              <div className="min-w-0 flex-1">
+                <p className="font-medium text-foreground">공유할 앱 주소</p>
+                <p className="truncate font-mono text-muted-foreground">
+                  {appUrl || '(초기화 중)'}
+                </p>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleCopyAppUrl}
+                className="shrink-0"
+                disabled={!appUrl}
+              >
+                <Copy className="mr-1 h-3.5 w-3.5" />
+                복사
               </Button>
             </div>
           </CardContent>
