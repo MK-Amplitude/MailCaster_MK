@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import type { ContactWithGroups } from '@/types/contact'
 import { formatDate } from '@/lib/utils'
+import { useAuth } from '@/hooks/useAuth'
 
 interface ContactsTableProps {
   contacts: ContactWithGroups[]
@@ -46,8 +47,12 @@ export function ContactsTable({
   onToggleUnsubscribe,
   onRowClick,
 }: ContactsTableProps) {
+  const { user, isOrgAdmin } = useAuth()
   const allSelected = contacts.length > 0 && contacts.every((c) => selectedIds.has(c.id))
   const someSelected = contacts.some((c) => selectedIds.has(c.id))
+  // RLS 가 own or admin 을 허용 — UI 도 동일하게 게이팅.
+  // 본인이 오너이거나 org admin 이면 수정/삭제/수신거부 토글 가능.
+  const canMutate = (c: ContactWithGroups) => c.user_id === user?.id || isOrgAdmin
 
   if (loading) {
     return (
@@ -206,12 +211,17 @@ export function ContactsTable({
                 {formatDate(contact.created_at)}
               </TableCell>
               <TableCell onClick={(e) => e.stopPropagation()}>
-                <RowMenu
-                  contact={contact}
-                  onEdit={onEdit}
-                  onDelete={onDelete}
-                  onToggleUnsubscribe={onToggleUnsubscribe}
-                />
+                {canMutate(contact) ? (
+                  <RowMenu
+                    contact={contact}
+                    onEdit={onEdit}
+                    onDelete={onDelete}
+                    onToggleUnsubscribe={onToggleUnsubscribe}
+                  />
+                ) : (
+                  // 메뉴 칸 레이아웃 유지 — 보이지 않는 placeholder
+                  <div className="h-7 w-7" />
+                )}
               </TableCell>
             </TableRow>
           ))}

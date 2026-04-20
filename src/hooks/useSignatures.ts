@@ -6,35 +6,47 @@ import { toast } from 'sonner'
 
 const QK = 'signatures'
 
-export function useSignatures() {
-  const { user } = useAuth()
+// 서명은 개인 정보(이름/직책) 를 포함하므로 기본 범위는 'mine'.
+// 'org' 로 주면 팀원의 서명도 볼 수 있음 (참고/카피용).
+export type SignatureScope = 'mine' | 'org'
+
+export function useSignatures(scope: SignatureScope = 'mine') {
+  const { user, currentOrg } = useAuth()
 
   return useQuery({
-    queryKey: [QK],
+    queryKey: [QK, currentOrg?.id, scope],
     queryFn: async () => {
-      const { data, error } = await supabase
+      let query = supabase
         .from('signatures')
-        .select('*')
-        .eq('user_id', user!.id)
+        .select('*, profiles:user_id(email, display_name)')
+        .eq('org_id', currentOrg!.id)
         .order('created_at', { ascending: false })
+
+      if (scope === 'mine') {
+        query = query.eq('user_id', user!.id)
+      }
+
+      const { data, error } = await query
       if (error) throw error
       return data ?? []
     },
-    enabled: !!user,
+    enabled: !!user && !!currentOrg,
   })
 }
 
 export function useCreateSignature() {
-  const { user } = useAuth()
+  const { user, currentOrg } = useAuth()
   const qc = useQueryClient()
 
   return useMutation({
-    mutationFn: async (data: Omit<SignatureInsert, 'user_id'>) => {
-      console.log('[createSignature] start', { data, userId: user?.id })
+    mutationFn: async (data: Omit<SignatureInsert, 'user_id' | 'org_id'>) => {
+      console.log('[createSignature] start', { data, userId: user?.id, orgId: currentOrg?.id })
       if (!user) throw new Error('로그인이 필요합니다.')
+      if (!currentOrg) throw new Error('현재 조직이 설정되지 않았습니다.')
       const { data: result, error } = await supabase
         .from('signatures')
-        .insert({ ...data, user_id: user.id })
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .insert({ ...data, user_id: user.id, org_id: currentOrg.id } as any)
         .select()
         .single()
       console.log('[createSignature] result', { result, error })

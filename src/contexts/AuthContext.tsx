@@ -1,6 +1,10 @@
-import { createContext, useContext, useEffect, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import type { Session, User } from '@supabase/supabase-js'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
+import type { Organization, OrgRole } from '@/types/org'
+
+type OrgWithRole = Organization & { role: OrgRole }
 
 interface AuthContextValue {
   user: User | null
@@ -8,35 +12,24 @@ interface AuthContextValue {
   loading: boolean
   signInWithGoogle: () => Promise<void>
   signOut: () => Promise<void>
+
+  // 조직 상태 — Phase 7
+  orgs: OrgWithRole[]
+  currentOrg: OrgWithRole | null
+  orgsLoading: boolean
+  setCurrentOrg: (org: OrgWithRole) => void
+  refreshOrgs: () => void
+  // 현재 조직에서 owner/admin 여부 — RLS 가 "own or admin" 을 허용하는 테이블의
+  // 수정/삭제 버튼 가시성을 UI 에서도 맞추기 위한 헬퍼.
+  isOrgAdmin: boolean
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined)
 
-const DEFAULT_CATEGORIES = [
-  { name: '고객사별', color: '#3b82f6', icon: 'building-2', sort_order: 0 },
-  { name: '업무별', color: '#22c55e', icon: 'briefcase', sort_order: 1 },
-  { name: '직급별', color: '#a855f7', icon: 'user', sort_order: 2 },
-  { name: '기타', color: '#6b7280', icon: 'bookmark', sort_order: 3 },
-]
+const CURRENT_ORG_STORAGE_KEY = 'mailcaster-current-org-id'
 
-async function seedDefaultCategories(userId: string) {
-  const { count, error: countError } = await supabase
-    .from('group_categories')
-    .select('*', { count: 'exact', head: true })
-    .eq('user_id', userId)
-
-  if (countError) {
-    console.error('[seedDefaultCategories] count failed:', countError)
-    return
-  }
-
-  if ((count ?? 0) === 0) {
-    const { error } = await supabase.from('group_categories').insert(
-      DEFAULT_CATEGORIES.map((cat) => ({ ...cat, user_id: userId }))
-    )
-    if (error) console.error('[seedDefaultCategories] insert failed:', error)
-  }
-}
+// 기본 카테고리는 이제 DB trigger (016) 가 삽입 — 이전의 프런트엔드 seed 는 비활성화.
+// (남은 호출이 있어도 group_categories UNIQUE(user_id, name) 때문에 중복 생성되지 않음.)
 
 async function syncProfileAndTokens(session: Session) {
   const updates: Record<string, unknown> = {
@@ -71,11 +64,39 @@ async function syncProfileAndTokens(session: Session) {
   }
 }
 
+// 로그인 직후 내 이메일로 온 미수락 초대를 자동 수락.
+// trigger 가 아니라 RPC 로 만든 이유는 016 참고.
+async function acceptPendingInvitations() {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { data, error } = await (supabase.rpc as any)('accept_pending_invitations')
+    if (error) {
+      console.warn('[auth] accept_pending_invitations failed:', error)
+      return 0
+    }
+    return (data as number) ?? 0
+  } catch (e) {
+    console.warn('[auth] accept_pending_invitations threw:', e)
+    return 0
+  }
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [session, setSession] = useState<Session | null>(null)
   const [loading, setLoading] = useState(true)
 
+  // 사용자가 고른 현재 조직 id — localStorage 영속화
+  const [currentOrgId, setCurrentOrgIdState] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null
+    return localStorage.getItem(CURRENT_ORG_STORAGE_KEY)
+  })
+
+  const qc = useQueryClient()
+
+  // ======================================================
+  // 세션 관리
+  // ======================================================
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session)
@@ -85,7 +106,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // getSession 이후 마이크로태스크에서 실행 — 다른 auth 이벤트와 순서 충돌 회피
         setTimeout(() => {
           syncProfileAndTokens(session)
-          seedDefaultCategories(session.user.id)
+          acceptPendingInvitations().then((count) => {
+            if (count > 0) qc.invalidateQueries({ queryKey: ['orgs'] })
+          })
         }, 0)
       }
     })
@@ -105,16 +128,96 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setTimeout(() => {
             syncProfileAndTokens(session)
             if (event === 'SIGNED_IN') {
-              seedDefaultCategories(session.user.id)
+              acceptPendingInvitations().then((count) => {
+                if (count > 0) qc.invalidateQueries({ queryKey: ['orgs'] })
+              })
             }
           }, 0)
+        }
+
+        // 로그아웃 시 현재 조직 선택도 초기화
+        if (event === 'SIGNED_OUT') {
+          setCurrentOrgIdState(null)
+          localStorage.removeItem(CURRENT_ORG_STORAGE_KEY)
         }
       }
     )
 
     return () => subscription.unsubscribe()
-  }, [])
+  }, [qc])
 
+  // ======================================================
+  // 조직 목록
+  // ======================================================
+  const orgsQuery = useQuery({
+    queryKey: ['orgs', user?.id],
+    queryFn: async (): Promise<OrgWithRole[]> => {
+      // org_members + organizations 조인 — RLS 가 자동 필터
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { data, error } = await (supabase.from('org_members') as any)
+        .select('role, organizations(id, name, slug, created_by, created_at, updated_at)')
+        .eq('user_id', user!.id)
+        .order('joined_at', { ascending: true })
+      if (error) throw error
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (data ?? []).map((row: any) => ({ ...row.organizations, role: row.role }))
+    },
+    enabled: !!user,
+    staleTime: 1000 * 60 * 5,
+  })
+
+  const orgs = useMemo(() => orgsQuery.data ?? [], [orgsQuery.data])
+
+  // 현재 조직: localStorage 가 유효하면 그것, 아니면 첫번째 조직
+  const currentOrg = useMemo<OrgWithRole | null>(() => {
+    if (orgs.length === 0) return null
+    const saved = orgs.find((o) => o.id === currentOrgId)
+    return saved ?? orgs[0]
+  }, [orgs, currentOrgId])
+
+  // orgs 가 로드되면 currentOrgId 가 더 이상 유효하지 않은 경우 자동 교정
+  useEffect(() => {
+    if (orgs.length === 0) return
+    const valid = orgs.some((o) => o.id === currentOrgId)
+    if (!valid) {
+      const nextId = orgs[0].id
+      setCurrentOrgIdState(nextId)
+      localStorage.setItem(CURRENT_ORG_STORAGE_KEY, nextId)
+    }
+  }, [orgs, currentOrgId])
+
+  const setCurrentOrg = useCallback(
+    (org: OrgWithRole) => {
+      setCurrentOrgIdState(org.id)
+      localStorage.setItem(CURRENT_ORG_STORAGE_KEY, org.id)
+      // 조직 전환 — 모든 리소스 쿼리 invalidate.
+      // queryKey 에 currentOrg.id 가 포함돼 있어도 invalidate 해야 active 쿼리가
+      // 즉시 refetch 된다 (단순히 key 가 바뀐 건 과거 캐시를 그대로 두고 새 fetch 를 시작할 뿐).
+      qc.invalidateQueries({ queryKey: ['contacts'] })
+      qc.invalidateQueries({ queryKey: ['contacts-common'] })
+      qc.invalidateQueries({ queryKey: ['groups'] })
+      qc.invalidateQueries({ queryKey: ['group-categories'] })
+      qc.invalidateQueries({ queryKey: ['templates'] })
+      qc.invalidateQueries({ queryKey: ['signatures'] })
+      qc.invalidateQueries({ queryKey: ['campaigns'] })
+      qc.invalidateQueries({ queryKey: ['unsubscribes'] })
+      qc.invalidateQueries({ queryKey: ['blacklist'] })
+    },
+    [qc]
+  )
+
+  const refreshOrgs = useCallback(() => {
+    qc.invalidateQueries({ queryKey: ['orgs'] })
+  }, [qc])
+
+  const isOrgAdmin = useMemo(
+    () => currentOrg?.role === 'owner' || currentOrg?.role === 'admin',
+    [currentOrg?.role]
+  )
+
+  // ======================================================
+  // Auth 액션
+  // ======================================================
   const signInWithGoogle = async () => {
     await supabase.auth.signInWithOAuth({
       provider: 'google',
@@ -127,8 +230,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           'https://www.googleapis.com/auth/gmail.compose',
           'https://mail.google.com/',
           // Drive 첨부 기능 (Phase 4)
-          // drive.file: 앱이 올린/picker 로 선택한 파일에 쓰기 권한
-          // drive.readonly: 사용자가 이미 Drive 에 가진 파일을 picker 로 선택할 때 읽기 권한
           'https://www.googleapis.com/auth/drive.file',
           'https://www.googleapis.com/auth/drive.readonly',
         ].join(' '),
@@ -136,11 +237,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           access_type: 'offline',
           prompt: 'consent',
         },
-        // BASE_URL = Vite 의 `base` 값. 끝에 `/` 포함.
-        //   dev : `/`                    → http://localhost:5173/
-        //   prod: `/MailCaster_MK/`      → https://mk-amplitude.github.io/MailCaster_MK/
-        // 하드코딩하면 GH Pages 배포 시 루트로 돌려보내져 Supabase
-        // Redirect URLs 화이트리스트 매칭 실패.
         redirectTo: `${window.location.origin}${import.meta.env.BASE_URL}`,
       },
     })
@@ -151,7 +247,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, session, loading, signInWithGoogle, signOut }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        session,
+        loading,
+        signInWithGoogle,
+        signOut,
+        orgs,
+        currentOrg,
+        orgsLoading: orgsQuery.isLoading,
+        setCurrentOrg,
+        refreshOrgs,
+        isOrgAdmin,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   )

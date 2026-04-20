@@ -12,17 +12,29 @@ import { toast } from 'sonner'
 
 const QK = 'campaigns'
 
-export function useCampaigns(status?: CampaignStatus | 'all') {
-  const { user } = useAuth()
+// 캠페인 범위:
+//   'mine' = 내가 만든 캠페인만
+//   'org'  = 조직 전체 캠페인 (협업 / 발송 현황 공유)
+export type CampaignScope = 'mine' | 'org'
+
+export function useCampaigns(
+  status?: CampaignStatus | 'all',
+  scope: CampaignScope = 'org',
+) {
+  const { user, currentOrg } = useAuth()
 
   return useQuery({
-    queryKey: [QK, status ?? 'all'],
+    queryKey: [QK, currentOrg?.id, scope, status ?? 'all'],
     queryFn: async () => {
       let query = supabase
         .from('campaigns')
-        .select('*')
-        .eq('user_id', user!.id)
+        .select('*, profiles:user_id(email, display_name)')
+        .eq('org_id', currentOrg!.id)
         .order('created_at', { ascending: false })
+
+      if (scope === 'mine') {
+        query = query.eq('user_id', user!.id)
+      }
 
       if (status && status !== 'all') {
         query = query.eq('status', status)
@@ -30,9 +42,9 @@ export function useCampaigns(status?: CampaignStatus | 'all') {
 
       const { data, error } = await query
       if (error) throw error
-      return (data ?? []) as Campaign[]
+      return (data ?? []) as unknown as Campaign[]
     },
-    enabled: !!user,
+    enabled: !!user && !!currentOrg,
   })
 }
 
@@ -75,16 +87,18 @@ export function useCampaignRecipients(campaignId: string | undefined) {
 }
 
 export function useCreateCampaign() {
-  const { user } = useAuth()
+  const { user, currentOrg } = useAuth()
   const qc = useQueryClient()
 
   return useMutation({
-    mutationFn: async (data: Omit<CampaignInsert, 'user_id'>) => {
-      console.log('[createCampaign] start', { data, userId: user?.id })
+    mutationFn: async (data: Omit<CampaignInsert, 'user_id' | 'org_id'>) => {
+      console.log('[createCampaign] start', { data, userId: user?.id, orgId: currentOrg?.id })
       if (!user) throw new Error('로그인이 필요합니다.')
+      if (!currentOrg) throw new Error('현재 조직이 설정되지 않았습니다.')
       const { data: result, error } = await supabase
         .from('campaigns')
-        .insert({ ...data, user_id: user.id })
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .insert({ ...data, user_id: user.id, org_id: currentOrg.id } as any)
         .select()
         .single()
       console.log('[createCampaign] result', { result, error })

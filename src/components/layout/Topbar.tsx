@@ -11,6 +11,8 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Moon, Sun, LogOut, Settings } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
+import { OrgSwitcher } from './OrgSwitcher'
+import { PendingInvitesBanner } from './PendingInvitesBanner'
 
 export function Topbar() {
   const { user, signOut } = useAuth()
@@ -35,7 +37,10 @@ export function Topbar() {
 
   return (
     <header className="h-14 border-b bg-card flex items-center justify-between px-4 sticky top-0 z-10">
-      <div />
+      <div className="flex items-center gap-2">
+        <OrgSwitcher />
+        <PendingInvitesBanner />
+      </div>
       <div className="flex items-center gap-2">
         <Button variant="ghost" size="icon" onClick={toggleDark} className="h-8 w-8">
           {dark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}

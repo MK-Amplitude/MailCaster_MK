@@ -90,6 +90,7 @@ export interface Database {
         Row: {
           id: string
           user_id: string
+          org_id: string
           email: string
           name: string | null
           company: string | null
@@ -115,6 +116,7 @@ export interface Database {
         Insert: {
           id?: string
           user_id: string
+          org_id: string
           email: string
           name?: string | null
           company?: string | null
@@ -222,6 +224,7 @@ export interface Database {
         Row: {
           id: string
           user_id: string
+          org_id: string
           email: string
           reason: string | null
           source_campaign_id: string | null
@@ -230,12 +233,15 @@ export interface Database {
         Insert: {
           id?: string
           user_id: string
+          org_id: string
           email: string
           reason?: string | null
           source_campaign_id?: string | null
           unsubscribed_at?: string
         }
         Update: {
+          user_id?: string
+          org_id?: string
           reason?: string | null
         }
         Relationships: []
@@ -244,6 +250,7 @@ export interface Database {
         Row: {
           id: string
           user_id: string
+          org_id: string
           email: string
           reason: string | null
           created_at: string
@@ -251,11 +258,14 @@ export interface Database {
         Insert: {
           id?: string
           user_id: string
+          org_id: string
           email: string
           reason?: string | null
           created_at?: string
         }
         Update: {
+          user_id?: string
+          org_id?: string
           reason?: string | null
         }
         Relationships: []
@@ -264,6 +274,7 @@ export interface Database {
         Row: {
           id: string
           user_id: string
+          org_id: string
           name: string
           description: string | null
           color: string | null
@@ -274,6 +285,7 @@ export interface Database {
         Insert: {
           id?: string
           user_id: string
+          org_id: string
           name: string
           description?: string | null
           color?: string | null
@@ -294,6 +306,7 @@ export interface Database {
         Row: {
           id: string
           user_id: string
+          org_id: string
           category_id: string | null
           name: string
           description: string | null
@@ -305,6 +318,7 @@ export interface Database {
         Insert: {
           id?: string
           user_id: string
+          org_id: string
           category_id?: string | null
           name: string
           description?: string | null
@@ -344,6 +358,7 @@ export interface Database {
         Row: {
           id: string
           user_id: string
+          org_id: string
           name: string
           subject: string
           body_html: string
@@ -354,6 +369,7 @@ export interface Database {
         Insert: {
           id?: string
           user_id: string
+          org_id: string
           name: string
           subject: string
           body_html: string
@@ -374,6 +390,7 @@ export interface Database {
         Row: {
           id: string
           user_id: string
+          org_id: string
           name: string
           html: string
           is_default: boolean
@@ -383,6 +400,7 @@ export interface Database {
         Insert: {
           id?: string
           user_id: string
+          org_id: string
           name: string
           html: string
           is_default?: boolean
@@ -401,6 +419,7 @@ export interface Database {
         Row: {
           id: string
           user_id: string
+          org_id: string
           name: string
           template_id: string | null
           signature_id: string | null
@@ -431,6 +450,7 @@ export interface Database {
         Insert: {
           id?: string
           user_id: string
+          org_id: string
           name: string
           template_id?: string | null
           signature_id?: string | null
@@ -913,12 +933,82 @@ export interface Database {
         }
         Relationships: []
       }
+      // Phase 7: Organizations (migrations 013~017)
+      organizations: {
+        Row: {
+          id: string
+          name: string
+          slug: string | null
+          created_by: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          name: string
+          slug?: string | null
+          created_by?: string | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          name?: string
+          slug?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      org_members: {
+        Row: {
+          org_id: string
+          user_id: string
+          role: 'owner' | 'admin' | 'member'
+          invited_by: string | null
+          joined_at: string
+        }
+        Insert: {
+          org_id: string
+          user_id: string
+          role?: 'owner' | 'admin' | 'member'
+          invited_by?: string | null
+          joined_at?: string
+        }
+        Update: {
+          role?: 'owner' | 'admin' | 'member'
+        }
+        Relationships: []
+      }
+      org_invitations: {
+        Row: {
+          id: string
+          org_id: string
+          email: string
+          role: 'admin' | 'member'
+          invited_by: string | null
+          created_at: string
+          accepted_at: string | null
+        }
+        Insert: {
+          id?: string
+          org_id: string
+          email: string
+          role?: 'admin' | 'member'
+          invited_by?: string | null
+          created_at?: string
+          accepted_at?: string | null
+        }
+        Update: {
+          accepted_at?: string | null
+        }
+        Relationships: []
+      }
     }
     Views: {
       contact_with_groups: {
         Row: {
           id: string
           user_id: string
+          org_id: string
           email: string
           name: string | null
           company: string | null
@@ -982,8 +1072,35 @@ export interface Database {
         }
         Relationships: []
       }
+      // Phase 7 (migration 017) — 같은 조직 내 동일 이메일 중복 연락처 dedupe 뷰
+      contacts_common: {
+        Row: {
+          org_id: string
+          email_key: string
+          email: string
+          name: string | null
+          company: string | null
+          department: string | null
+          job_title: string | null
+          is_unsubscribed: boolean
+          is_bounced: boolean
+          first_created_at: string
+          last_updated_at: string
+          duplicate_count: number
+          owners: Json
+          contact_ids: string[]
+          groups: Json
+        }
+        Relationships: []
+      }
     }
-    Functions: Record<string, never>
+    Functions: {
+      // RPC — 내 이메일로 온 미수락 초대를 일괄 수락 (016)
+      accept_pending_invitations: {
+        Args: Record<string, never>
+        Returns: number
+      }
+    }
     Enums: Record<string, never>
     CompositeTypes: Record<string, never>
   }

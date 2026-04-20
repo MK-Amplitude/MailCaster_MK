@@ -6,33 +6,37 @@ import { toast } from 'sonner'
 
 const QK = 'group-categories'
 
+// 카테고리는 조직 단위 공유. 기본값(4개) 은 DB 트리거 (016) 가 자동 생성.
 export function useGroupCategories() {
-  const { user } = useAuth()
+  const { user, currentOrg } = useAuth()
 
   return useQuery({
-    queryKey: [QK],
+    queryKey: [QK, currentOrg?.id],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('group_categories')
         .select('*')
-        .eq('user_id', user!.id)
+        .eq('org_id', currentOrg!.id)
         .order('sort_order')
       if (error) throw error
       return data ?? []
     },
-    enabled: !!user,
+    enabled: !!user && !!currentOrg,
   })
 }
 
 export function useCreateCategory() {
-  const { user } = useAuth()
+  const { user, currentOrg } = useAuth()
   const qc = useQueryClient()
 
   return useMutation({
-    mutationFn: async (data: Omit<GroupCategoryInsert, 'user_id'>) => {
+    mutationFn: async (data: Omit<GroupCategoryInsert, 'user_id' | 'org_id'>) => {
+      if (!user) throw new Error('로그인이 필요합니다.')
+      if (!currentOrg) throw new Error('현재 조직이 설정되지 않았습니다.')
       const { data: result, error } = await supabase
         .from('group_categories')
-        .insert({ ...data, user_id: user!.id })
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .insert({ ...data, user_id: user.id, org_id: currentOrg.id } as any)
         .select()
         .single()
       if (error) throw error
