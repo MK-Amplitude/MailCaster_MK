@@ -85,7 +85,15 @@ export function OrganizationSettings() {
 
   // 공유용 앱 URL — 초대 = 레코드 생성일 뿐, 실제 이메일 발송은 없으므로
   // 관리자가 직접 이 URL 을 상대방에게 전달해야 한다.
-  const appUrl = typeof window !== 'undefined' ? window.location.origin : ''
+  //
+  // GitHub Pages project page 로 배포되기 때문에 base path (예: /MailCaster_MK/)
+  // 가 반드시 필요. App.tsx 의 BrowserRouter basename 및 AuthContext 의 OAuth
+  // redirectTo 와 동일하게 import.meta.env.BASE_URL 을 붙여야 올바른 URL 이 된다.
+  // (origin 만 복사하면 https://mk-amplitude.github.io/ → GH 기본 404 페이지)
+  const appUrl =
+    typeof window !== 'undefined'
+      ? `${window.location.origin}${import.meta.env.BASE_URL}`
+      : ''
 
   const handleCopyAppUrl = async () => {
     if (!appUrl) return
