@@ -10,8 +10,9 @@ import { GroupMembersSheet } from '@/components/groups/GroupMembersSheet'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { useGroups, useDeleteGroup } from '@/hooks/useGroups'
 import { useGroupCategories } from '@/hooks/useGroupCategories'
+import { useAuth } from '@/hooks/useAuth'
 import type { Group } from '@/types/group'
-import { Plus, Users, MoreHorizontal, Pencil, Trash2, FolderOpen, Filter, ChevronDown } from 'lucide-react'
+import { Plus, Users, MoreHorizontal, Pencil, Trash2, FolderOpen, Filter, ChevronDown, User } from 'lucide-react'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -35,6 +36,9 @@ export default function GroupsPage() {
   const { data: categories = [] } = useGroupCategories()
   const selectedCategory = categories.find((c) => c.id === selectedCategoryId) ?? null
   const deleteGroup = useDeleteGroup()
+  const { user, isOrgAdmin } = useAuth()
+  // 오너 또는 org admin 만 그룹 수정/삭제 가능 — RLS groups_update/delete_own_or_admin 과 일치
+  const canMutate = (g: Group) => g.user_id === user?.id || isOrgAdmin
 
   const openCreate = () => {
     setEditGroup(null)
@@ -131,6 +135,7 @@ export default function GroupsPage() {
                 <GroupCard
                   key={group.id}
                   group={group}
+                  canMutate={canMutate(group)}
                   onEdit={openEdit}
                   onDelete={setDeleteTarget}
                   onOpenMembers={openMembers}
@@ -177,11 +182,13 @@ export default function GroupsPage() {
 
 function GroupCard({
   group,
+  canMutate,
   onEdit,
   onDelete,
   onOpenMembers,
 }: {
   group: Group & { group_categories?: { name: string; color: string | null } | null }
+  canMutate: boolean
   onEdit: (g: Group) => void
   onDelete: (g: Group) => void
   onOpenMembers: (g: Group) => void
@@ -197,35 +204,49 @@ function GroupCard({
         <div className="flex items-start justify-between mb-3">
           <div className="flex-1 min-w-0">
             <h3 className="font-semibold text-sm truncate">{group.name}</h3>
-            {cat && (
-              <Badge
-                variant="outline"
-                className="text-xs mt-1 py-0 px-1.5"
-                style={cat.color ? { borderColor: cat.color, color: cat.color } : undefined}
-              >
-                {cat.name}
-              </Badge>
-            )}
+            <div className="flex items-center gap-1 flex-wrap mt-1">
+              {cat && (
+                <Badge
+                  variant="outline"
+                  className="text-xs py-0 px-1.5"
+                  style={cat.color ? { borderColor: cat.color, color: cat.color } : undefined}
+                >
+                  {cat.name}
+                </Badge>
+              )}
+              {!canMutate && (
+                <Badge
+                  variant="secondary"
+                  className="text-[10px] py-0 px-1.5 h-4"
+                  title="다른 멤버가 생성한 그룹 — 수정/삭제는 오너 또는 관리자만 가능"
+                >
+                  <User className="w-2.5 h-2.5 mr-1" />
+                  공유됨
+                </Badge>
+              )}
+            </div>
           </div>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-              <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0">
-                <MoreHorizontal className="w-4 h-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onEdit(group) }}>
-                <Pencil className="w-4 h-4 mr-2" /> 수정
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                onClick={(e) => { e.stopPropagation(); onDelete(group) }}
-                className="text-destructive focus:text-destructive"
-              >
-                <Trash2 className="w-4 h-4 mr-2" /> 삭제
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          {canMutate && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+                <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0">
+                  <MoreHorizontal className="w-4 h-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onEdit(group) }}>
+                  <Pencil className="w-4 h-4 mr-2" /> 수정
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={(e) => { e.stopPropagation(); onDelete(group) }}
+                  className="text-destructive focus:text-destructive"
+                >
+                  <Trash2 className="w-4 h-4 mr-2" /> 삭제
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
 
         <div className="flex items-center gap-1.5 text-muted-foreground">

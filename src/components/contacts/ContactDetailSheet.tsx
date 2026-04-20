@@ -9,6 +9,7 @@ import type { ContactWithGroups } from '@/types/contact'
 import { formatDateTime } from '@/lib/utils'
 import { useContactHistory } from '@/hooks/useContactHistory'
 import type { ContactHistoryRow } from '@/hooks/useContactHistory'
+import { useAuth } from '@/hooks/useAuth'
 
 interface ContactDetailSheetProps {
   contact: ContactWithGroups | null
@@ -26,6 +27,9 @@ export function ContactDetailSheet({
   onToggleUnsubscribe,
 }: ContactDetailSheetProps) {
   const { data: history = [] } = useContactHistory(contact?.id)
+  const { user, isOrgAdmin } = useAuth()
+  // 오너 또는 org admin 만 수정/수신거부 토글 가능 — RLS 와 일치
+  const canMutate = !!contact && (contact.user_id === user?.id || isOrgAdmin)
 
   if (!contact) return null
 
@@ -49,28 +53,32 @@ export function ContactDetailSheet({
                   {contact.email}
                 </p>
               </div>
-              <div className="flex gap-1">
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="h-8 w-8"
-                  onClick={() => onEdit(contact)}
-                >
-                  <Pencil className="w-4 h-4" />
-                </Button>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="h-8 w-8"
-                  onClick={() => onToggleUnsubscribe(contact)}
-                >
-                  {contact.is_unsubscribed ? (
-                    <UserCheck className="w-4 h-4" />
-                  ) : (
-                    <UserX className="w-4 h-4" />
-                  )}
-                </Button>
-              </div>
+              {canMutate && (
+                <div className="flex gap-1">
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-8 w-8"
+                    onClick={() => onEdit(contact)}
+                    title="수정"
+                  >
+                    <Pencil className="w-4 h-4" />
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-8 w-8"
+                    onClick={() => onToggleUnsubscribe(contact)}
+                    title={contact.is_unsubscribed ? '수신거부 해제' : '수신거부'}
+                  >
+                    {contact.is_unsubscribed ? (
+                      <UserCheck className="w-4 h-4" />
+                    ) : (
+                      <UserX className="w-4 h-4" />
+                    )}
+                  </Button>
+                </div>
+              )}
             </div>
           </SheetTitle>
         </SheetHeader>

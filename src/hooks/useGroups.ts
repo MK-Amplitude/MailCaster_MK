@@ -4,18 +4,25 @@ import { useAuth } from './useAuth'
 import type { GroupInsert, GroupUpdate } from '@/types/group'
 import { toast } from 'sonner'
 
-export function useGroups(categoryId?: string) {
-  const { user } = useAuth()
+// 그룹 범위: Phase 7 이후 조직 공유 — 모든 멤버가 같은 그룹을 본다.
+// 'mine' 파라미터는 현 스펙에선 사용처가 없지만 확장성을 위해 유지.
+export type GroupScope = 'mine' | 'org'
+
+export function useGroups(categoryId?: string, scope: GroupScope = 'org') {
+  const { user, currentOrg } = useAuth()
 
   return useQuery({
-    queryKey: ['groups', categoryId],
+    queryKey: ['groups', currentOrg?.id, scope, categoryId],
     queryFn: async () => {
       let query = supabase
         .from('groups')
         .select('*, group_categories(id, name, color, icon)')
-        .eq('user_id', user!.id)
+        .eq('org_id', currentOrg!.id)
         .order('name')
 
+      if (scope === 'mine') {
+        query = query.eq('user_id', user!.id)
+      }
       if (categoryId) {
         query = query.eq('category_id', categoryId)
       }
@@ -24,7 +31,7 @@ export function useGroups(categoryId?: string) {
       if (error) throw error
       return (data ?? []) as unknown as Array<import('@/types/group').Group & { group_categories: { id: string; name: string; color: string | null; icon: string | null } | null }>
     },
-    enabled: !!user,
+    enabled: !!user && !!currentOrg,
   })
 }
 
@@ -46,14 +53,17 @@ export function useGroupMembers(groupId: string) {
 }
 
 export function useCreateGroup() {
-  const { user } = useAuth()
+  const { user, currentOrg } = useAuth()
   const qc = useQueryClient()
 
   return useMutation({
-    mutationFn: async (data: Omit<GroupInsert, 'user_id'>) => {
+    mutationFn: async (data: Omit<GroupInsert, 'user_id' | 'org_id'>) => {
+      if (!user) throw new Error('로그인이 필요합니다.')
+      if (!currentOrg) throw new Error('현재 조직이 설정되지 않았습니다.')
       const { data: result, error } = await supabase
         .from('groups')
-        .insert({ ...data, user_id: user!.id })
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .insert({ ...data, user_id: user.id, org_id: currentOrg.id } as any)
         .select()
         .single()
       if (error) throw error

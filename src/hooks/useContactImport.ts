@@ -39,7 +39,7 @@ export interface ImportResult {
 const BATCH_SIZE = 100
 
 export function useContactImport() {
-  const { user } = useAuth()
+  const { user, currentOrg } = useAuth()
   const qc = useQueryClient()
   const [rows, setRows] = useState<ParsedRow[]>([])
   const [headers, setHeaders] = useState<string[]>([])
@@ -84,6 +84,7 @@ export function useContactImport() {
     groupId?: string
   ): Promise<ImportResult> => {
     if (!user) throw new Error('로그인이 필요합니다.')
+    if (!currentOrg) throw new Error('현재 조직이 설정되지 않았습니다.')
 
     setImporting(true)
     setProgress(0)
@@ -120,6 +121,7 @@ export function useContactImport() {
       const company = row[mapping.company]?.trim() || null
       return {
         user_id: user.id,
+        org_id: currentOrg.id,
         email: row[mapping.email]?.trim().toLowerCase(),
         name: row[mapping.name]?.trim() || null,
         company,
@@ -192,6 +194,7 @@ export function useContactImport() {
 
     setImporting(false)
     qc.invalidateQueries({ queryKey: ['contacts'] })
+    qc.invalidateQueries({ queryKey: ['contacts-common'] })
     qc.invalidateQueries({ queryKey: ['groups'] })
     toast.success(`가져오기 완료: ${result.inserted}개 처리, ${result.skipped}개 건너뜀`)
 

@@ -2,22 +2,38 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from './useAuth'
 import type { ContactInsert, ContactUpdate, ContactWithGroups, ContactFilters } from '@/types/contact'
+import type { ContactCommon } from '@/types/org'
 import { resolveCompanyForContact } from '@/lib/resolveCompany'
 import { toast } from 'sonner'
 
 const QUERY_KEY = 'contacts'
+const COMMON_QUERY_KEY = 'contacts-common'
 
-export function useContacts(filters?: ContactFilters) {
-  const { user } = useAuth()
+// 주소록 범위:
+//   'mine' = 내가 오너인 연락처만
+//   'org'  = 현재 조직의 전체 연락처 (소유자별 중복 유지 — 오너 컬럼으로 구분)
+export type ContactScope = 'mine' | 'org'
+
+export interface ContactQueryOptions extends ContactFilters {
+  scope?: ContactScope
+}
+
+export function useContacts(filters?: ContactQueryOptions) {
+  const { user, currentOrg } = useAuth()
+  const scope: ContactScope = filters?.scope ?? 'org'
 
   return useQuery({
-    queryKey: [QUERY_KEY, filters],
+    queryKey: [QUERY_KEY, currentOrg?.id, scope, filters],
     queryFn: async () => {
       let query = supabase
         .from('contact_with_groups')
         .select('*')
-        .eq('user_id', user!.id)
+        .eq('org_id', currentOrg!.id)
         .order('created_at', { ascending: false })
+
+      if (scope === 'mine') {
+        query = query.eq('user_id', user!.id)
+      }
 
       // 상태 필터만 서버에서 처리. 텍스트 검색은 클라이언트에서(초성 지원).
       if (filters?.status === 'unsubscribed') {
@@ -35,7 +51,27 @@ export function useContacts(filters?: ContactFilters) {
       if (error) throw error
       return (data ?? []) as unknown as ContactWithGroups[]
     },
-    enabled: !!user,
+    enabled: !!user && !!currentOrg,
+  })
+}
+
+// "공통(dedupe)" 뷰 — 같은 이메일의 중복 연락처를 하나로 합쳐서 본다.
+// campaigns 수신자 선택 시 중복 발송 방지 용도로도 사용.
+export function useContactsCommon() {
+  const { currentOrg } = useAuth()
+
+  return useQuery({
+    queryKey: [COMMON_QUERY_KEY, currentOrg?.id],
+    queryFn: async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { data, error } = await (supabase.from('contacts_common') as any)
+        .select('*')
+        .eq('org_id', currentOrg!.id)
+        .order('first_created_at', { ascending: false })
+      if (error) throw error
+      return (data ?? []) as ContactCommon[]
+    },
+    enabled: !!currentOrg,
   })
 }
 
@@ -55,22 +91,30 @@ export function useContactGroups(contactId: string) {
 }
 
 export function useCreateContact() {
-  const { user } = useAuth()
+  const { user, currentOrg } = useAuth()
   const qc = useQueryClient()
 
   return useMutation({
-    mutationFn: async (data: Omit<ContactInsert, 'user_id'>) => {
-      console.log('[createContact] start', { data, userId: user?.id })
+    mutationFn: async (data: Omit<ContactInsert, 'user_id' | 'org_id'>) => {
+      console.log('[createContact] start', { data, userId: user?.id, orgId: currentOrg?.id })
       if (!user) throw new Error('로그인이 필요합니다.')
+      if (!currentOrg) throw new Error('현재 조직이 설정되지 않았습니다.')
+      // email 정규화 — 019/020 트리거가 LOWER(email) 로 비교하므로
+      // 저장 시점에 trim().toLowerCase() 해두면 데이터 자체가 일관됨.
+      // (useContactImport.ts 와 동일한 규칙.)
+      const normalizedEmail = data.email?.trim().toLowerCase() ?? data.email
       // company 입력 → company_raw 로 함께 보관 (이미 설정돼 있으면 유지)
       const payload = {
         ...data,
+        email: normalizedEmail,
         user_id: user.id,
+        org_id: currentOrg.id,
         company_raw: data.company_raw ?? data.company ?? null,
       }
       const { data: result, error } = await supabase
         .from('contacts')
-        .insert(payload)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .insert(payload as any)
         .select()
         .single()
       console.log('[createContact] result', { result, error })
@@ -79,6 +123,7 @@ export function useCreateContact() {
     },
     onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: [QUERY_KEY] })
+      qc.invalidateQueries({ queryKey: [COMMON_QUERY_KEY] })
       toast.success('연락처가 추가되었습니다.')
       if (result?.id && result.company_raw) {
         resolveCompanyForContact({
@@ -101,6 +146,12 @@ export function useUpdateContact() {
     mutationFn: async ({ id, data }: { id: string; data: ContactUpdate }) => {
       // company 사용자 수정 → company_raw 도 동시 업데이트
       const payload: ContactUpdate = { ...data }
+      // email 변경 시 정규화 — create/import 와 동일한 trim().toLowerCase().
+      // 019 트리거가 LOWER() 로 비교하지만 데이터 자체를 정규화해 UNIQUE(org_id, email)
+      // 제약이 대소문자 차이로 우회되는 걸 막는다.
+      if (Object.prototype.hasOwnProperty.call(data, 'email') && typeof data.email === 'string') {
+        payload.email = data.email.trim().toLowerCase()
+      }
       if (Object.prototype.hasOwnProperty.call(data, 'company')) {
         payload.company_raw = data.company ?? null
         // 새 회사명 → 재조회 대기
@@ -112,6 +163,7 @@ export function useUpdateContact() {
     },
     onSuccess: ({ id, companyChanged, company }) => {
       qc.invalidateQueries({ queryKey: [QUERY_KEY] })
+      qc.invalidateQueries({ queryKey: [COMMON_QUERY_KEY] })
       toast.success('연락처가 수정되었습니다.')
       if (companyChanged && company && company.trim()) {
         resolveCompanyForContact({ rawName: company, contactId: id, qc })
@@ -133,6 +185,7 @@ export function useDeleteContacts() {
     },
     onSuccess: (_, ids) => {
       qc.invalidateQueries({ queryKey: [QUERY_KEY] })
+      qc.invalidateQueries({ queryKey: [COMMON_QUERY_KEY] })
       toast.success(`${ids.length}개의 연락처가 삭제되었습니다.`)
     },
     onError: (e: Error) => {
@@ -158,6 +211,7 @@ export function useToggleUnsubscribe() {
     },
     onSuccess: (_data, { unsubscribe }) => {
       qc.invalidateQueries({ queryKey: [QUERY_KEY] })
+      qc.invalidateQueries({ queryKey: [COMMON_QUERY_KEY] })
       toast.success(unsubscribe ? '수신거부 처리되었습니다.' : '수신거부가 해제되었습니다.')
     },
   })
@@ -177,6 +231,7 @@ export function useAddContactsToGroup() {
     },
     onSuccess: (_data, { groupId }) => {
       qc.invalidateQueries({ queryKey: [QUERY_KEY] })
+      qc.invalidateQueries({ queryKey: [COMMON_QUERY_KEY] })
       qc.invalidateQueries({ queryKey: ['groups'] })
       qc.invalidateQueries({ queryKey: ['group-members', groupId] })
       toast.success('그룹에 추가되었습니다.')
@@ -198,6 +253,7 @@ export function useRemoveContactFromGroup() {
     },
     onSuccess: (_data, { groupId }) => {
       qc.invalidateQueries({ queryKey: [QUERY_KEY] })
+      qc.invalidateQueries({ queryKey: [COMMON_QUERY_KEY] })
       qc.invalidateQueries({ queryKey: ['groups'] })
       qc.invalidateQueries({ queryKey: ['group-members', groupId] })
     },

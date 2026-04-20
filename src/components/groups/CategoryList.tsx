@@ -16,6 +16,7 @@ import {
   useUpdateCategory,
   useDeleteCategory,
 } from '@/hooks/useGroupCategories'
+import { useAuth } from '@/hooks/useAuth'
 import type { GroupCategory } from '@/types/group'
 import { Plus, Pencil, Trash2, ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -35,6 +36,9 @@ export function CategoryList({ selectedCategoryId, onSelectCategory }: CategoryL
   const createCat = useCreateCategory()
   const updateCat = useUpdateCategory()
   const deleteCat = useDeleteCategory()
+  const { user, isOrgAdmin } = useAuth()
+  // RLS: group_categories_update/delete_own_or_admin — 오너 또는 org admin 만 편집
+  const canMutate = (cat: GroupCategory) => cat.user_id === user?.id || isOrgAdmin
 
   const [formOpen, setFormOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<GroupCategory | null>(null)
@@ -108,25 +112,27 @@ export function CategoryList({ selectedCategoryId, onSelectCategory }: CategoryL
               <span className="flex-1 text-left truncate">{cat.name}</span>
             </button>
 
-            {/* 액션 버튼 */}
-            <div className="absolute right-2 top-1/2 -translate-y-1/2 hidden group-hover:flex gap-0.5">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6"
-                onClick={(e) => { e.stopPropagation(); openEdit(cat) }}
-              >
-                <Pencil className="w-3 h-3" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6 text-destructive hover:text-destructive"
-                onClick={(e) => { e.stopPropagation(); setDeleteTarget(cat) }}
-              >
-                <Trash2 className="w-3 h-3" />
-              </Button>
-            </div>
+            {/* 액션 버튼 — 오너/admin 에게만 노출 */}
+            {canMutate(cat) && (
+              <div className="absolute right-2 top-1/2 -translate-y-1/2 hidden group-hover:flex gap-0.5">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6"
+                  onClick={(e) => { e.stopPropagation(); openEdit(cat) }}
+                >
+                  <Pencil className="w-3 h-3" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 text-destructive hover:text-destructive"
+                  onClick={(e) => { e.stopPropagation(); setDeleteTarget(cat) }}
+                >
+                  <Trash2 className="w-3 h-3" />
+                </Button>
+              </div>
+            )}
           </div>
         ))}
       </div>

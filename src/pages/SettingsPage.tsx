@@ -17,6 +17,7 @@
 // ============================================================
 
 import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -24,6 +25,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Progress } from '@/components/ui/progress'
 import { Separator } from '@/components/ui/separator'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useAuth } from '@/hooks/useAuth'
 import { useProfile, useUpdateProfile, type ProfileEditable } from '@/hooks/useProfile'
 import {
@@ -35,9 +37,11 @@ import {
   LogOut,
   Save,
   Undo2,
+  Building2,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { formatDate } from '@/lib/utils'
+import { OrganizationSettings } from '@/components/settings/OrganizationSettings'
 
 // UI state 의 타입. 폼은 모두 string 으로 다루고, 저장 시점에 number 로 변환.
 interface FormState {
@@ -66,6 +70,17 @@ export default function SettingsPage() {
   const { user, signOut } = useAuth()
   const { data: profile, isLoading } = useProfile()
   const updateMut = useUpdateProfile()
+
+  // ?tab=organization 으로 딥링크 지원 (OrgSwitcher 에서 호출)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const rawTab = searchParams.get('tab')
+  const activeTab = rawTab === 'organization' ? 'organization' : 'profile'
+  const setActiveTab = (value: string) => {
+    const next = new URLSearchParams(searchParams)
+    if (value === 'profile') next.delete('tab')
+    else next.set('tab', value)
+    setSearchParams(next, { replace: true })
+  }
 
   // 서버 값 → form 초기화. 서버 값이 바뀌면(다른 탭 저장 등) 동기화.
   const initialForm = useMemo(() => toForm(profile), [profile])
@@ -128,6 +143,19 @@ export default function SettingsPage() {
 
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-3xl mx-auto p-4 sm:p-6 space-y-6 pb-28">
+          <Tabs value={activeTab} onValueChange={setActiveTab}>
+            <TabsList>
+              <TabsTrigger value="profile">
+                <UserIcon className="w-3.5 h-3.5 mr-1.5" />
+                프로필
+              </TabsTrigger>
+              <TabsTrigger value="organization">
+                <Building2 className="w-3.5 h-3.5 mr-1.5" />
+                조직
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="profile" className="space-y-6 mt-4">
           {isLoading || !profile ? (
             <div className="space-y-4">
               <Skeleton className="h-40 w-full" />
@@ -335,12 +363,18 @@ export default function SettingsPage() {
               </Card>
             </>
           )}
+            </TabsContent>
+
+            <TabsContent value="organization" className="mt-4">
+              <OrganizationSettings />
+            </TabsContent>
+          </Tabs>
         </div>
       </div>
 
-      {/* 변경 사항 저장 바 — dirty 일 때만 등장.
+      {/* 변경 사항 저장 바 — dirty 일 때만 등장. profile 탭에서만 의미있음.
           pb-3-safe: 하단 padding 에 iOS 홈바 inset 을 더해 버튼이 가려지지 않음. */}
-      {dirty && (
+      {dirty && activeTab === 'profile' && (
         <div className="border-t bg-card px-6 pt-3 pb-3-safe flex items-center justify-between gap-3 sticky bottom-0">
           <span className="text-sm text-muted-foreground">
             저장되지 않은 변경 사항이 있습니다.

@@ -1,40 +1,56 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from './useAuth'
-import type { TemplateInsert, TemplateUpdate } from '@/types/template'
+import type { TemplateInsert, TemplateUpdate, TemplateWithOwner } from '@/types/template'
 import { toast } from 'sonner'
 
 const QK = 'templates'
 
-export function useTemplates() {
-  const { user } = useAuth()
+// 템플릿 범위:
+//   'mine' = 내가 만든 템플릿만
+//   'org'  = 현재 조직의 전체 템플릿 (오너 표시)
+export type TemplateScope = 'mine' | 'org'
+
+// useTemplates — 리스트 조회.
+// 기본 범위는 'org' (조직 공유). 페이지에서 오너 필터 UI 로 'mine' 전환.
+// 반환에 profiles 조인 — UI 에서 오너명/이메일 표시.
+export function useTemplates(scope: TemplateScope = 'org') {
+  const { user, currentOrg } = useAuth()
 
   return useQuery({
-    queryKey: [QK],
+    queryKey: [QK, currentOrg?.id, scope],
     queryFn: async () => {
-      const { data, error } = await supabase
+      let query = supabase
         .from('templates')
-        .select('*')
-        .eq('user_id', user!.id)
+        .select('*, profiles:user_id(email, display_name)')
+        .eq('org_id', currentOrg!.id)
         .order('updated_at', { ascending: false })
+
+      if (scope === 'mine') {
+        query = query.eq('user_id', user!.id)
+      }
+
+      const { data, error } = await query
       if (error) throw error
-      return data ?? []
+      return (data ?? []) as unknown as TemplateWithOwner[]
     },
-    enabled: !!user,
+    enabled: !!user && !!currentOrg,
   })
 }
 
 export function useCreateTemplate() {
-  const { user } = useAuth()
+  const { user, currentOrg } = useAuth()
   const qc = useQueryClient()
 
   return useMutation({
-    mutationFn: async (data: Omit<TemplateInsert, 'user_id'>) => {
-      console.log('[createTemplate] start', { data, userId: user?.id })
+    mutationFn: async (data: Omit<TemplateInsert, 'user_id' | 'org_id'>) => {
+      console.log('[createTemplate] start', { data, userId: user?.id, orgId: currentOrg?.id })
       if (!user) throw new Error('로그인이 필요합니다.')
+      if (!currentOrg) throw new Error('현재 조직이 설정되지 않았습니다.')
       const { data: result, error } = await supabase
         .from('templates')
-        .insert({ ...data, user_id: user.id })
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .insert({ ...data, user_id: user.id, org_id: currentOrg.id } as any)
         .select()
         .single()
       console.log('[createTemplate] result', { result, error })
