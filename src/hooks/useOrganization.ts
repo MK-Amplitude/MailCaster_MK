@@ -223,13 +223,25 @@ export function useInviteMember() {
     },
     onSuccess: (_data, { orgId }) => {
       qc.invalidateQueries({ queryKey: [ORG_INVITATIONS_KEY, orgId] })
-      toast.success('초대가 발송되었습니다.')
+      // 주의: 초대 = DB 레코드 생성일 뿐, 실제 메일은 발송되지 않음.
+      // 상대방이 같은 이메일로 로그인하면 accept_pending_invitations RPC 가
+      // 자동 수락 → org_members 에 추가됨 (016 참조).
+      toast.success('초대 목록에 추가되었습니다', {
+        description:
+          '상대방이 해당 이메일로 로그인하면 자동으로 합류됩니다. 앱 주소를 공유해주세요.',
+      })
     },
     onError: (e: Error) => {
-      const msg = e.message.includes('duplicate')
-        ? '이미 초대된 이메일입니다.'
-        : e.message || '초대 실패'
-      toast.error(msg)
+      // org_invitations UNIQUE(org_id, email) 위반 시 duplicate 에러.
+      // 이미 pending 초대가 있다는 뜻 — 재초대할 필요 없음.
+      if (e.message.includes('duplicate')) {
+        toast.error('이미 대기 중인 초대가 있습니다', {
+          description:
+            '상대방이 로그인하면 자동 합류됩니다. 취소 후 재초대하려면 아래 "대기 중 초대"에서 X 버튼을 누르세요.',
+        })
+        return
+      }
+      toast.error(e.message || '초대 실패')
     },
   })
 }
