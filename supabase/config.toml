@@ -7,3 +7,15 @@ verify_jwt = false
 
 [functions.refresh-google-token]
 verify_jwt = false
+
+[functions.send-scheduled-campaigns]
+# pg_cron 이 Bearer <CRON_SECRET> 으로 자체 인증하므로 jwt 검증은 끈다.
+verify_jwt = false
+
+[functions.check-replies]
+# pg_cron 이 Bearer <CRON_SECRET> 으로 자체 인증하므로 jwt 검증은 끈다.
+verify_jwt = false
+
+[functions.track-open]
+# 이메일 클라이언트의 단순 GET 픽셀 요청이므로 jwt 검증 불가.
+verify_jwt = false
