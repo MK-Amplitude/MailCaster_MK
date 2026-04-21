@@ -129,6 +129,7 @@ export function useCreateContact() {
         resolveCompanyForContact({
           rawName: result.company_raw,
           contactId: result.id,
+          email: result.email,
           qc,
         })
       }
@@ -159,14 +160,21 @@ export function useUpdateContact() {
       }
       const { error } = await supabase.from('contacts').update(payload).eq('id', id)
       if (error) throw error
-      return { id, companyChanged: 'company' in data, company: data.company }
+      return {
+        id,
+        companyChanged: 'company' in data,
+        company: data.company,
+        email: typeof payload.email === 'string' ? payload.email : undefined,
+      }
     },
-    onSuccess: ({ id, companyChanged, company }) => {
+    onSuccess: ({ id, companyChanged, company, email }) => {
       qc.invalidateQueries({ queryKey: [QUERY_KEY] })
       qc.invalidateQueries({ queryKey: [COMMON_QUERY_KEY] })
       toast.success('연락처가 수정되었습니다.')
       if (companyChanged && company && company.trim()) {
-        resolveCompanyForContact({ rawName: company, contactId: id, qc })
+        // email 이 동시 변경된 경우만 전달 — 아니면 Edge Function 이
+        // contact_id 로 DB 에서 조회해 도메인 힌트를 추출.
+        resolveCompanyForContact({ rawName: company, contactId: id, email, qc })
       }
     },
     onError: () => toast.error('수정 실패'),
