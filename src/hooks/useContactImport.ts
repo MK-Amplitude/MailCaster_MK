@@ -115,7 +115,7 @@ export function useContactImport() {
       validRows.push({ row, displayRow })
     })
 
-    const resolveQueue: Array<{ id: string; rawName: string }> = []
+    const resolveQueue: Array<{ id: string; rawName: string; email?: string | null }> = []
 
     const rowToUpsert = (row: ParsedRow) => {
       const company = row[mapping.company]?.trim() || null
@@ -168,7 +168,7 @@ export function useContactImport() {
                 )
             }
             if (one.company_raw) {
-              resolveQueue.push({ id: one.id, rawName: one.company_raw })
+              resolveQueue.push({ id: one.id, rawName: one.company_raw, email: one.email })
             }
           }
         }
@@ -184,7 +184,7 @@ export function useContactImport() {
 
         for (const c of data) {
           if (c.company_raw) {
-            resolveQueue.push({ id: c.id, rawName: c.company_raw })
+            resolveQueue.push({ id: c.id, rawName: c.company_raw, email: c.email })
           }
         }
       }
