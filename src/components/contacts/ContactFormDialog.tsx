@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useForm } from 'react-hook-form'
+import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import {
@@ -14,11 +14,18 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { useCreateContact, useUpdateContact } from '@/hooks/useContacts'
 import { resolveCompanyForContact } from '@/lib/resolveCompany'
 import { useQueryClient } from '@tanstack/react-query'
 import { Sparkles, Loader2 } from 'lucide-react'
-import type { Contact } from '@/types/contact'
+import { CUSTOMER_TYPE_OPTIONS, type Contact, type CustomerType } from '@/types/contact'
 
 const schema = z.object({
   email: z.string().email('올바른 이메일 형식을 입력하세요.'),
@@ -28,6 +35,8 @@ const schema = z.object({
   job_title: z.string().optional(),
   phone: z.string().optional(),
   memo: z.string().optional(),
+  // 폼 입력 시점에는 optional (default 'general' 적용), submit 후에는 보장됨.
+  customer_type: z.enum(['amplitude_customer', 'prospect', 'general']).optional(),
 })
 
 type FormData = z.infer<typeof schema>
@@ -49,9 +58,11 @@ export function ContactFormDialog({ open, onOpenChange, contact }: ContactFormDi
     register,
     handleSubmit,
     reset,
+    control,
     formState: { errors },
   } = useForm<FormData>({
     resolver: zodResolver(schema),
+    defaultValues: { customer_type: 'general' },
   })
 
   useEffect(() => {
@@ -66,8 +77,9 @@ export function ContactFormDialog({ open, onOpenChange, contact }: ContactFormDi
               job_title: contact.job_title ?? '',
               phone: contact.phone ?? '',
               memo: contact.memo ?? '',
+              customer_type: (contact.customer_type as CustomerType | null) ?? 'general',
             }
-          : {}
+          : { customer_type: 'general' }
       )
     }
   }, [open, contact, reset])
@@ -160,6 +172,31 @@ export function ContactFormDialog({ open, onOpenChange, contact }: ContactFormDi
               <Label htmlFor="job_title">직책</Label>
               <Input id="job_title" placeholder="팀장" {...register('job_title')} />
             </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="customer_type">고객 분류</Label>
+            <Controller
+              control={control}
+              name="customer_type"
+              render={({ field }) => (
+                <Select value={field.value} onValueChange={(v) => field.onChange(v as CustomerType)}>
+                  <SelectTrigger id="customer_type" className="h-9">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {CUSTOMER_TYPE_OPTIONS.map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              메일 그룹 발송 시 분류별로 따로 보낼 수 있어요.
+            </p>
           </div>
 
           <div className="space-y-1.5">

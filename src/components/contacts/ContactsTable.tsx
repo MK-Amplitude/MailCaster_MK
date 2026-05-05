@@ -20,9 +20,25 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import type { ContactWithGroups } from '@/types/contact'
-import { formatDate } from '@/lib/utils'
+import { CUSTOMER_TYPE_OPTIONS, type ContactWithGroups, type CustomerType } from '@/types/contact'
+import { formatDate, cn } from '@/lib/utils'
 import { useAuth } from '@/hooks/useAuth'
+
+function CustomerTypeBadge({ type }: { type: string | null | undefined }) {
+  // 'general' 은 기본값이고 시각적 노이즈를 줄이기 위해 표시 생략.
+  // 명시적으로 분류된 두 케이스만 강조.
+  if (!type || type === 'general') return null
+  const opt = CUSTOMER_TYPE_OPTIONS.find((o) => o.value === (type as CustomerType))
+  if (!opt) return null
+  return (
+    <Badge
+      variant="outline"
+      className={cn('text-[10px] py-0 px-1.5 h-4 border', opt.className)}
+    >
+      {opt.label}
+    </Badge>
+  )
+}
 
 interface ContactsTableProps {
   contacts: ContactWithGroups[]
@@ -98,10 +114,11 @@ export function ContactsTable({
               </TableCell>
               <TableCell>
                 <div className="flex flex-col gap-0.5">
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="font-medium text-sm truncate max-w-[180px] sm:max-w-none">
                       {contact.name ?? '이름 없음'}
                     </span>
+                    <CustomerTypeBadge type={contact.customer_type} />
                     <StatusBadge
                       isUnsubscribed={contact.is_unsubscribed}
                       isBounced={contact.is_bounced}

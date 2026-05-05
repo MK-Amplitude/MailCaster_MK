@@ -23,10 +23,22 @@ import {
   useContactsCommon,
   useDeleteContacts,
   useToggleUnsubscribe,
+  useBulkUpdateCustomerType,
   type ContactScope,
 } from '@/hooks/useContacts'
-import { UserPlus, Upload, Users, Search, UserX, Trash2, FolderPlus } from 'lucide-react'
-import type { ContactWithGroups, ContactStatus } from '@/types/contact'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { UserPlus, Upload, Users, Search, UserX, Trash2, FolderPlus, Tag } from 'lucide-react'
+import {
+  CUSTOMER_TYPE_OPTIONS,
+  type ContactWithGroups,
+  type ContactStatus,
+  type CustomerType,
+} from '@/types/contact'
 
 // 연락처 스코프 확장:
 //   'mine' = 내가 오너인 연락처만
@@ -38,6 +50,7 @@ export default function ContactsPage() {
   const [scope, setScope] = useState<ScopeValue>('org')
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState<ContactStatus>('all')
+  const [customerType, setCustomerType] = useState<CustomerType | 'all'>('all')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [selectedCommonKeys, setSelectedCommonKeys] = useState<Set<string>>(new Set())
   const [formOpen, setFormOpen] = useState(false)
@@ -55,6 +68,7 @@ export default function ContactsPage() {
   } = useContacts({
     groupIds: [],
     status,
+    customerType,
     scope: scope === 'common' ? 'org' : scope,
   })
 
@@ -100,6 +114,7 @@ export default function ContactsPage() {
   const displayCount = scope === 'common' ? filteredCommon.length : contacts.length
   const deleteContacts = useDeleteContacts()
   const toggleUnsub = useToggleUnsubscribe()
+  const bulkUpdateType = useBulkUpdateCustomerType()
 
   const handleSelectId = (id: string, checked: boolean) => {
     setSelectedIds((prev) => {
@@ -208,6 +223,15 @@ export default function ContactsPage() {
     setFormOpen(true)
   }
 
+  // 분류 변경 액션 — common 뷰에서는 expandedCommonContactIds, 일반에서는 selectedIds 사용.
+  const handleBulkChangeCustomerType = async (type: CustomerType) => {
+    const ids =
+      scope === 'common' ? expandedCommonContactIds : [...selectedIds]
+    if (ids.length === 0) return
+    await bulkUpdateType.mutateAsync({ contactIds: ids, customerType: type })
+    clearSelection()
+  }
+
   return (
     <div className="flex flex-col h-full">
       {/* 헤더 */}
@@ -268,6 +292,25 @@ export default function ContactsPage() {
               )}
             </SelectContent>
           </Select>
+          {/* 고객 분류 필터 — common 뷰는 dedup 단위라 분류 매핑이 모호하므로 숨김 */}
+          {scope !== 'common' && (
+            <Select
+              value={customerType}
+              onValueChange={(v) => setCustomerType(v as CustomerType | 'all')}
+            >
+              <SelectTrigger className="h-8 w-36 text-sm" title="고객 분류">
+                <SelectValue placeholder="고객 분류" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">분류 전체</SelectItem>
+                {CUSTOMER_TYPE_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
         </div>
       </div>
 
@@ -324,6 +367,34 @@ export default function ContactsPage() {
             label: '그룹에 추가',
             icon: <FolderPlus className="w-3.5 h-3.5 mr-1" />,
             onClick: () => setAddToGroupOpen(true),
+          },
+          {
+            label: '분류 변경',
+            node: (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-9 md:h-7 text-xs rounded-full"
+                    disabled={bulkUpdateType.isPending}
+                  >
+                    <Tag className="w-3.5 h-3.5 mr-1" />
+                    분류 변경
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="center">
+                  {CUSTOMER_TYPE_OPTIONS.map((opt) => (
+                    <DropdownMenuItem
+                      key={opt.value}
+                      onClick={() => handleBulkChangeCustomerType(opt.value)}
+                    >
+                      {opt.label}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ),
           },
           {
             label: '수신거부',
