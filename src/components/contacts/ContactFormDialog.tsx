@@ -21,7 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { useCreateContact, useUpdateContact } from '@/hooks/useContacts'
+import { useCreateContact, useUpdateContact, useParentGroupOptions } from '@/hooks/useContacts'
 import { resolveCompanyForContact } from '@/lib/resolveCompany'
 import { useQueryClient } from '@tanstack/react-query'
 import { Sparkles, Loader2 } from 'lucide-react'
@@ -37,6 +37,8 @@ const schema = z.object({
   memo: z.string().optional(),
   // 폼 입력 시점에는 optional (default 'general' 적용), submit 후에는 보장됨.
   customer_type: z.enum(['amplitude_customer', 'prospect', 'general']).optional(),
+  // 그룹사 — 자유 입력. 빈 문자열은 저장 시 null 로 변환.
+  parent_group: z.string().optional(),
 })
 
 type FormData = z.infer<typeof schema>
@@ -53,6 +55,8 @@ export function ContactFormDialog({ open, onOpenChange, contact }: ContactFormDi
   const update = useUpdateContact()
   const qc = useQueryClient()
   const [resolving, setResolving] = useState(false)
+  // 그룹사 자동완성용 — 기존 데이터에 있는 그룹사 목록
+  const { data: parentGroupOptions = [] } = useParentGroupOptions()
 
   const {
     register,
@@ -78,17 +82,23 @@ export function ContactFormDialog({ open, onOpenChange, contact }: ContactFormDi
               phone: contact.phone ?? '',
               memo: contact.memo ?? '',
               customer_type: (contact.customer_type as CustomerType | null) ?? 'general',
+              parent_group: contact.parent_group ?? '',
             }
-          : { customer_type: 'general' }
+          : { customer_type: 'general', parent_group: '' }
       )
     }
   }, [open, contact, reset])
 
   const onSubmit = async (data: FormData) => {
+    // 빈 문자열 → null 정규화 (특히 parent_group 은 NULL 의미가 명확해야 함)
+    const payload = {
+      ...data,
+      parent_group: data.parent_group?.trim() ? data.parent_group.trim() : null,
+    }
     if (isEdit && contact) {
-      await update.mutateAsync({ id: contact.id, data })
+      await update.mutateAsync({ id: contact.id, data: payload })
     } else {
-      await create.mutateAsync(data)
+      await create.mutateAsync(payload)
     }
     onOpenChange(false)
   }
@@ -174,30 +184,47 @@ export function ContactFormDialog({ open, onOpenChange, contact }: ContactFormDi
             </div>
           </div>
 
-          <div className="space-y-1.5">
-            <Label htmlFor="customer_type">고객 분류</Label>
-            <Controller
-              control={control}
-              name="customer_type"
-              render={({ field }) => (
-                <Select value={field.value} onValueChange={(v) => field.onChange(v as CustomerType)}>
-                  <SelectTrigger id="customer_type" className="h-9">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {CUSTOMER_TYPE_OPTIONS.map((opt) => (
-                      <SelectItem key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-            />
-            <p className="text-[11px] text-muted-foreground">
-              메일 그룹 발송 시 분류별로 따로 보낼 수 있어요.
-            </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="customer_type">고객 분류</Label>
+              <Controller
+                control={control}
+                name="customer_type"
+                render={({ field }) => (
+                  <Select value={field.value} onValueChange={(v) => field.onChange(v as CustomerType)}>
+                    <SelectTrigger id="customer_type" className="h-9">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {CUSTOMER_TYPE_OPTIONS.map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="parent_group">그룹사</Label>
+              <Input
+                id="parent_group"
+                list="contact-form-parent-groups"
+                placeholder="롯데, 카카오, ... (선택 또는 입력)"
+                autoComplete="off"
+                {...register('parent_group')}
+              />
+              <datalist id="contact-form-parent-groups">
+                {parentGroupOptions.map((g) => (
+                  <option key={g} value={g} />
+                ))}
+              </datalist>
+            </div>
           </div>
+          <p className="text-[11px] text-muted-foreground -mt-2">
+            메일 그룹 발송 시 분류/그룹사별로 따로 보낼 수 있어요. AI 가 회사명 분석 후 자동 채워주지만 수동 수정도 가능합니다.
+          </p>
 
           <div className="space-y-1.5">
             <Label htmlFor="memo">메모</Label>
