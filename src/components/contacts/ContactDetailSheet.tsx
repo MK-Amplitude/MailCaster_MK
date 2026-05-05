@@ -1,6 +1,8 @@
+import { useEffect, useState } from 'react'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { StatusBadge } from '@/components/common/StatusBadge'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -21,7 +23,7 @@ import { formatDateTime, cn } from '@/lib/utils'
 import { useContactHistory } from '@/hooks/useContactHistory'
 import type { ContactHistoryRow } from '@/hooks/useContactHistory'
 import { useAuth } from '@/hooks/useAuth'
-import { useUpdateContact } from '@/hooks/useContacts'
+import { useUpdateContact, useParentGroupOptions } from '@/hooks/useContacts'
 
 interface ContactDetailSheetProps {
   contact: ContactWithGroups | null
@@ -170,14 +172,10 @@ export function ContactDetailSheet({
                   </div>
                 </InfoRow>
               )}
-              {contact.parent_group && (
-                <InfoRow icon={Network} label="그룹사 (AI)">
-                  <Badge
-                    variant="outline"
-                    className="text-xs border-violet-200 dark:border-violet-800 text-violet-700 dark:text-violet-300 bg-violet-50/60 dark:bg-violet-900/20"
-                  >
-                    {contact.parent_group}
-                  </Badge>
+              {/* 그룹사 — AI 자동 식별 + 사용자 수동 편집 (combobox: 기존 옵션 선택 또는 직접 입력) */}
+              {(canMutate || contact.parent_group) && (
+                <InfoRow icon={Network} label="그룹사">
+                  <ParentGroupEditor contact={contact} canMutate={canMutate} />
                 </InfoRow>
               )}
               {contact.job_title && (
@@ -298,6 +296,79 @@ export function ContactDetailSheet({
   )
 }
 
+// 그룹사 인라인 편집기 — datalist 로 기존 그룹사를 자동완성 + 자유 입력 둘 다 지원.
+// blur 또는 Enter 시 저장, Esc 취소.
+function ParentGroupEditor({
+  contact,
+  canMutate,
+}: {
+  contact: ContactWithGroups
+  canMutate: boolean
+}) {
+  const updateContact = useUpdateContact()
+  const { data: options = [] } = useParentGroupOptions()
+  const [value, setValue] = useState(contact.parent_group ?? '')
+
+  // 다른 contact 로 전환되거나 외부에서 값이 바뀌면 동기화
+  useEffect(() => {
+    setValue(contact.parent_group ?? '')
+  }, [contact.id, contact.parent_group])
+
+  const save = () => {
+    const trimmed = value.trim()
+    const newValue = trimmed === '' ? null : trimmed
+    if (newValue === (contact.parent_group ?? null)) return
+    updateContact.mutate({ id: contact.id, data: { parent_group: newValue } })
+  }
+
+  if (!canMutate) {
+    return contact.parent_group ? (
+      <Badge
+        variant="outline"
+        className="text-xs border-violet-200 dark:border-violet-800 text-violet-700 dark:text-violet-300 bg-violet-50/60 dark:bg-violet-900/20"
+      >
+        {contact.parent_group}
+      </Badge>
+    ) : (
+      <span className="text-xs text-muted-foreground">-</span>
+    )
+  }
+
+  // datalist id 는 contact 마다 unique 해야 함 — 같은 페이지에 여러 detail sheet 가 떠도 충돌 없음
+  const listId = `parent-group-options-${contact.id}`
+
+  return (
+    <div className="flex flex-col gap-1 w-full">
+      <Input
+        list={listId}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault()
+            ;(e.currentTarget as HTMLInputElement).blur()
+          } else if (e.key === 'Escape') {
+            setValue(contact.parent_group ?? '')
+            ;(e.currentTarget as HTMLInputElement).blur()
+          }
+        }}
+        placeholder="예: 롯데, 카카오, 또는 직접 입력"
+        className="h-8 text-xs"
+        disabled={updateContact.isPending}
+      />
+      <datalist id={listId}>
+        {options.map((g) => (
+          <option key={g} value={g} />
+        ))}
+      </datalist>
+      <p className="text-[10px] text-muted-foreground">
+        목록에서 선택하거나 새 그룹명을 직접 입력. Enter 또는 다른 곳 클릭 시 저장.
+      </p>
+    </div>
+  )
+}
+
 function InfoRow({
   icon: Icon,
   label,
@@ -330,6 +401,7 @@ const FIELD_LABELS: Record<string, string> = {
   phone: '전화번호',
   memo: '메모',
   customer_type: '고객 분류',
+  parent_group: '그룹사',
 }
 
 function HistoryEntry({ row }: { row: ContactHistoryRow }) {
