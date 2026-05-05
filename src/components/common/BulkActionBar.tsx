@@ -15,8 +15,10 @@ import { X } from 'lucide-react'
 interface BulkAction {
   label: string
   icon?: React.ReactNode
-  onClick: () => void
+  onClick?: () => void
   variant?: 'default' | 'destructive' | 'outline'
+  /** 커스텀 노드 (예: DropdownMenu wrapper). 제공되면 onClick/variant 등 표준 Button 렌더링을 대체. */
+  node?: React.ReactNode
 }
 
 interface BulkActionBarProps {
@@ -34,18 +36,24 @@ export function BulkActionBar({ selectedCount, actions, onClear }: BulkActionBar
         <span className="text-sm font-medium text-muted-foreground mr-1 shrink-0">
           {selectedCount}개 선택됨
         </span>
-        {actions.map((action) => (
-          <Button
-            key={action.label}
-            variant={action.variant ?? 'outline'}
-            size="sm"
-            onClick={action.onClick}
-            className="h-9 md:h-7 text-xs rounded-full shrink-0"
-          >
-            {action.icon}
-            {action.label}
-          </Button>
-        ))}
+        {actions.map((action) =>
+          action.node ? (
+            <div key={action.label} className="shrink-0">
+              {action.node}
+            </div>
+          ) : (
+            <Button
+              key={action.label}
+              variant={action.variant ?? 'outline'}
+              size="sm"
+              onClick={action.onClick}
+              className="h-9 md:h-7 text-xs rounded-full shrink-0"
+            >
+              {action.icon}
+              {action.label}
+            </Button>
+          )
+        )}
         <Button
           variant="ghost"
           size="icon"

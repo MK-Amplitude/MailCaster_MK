@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from './useAuth'
-import type { ContactInsert, ContactUpdate, ContactWithGroups, ContactFilters } from '@/types/contact'
+import type { ContactInsert, ContactUpdate, ContactWithGroups, ContactFilters, CustomerType } from '@/types/contact'
 import type { ContactCommon } from '@/types/org'
 import { resolveCompanyForContact } from '@/lib/resolveCompany'
 import { toast } from 'sonner'
@@ -50,6 +50,11 @@ export function useContacts(filters?: ContactQueryOptions) {
       } else if (filters?.status === 'needs_verification') {
         // 회사명 확인이 필요한 상태들 (pending=재시도 대기, failed=에러, not_found=모델이 모름)
         query = query.in('company_lookup_status', ['pending', 'failed', 'not_found'])
+      }
+
+      // 고객 분류 필터 (Phase 9). 'all' 또는 undefined 면 무필터.
+      if (filters?.customerType && filters.customerType !== 'all') {
+        query = query.eq('customer_type', filters.customerType)
       }
 
       const { data, error } = await query.range(0, CONTACTS_FETCH_RANGE_END)
@@ -274,6 +279,46 @@ export function useRemoveContactFromGroup() {
     onError: (e: Error) => {
       console.error('[removeContactFromGroup] failed:', e)
       toast.error(e.message || '그룹에서 제거 실패')
+    },
+  })
+}
+
+// Phase 9: 다수 연락처의 customer_type 을 일괄 변경.
+// 벌크 액션 바에서 호출 — 본인 오너이거나 admin 인 row 만 RLS 가 통과시킴.
+export function useBulkUpdateCustomerType() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async ({
+      contactIds,
+      customerType,
+    }: {
+      contactIds: string[]
+      customerType: CustomerType
+    }) => {
+      if (contactIds.length === 0) return 0
+      const { data, error } = await supabase
+        .from('contacts')
+        .update({ customer_type: customerType })
+        .in('id', contactIds)
+        .select('id')
+      if (error) throw error
+      return (data ?? []).length
+    },
+    onSuccess: (updatedCount, { contactIds }) => {
+      qc.invalidateQueries({ queryKey: [QUERY_KEY] })
+      qc.invalidateQueries({ queryKey: [COMMON_QUERY_KEY] })
+      // RLS 로 인해 일부만 갱신될 수 있음 — 수치 차이를 알려줘 사용자가 인지하도록.
+      if (updatedCount < contactIds.length) {
+        toast.success(
+          `${updatedCount}명 변경 완료 (권한 없는 ${contactIds.length - updatedCount}명은 건너뜀)`
+        )
+      } else {
+        toast.success(`${updatedCount}명의 분류가 변경되었습니다.`)
+      }
+    },
+    onError: (e: Error) => {
+      console.error('[bulkUpdateCustomerType] failed:', e)
+      toast.error(e.message || '분류 변경 실패')
     },
   })
 }
