@@ -24,6 +24,7 @@ import {
   useDeleteContacts,
   useToggleUnsubscribe,
   useBulkUpdateCustomerType,
+  useParentGroupOptions,
   type ContactScope,
 } from '@/hooks/useContacts'
 import {
@@ -118,17 +119,10 @@ export default function ContactsPage() {
   const toggleUnsub = useToggleUnsubscribe()
   const bulkUpdateType = useBulkUpdateCustomerType()
 
-  // 그룹사 필터 옵션 — 현재 데이터에서 동적으로 추출 (정렬 + dedup).
-  // parentGroup 필터가 적용되면 결과가 줄어드므로, 옵션 산출은 unfiltered 결과 기반.
-  // 단순화: allContacts 기준 (status / customerType / parentGroup 모두 적용된 결과지만,
-  // 사용 빈도상 그룹사 옵션은 자주 바뀌지 않으므로 충분).
-  const parentGroupOptions = useMemo(() => {
-    const set = new Set<string>()
-    for (const c of allContacts) {
-      if (c.parent_group && c.parent_group.trim()) set.add(c.parent_group)
-    }
-    return [...set].sort((a, b) => a.localeCompare(b, 'ko'))
-  }, [allContacts])
+  // 그룹사 필터 옵션 — 별도 쿼리로 unfiltered distinct 값을 가져옴.
+  // (allContacts 기반으로 추출하면 '그룹 미소속' 선택 시 옵션이 0개가 되어
+  // dropdown 자체가 사라지는 순환 문제가 발생함.)
+  const { data: parentGroupOptions = [] } = useParentGroupOptions()
 
   const handleSelectId = (id: string, checked: boolean) => {
     setSelectedIds((prev) => {
@@ -325,8 +319,10 @@ export default function ContactsPage() {
               </SelectContent>
             </Select>
           )}
-          {/* 그룹사 필터 (Phase 9.1) — AI 가 식별한 한국 대기업 계열만 표시 */}
-          {scope !== 'common' && parentGroupOptions.length > 0 && (
+          {/* 그룹사 필터 (Phase 9.1) — AI 가 식별한 한국 대기업 계열.
+              옵션이 비어 있어도 항상 렌더 — 안 그러면 '그룹 미소속' 선택 시
+              dropdown 이 사라져서 다른 값으로 못 바꾸는 stuck 상태가 됨. */}
+          {scope !== 'common' && (
             <Select value={parentGroup} onValueChange={(v) => setParentGroup(v)}>
               <SelectTrigger className="h-8 w-36 text-sm" title="그룹사">
                 <SelectValue placeholder="그룹사" />

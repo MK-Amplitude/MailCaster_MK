@@ -76,6 +76,36 @@ export function useContacts(filters?: ContactQueryOptions) {
   })
 }
 
+// 그룹사 옵션 — 현재 조직의 contacts.parent_group 의 distinct 값.
+// ContactsPage 필터 dropdown 의 동적 옵션 소스.
+//
+// 별도 쿼리로 분리한 이유: 메인 useContacts 는 parentGroup 필터가 적용되므로
+// 필터 결과에서 옵션을 뽑으면 "그룹 미소속" 선택 시 옵션 0개 → dropdown
+// 자체가 사라지는 순환 문제가 생긴다. 옵션은 항상 unfiltered 데이터에서 추출.
+export function useParentGroupOptions() {
+  const { currentOrg } = useAuth()
+  return useQuery({
+    queryKey: ['parent-group-options', currentOrg?.id],
+    queryFn: async (): Promise<string[]> => {
+      const { data, error } = await supabase
+        .from('contacts')
+        .select('parent_group')
+        .eq('org_id', currentOrg!.id)
+        .not('parent_group', 'is', null)
+        .range(0, 9999)
+      if (error) throw error
+      const set = new Set<string>()
+      for (const r of (data ?? []) as Array<{ parent_group: string | null }>) {
+        if (r.parent_group && r.parent_group.trim()) set.add(r.parent_group)
+      }
+      return [...set].sort((a, b) => a.localeCompare(b, 'ko'))
+    },
+    enabled: !!currentOrg,
+    // 옵션은 자주 안 바뀌므로 길게 캐시. 데이터 재수집 시 자연스럽게 갱신.
+    staleTime: 60_000,
+  })
+}
+
 // "공통(dedupe)" 뷰 — 같은 이메일의 중복 연락처를 하나로 합쳐서 본다.
 // campaigns 수신자 선택 시 중복 발송 방지 용도로도 사용.
 export function useContactsCommon() {
