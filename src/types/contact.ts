@@ -68,4 +68,6 @@ export interface ContactFilters {
   groupIds?: string[]
   status?: ContactStatus
   customerType?: CustomerType | 'all'
+  /** 한국 대기업 그룹사 필터 — 'all' 또는 '__none__' 또는 그룹사명 (예: '롯데') */
+  parentGroup?: string | 'all' | '__none__'
 }

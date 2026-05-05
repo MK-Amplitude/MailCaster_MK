@@ -11,7 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Pencil, UserX, UserCheck, Building2, Phone, Clock, FileText, Sparkles, User, History, Tag } from 'lucide-react'
+import { Pencil, UserX, UserCheck, Building2, Phone, Clock, FileText, Sparkles, User, History, Tag, Network } from 'lucide-react'
 import {
   CUSTOMER_TYPE_OPTIONS,
   type ContactWithGroups,
@@ -168,6 +168,16 @@ export function ContactDetailSheet({
                       </div>
                     )}
                   </div>
+                </InfoRow>
+              )}
+              {contact.parent_group && (
+                <InfoRow icon={Network} label="그룹사 (AI)">
+                  <Badge
+                    variant="outline"
+                    className="text-xs border-violet-200 dark:border-violet-800 text-violet-700 dark:text-violet-300 bg-violet-50/60 dark:bg-violet-900/20"
+                  >
+                    {contact.parent_group}
+                  </Badge>
                 </InfoRow>
               )}
               {contact.job_title && (

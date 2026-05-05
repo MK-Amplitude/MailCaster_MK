@@ -51,6 +51,7 @@ export default function ContactsPage() {
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState<ContactStatus>('all')
   const [customerType, setCustomerType] = useState<CustomerType | 'all'>('all')
+  const [parentGroup, setParentGroup] = useState<string | 'all' | '__none__'>('all')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [selectedCommonKeys, setSelectedCommonKeys] = useState<Set<string>>(new Set())
   const [formOpen, setFormOpen] = useState(false)
@@ -69,6 +70,7 @@ export default function ContactsPage() {
     groupIds: [],
     status,
     customerType,
+    parentGroup,
     scope: scope === 'common' ? 'org' : scope,
   })
 
@@ -115,6 +117,18 @@ export default function ContactsPage() {
   const deleteContacts = useDeleteContacts()
   const toggleUnsub = useToggleUnsubscribe()
   const bulkUpdateType = useBulkUpdateCustomerType()
+
+  // 그룹사 필터 옵션 — 현재 데이터에서 동적으로 추출 (정렬 + dedup).
+  // parentGroup 필터가 적용되면 결과가 줄어드므로, 옵션 산출은 unfiltered 결과 기반.
+  // 단순화: allContacts 기준 (status / customerType / parentGroup 모두 적용된 결과지만,
+  // 사용 빈도상 그룹사 옵션은 자주 바뀌지 않으므로 충분).
+  const parentGroupOptions = useMemo(() => {
+    const set = new Set<string>()
+    for (const c of allContacts) {
+      if (c.parent_group && c.parent_group.trim()) set.add(c.parent_group)
+    }
+    return [...set].sort((a, b) => a.localeCompare(b, 'ko'))
+  }, [allContacts])
 
   const handleSelectId = (id: string, checked: boolean) => {
     setSelectedIds((prev) => {
@@ -306,6 +320,23 @@ export default function ContactsPage() {
                 {CUSTOMER_TYPE_OPTIONS.map((opt) => (
                   <SelectItem key={opt.value} value={opt.value}>
                     {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+          {/* 그룹사 필터 (Phase 9.1) — AI 가 식별한 한국 대기업 계열만 표시 */}
+          {scope !== 'common' && parentGroupOptions.length > 0 && (
+            <Select value={parentGroup} onValueChange={(v) => setParentGroup(v)}>
+              <SelectTrigger className="h-8 w-36 text-sm" title="그룹사">
+                <SelectValue placeholder="그룹사" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">그룹사 전체</SelectItem>
+                <SelectItem value="__none__">그룹 미소속 (독립)</SelectItem>
+                {parentGroupOptions.map((g) => (
+                  <SelectItem key={g} value={g}>
+                    {g}
                   </SelectItem>
                 ))}
               </SelectContent>

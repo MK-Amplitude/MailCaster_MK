@@ -57,6 +57,17 @@ export function useContacts(filters?: ContactQueryOptions) {
         query = query.eq('customer_type', filters.customerType)
       }
 
+      // 그룹사 필터 (Phase 9.1)
+      //   '__none__' → parent_group IS NULL (그룹사 미지정/독립 기업만)
+      //   그 외 값  → eq match
+      if (filters?.parentGroup && filters.parentGroup !== 'all') {
+        if (filters.parentGroup === '__none__') {
+          query = query.is('parent_group', null)
+        } else {
+          query = query.eq('parent_group', filters.parentGroup)
+        }
+      }
+
       const { data, error } = await query.range(0, CONTACTS_FETCH_RANGE_END)
       if (error) throw error
       return (data ?? []) as unknown as ContactWithGroups[]
