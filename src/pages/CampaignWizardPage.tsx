@@ -110,6 +110,8 @@ async function resolveBasketEmails(
       .from('contact_groups')
       .select('contacts!inner(email, is_unsubscribed, is_bounced)')
       .in('group_id', groupIds)
+      // PostgREST 기본 1000행 cap 우회 — 대형 그룹 cc/bcc 시 수신자 누락 방지
+      .range(0, 9999)
     if (error) {
       console.error('[wizard] resolve cc/bcc groups failed:', error)
       throw error
@@ -134,6 +136,8 @@ async function resolveBasketEmails(
       .from('contacts')
       .select('email, is_unsubscribed, is_bounced')
       .in('id', contactIds)
+      // PostgREST 기본 1000행 cap 우회 — 대량 cc/bcc 선택 시 일부 누락 방지
+      .range(0, 9999)
     if (error) {
       console.error('[wizard] resolve cc/bcc contacts failed:', error)
       throw error
@@ -775,6 +779,8 @@ export default function CampaignWizardPage() {
             'contacts!inner(id, email, name, company, department, job_title, is_unsubscribed, is_bounced)'
           )
           .in('group_id', selectedGroupIds)
+          // PostgREST 기본 1000행 cap 우회 — 대형 그룹 선택 시 수신자 누락 방지
+          .range(0, 9999)
 
         if (cancelled) return
         if (error) {
@@ -795,6 +801,8 @@ export default function CampaignWizardPage() {
           .from('contacts')
           .select('id, email, name, company, department, job_title, is_unsubscribed, is_bounced')
           .in('id', selectedContactIds)
+          // PostgREST 기본 1000행 cap 우회 — 미리보기/발송 단계에서 수신자 누락 방지
+          .range(0, 9999)
 
         if (cancelled) return
         if (error) {

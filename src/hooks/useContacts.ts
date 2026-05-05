@@ -18,6 +18,11 @@ export interface ContactQueryOptions extends ContactFilters {
   scope?: ContactScope
 }
 
+// Supabase PostgREST 의 응답 행 수 cap 을 우회하기 위해 큰 range 를 명시.
+// 기본 cap(=1000) 을 넘는 조직(ex: 1k+ 연락처) 에서 일부가 안 보이는 문제 방지.
+// 현재 정책: 단일 조직 최대 1만 명까지 안전. 이를 넘기면 서버 측 페이지네이션으로 전환 필요.
+const CONTACTS_FETCH_RANGE_END = 9999
+
 export function useContacts(filters?: ContactQueryOptions) {
   const { user, currentOrg } = useAuth()
   const scope: ContactScope = filters?.scope ?? 'org'
@@ -47,7 +52,7 @@ export function useContacts(filters?: ContactQueryOptions) {
         query = query.in('company_lookup_status', ['pending', 'failed', 'not_found'])
       }
 
-      const { data, error } = await query
+      const { data, error } = await query.range(0, CONTACTS_FETCH_RANGE_END)
       if (error) throw error
       return (data ?? []) as unknown as ContactWithGroups[]
     },
@@ -68,6 +73,7 @@ export function useContactsCommon() {
         .select('*')
         .eq('org_id', currentOrg!.id)
         .order('first_created_at', { ascending: false })
+        .range(0, CONTACTS_FETCH_RANGE_END)
       if (error) throw error
       return (data ?? []) as ContactCommon[]
     },
