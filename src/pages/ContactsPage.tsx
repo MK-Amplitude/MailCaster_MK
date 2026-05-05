@@ -26,6 +26,7 @@ import {
   useBulkUpdateCustomerType,
   useParentGroupOptions,
   type ContactScope,
+  type ContactSort,
 } from '@/hooks/useContacts'
 import {
   DropdownMenu,
@@ -53,6 +54,7 @@ export default function ContactsPage() {
   const [status, setStatus] = useState<ContactStatus>('all')
   const [customerType, setCustomerType] = useState<CustomerType | 'all'>('all')
   const [parentGroup, setParentGroup] = useState<string | 'all' | '__none__'>('all')
+  const [sort, setSort] = useState<ContactSort>({ field: 'created_at', dir: 'desc' })
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [selectedCommonKeys, setSelectedCommonKeys] = useState<Set<string>>(new Set())
   const [formOpen, setFormOpen] = useState(false)
@@ -72,6 +74,7 @@ export default function ContactsPage() {
     status,
     customerType,
     parentGroup,
+    sort,
     scope: scope === 'common' ? 'org' : scope,
   })
 
@@ -381,6 +384,8 @@ export default function ContactsPage() {
             onDelete={(c) => setDeleteTarget(c)}
             onToggleUnsubscribe={handleToggleUnsub}
             onRowClick={handleRowClick}
+            sort={sort}
+            onSortChange={setSort}
           />
         )}
       </div>

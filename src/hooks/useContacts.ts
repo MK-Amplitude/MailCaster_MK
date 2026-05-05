@@ -14,8 +14,22 @@ const COMMON_QUERY_KEY = 'contacts-common'
 //   'org'  = 현재 조직의 전체 연락처 (소유자별 중복 유지 — 오너 컬럼으로 구분)
 export type ContactScope = 'mine' | 'org'
 
+// 정렬 가능한 컬럼들. contact_with_groups view 의 컬럼에 매핑됨.
+export type ContactSortField =
+  | 'name'
+  | 'parent_group'
+  | 'company_ko'
+  | 'owner_name'
+  | 'created_at'
+
+export interface ContactSort {
+  field: ContactSortField
+  dir: 'asc' | 'desc'
+}
+
 export interface ContactQueryOptions extends ContactFilters {
   scope?: ContactScope
+  sort?: ContactSort
 }
 
 // Supabase PostgREST 의 응답 행 수 cap 을 우회하기 위해 큰 range 를 명시.
@@ -30,10 +44,17 @@ export function useContacts(filters?: ContactQueryOptions) {
   return useQuery({
     queryKey: [QUERY_KEY, currentOrg?.id, scope, filters],
     queryFn: async () => {
+      // 정렬 — 기본은 등록일 내림차순. 사용자가 헤더 클릭 시 동적으로 변경.
+      // NULL 값은 항상 끝에 표시 (ASC/DESC 모두) — 빈 값이 위에 와서 노이즈 되는 걸 방지.
+      const sortField = filters?.sort?.field ?? 'created_at'
+      const sortAsc = (filters?.sort?.dir ?? 'desc') === 'asc'
+
       let query = supabase
         .from('contact_with_groups')
         .select('*')
         .eq('org_id', currentOrg!.id)
+        .order(sortField, { ascending: sortAsc, nullsFirst: false })
+        // tie-break: 같은 값일 때 일관된 순서 보장 (created_at 으로 안정 정렬)
         .order('created_at', { ascending: false })
 
       if (scope === 'mine') {

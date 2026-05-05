@@ -12,7 +12,16 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { StatusBadge } from '@/components/common/StatusBadge'
-import { MoreHorizontal, Pencil, Trash2, UserX, UserCheck } from 'lucide-react'
+import {
+  MoreHorizontal,
+  Pencil,
+  Trash2,
+  UserX,
+  UserCheck,
+  ChevronUp,
+  ChevronDown,
+  ChevronsUpDown,
+} from 'lucide-react'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -23,6 +32,54 @@ import {
 import { CUSTOMER_TYPE_OPTIONS, type ContactWithGroups, type CustomerType } from '@/types/contact'
 import { formatDate, cn } from '@/lib/utils'
 import { useAuth } from '@/hooks/useAuth'
+import type { ContactSort, ContactSortField } from '@/hooks/useContacts'
+
+// 정렬 가능한 컬럼 헤더 — 클릭 시 asc → desc 토글, 다른 컬럼 클릭 시 asc 부터 시작.
+function SortableHeader({
+  field,
+  current,
+  onChange,
+  children,
+}: {
+  field: ContactSortField
+  current?: ContactSort
+  onChange?: (next: ContactSort) => void
+  children: React.ReactNode
+}) {
+  const active = current?.field === field
+  const dir = active ? current?.dir : null
+
+  if (!onChange) {
+    return <>{children}</>
+  }
+
+  const handleClick = () => {
+    if (!active) onChange({ field, dir: 'asc' })
+    else onChange({ field, dir: dir === 'asc' ? 'desc' : 'asc' })
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      className={cn(
+        'flex items-center gap-1 hover:text-foreground transition-colors',
+        active ? 'text-foreground' : 'text-muted-foreground'
+      )}
+    >
+      {children}
+      <span className={active ? 'opacity-100' : 'opacity-40'}>
+        {dir === 'asc' ? (
+          <ChevronUp className="w-3 h-3" />
+        ) : dir === 'desc' ? (
+          <ChevronDown className="w-3 h-3" />
+        ) : (
+          <ChevronsUpDown className="w-3 h-3" />
+        )}
+      </span>
+    </button>
+  )
+}
 
 function CustomerTypeBadge({ type }: { type: string | null | undefined }) {
   // 'general' 은 기본값이고 시각적 노이즈를 줄이기 위해 표시 생략.
@@ -50,6 +107,9 @@ interface ContactsTableProps {
   onDelete: (contact: ContactWithGroups) => void
   onToggleUnsubscribe: (contact: ContactWithGroups) => void
   onRowClick: (contact: ContactWithGroups) => void
+  /** 현재 정렬 상태. 미제공 시 헤더는 클릭 불가 (정렬 없음). */
+  sort?: ContactSort
+  onSortChange?: (next: ContactSort) => void
 }
 
 export function ContactsTable({
@@ -62,6 +122,8 @@ export function ContactsTable({
   onDelete,
   onToggleUnsubscribe,
   onRowClick,
+  sort,
+  onSortChange,
 }: ContactsTableProps) {
   const { user, isOrgAdmin } = useAuth()
   const allSelected = contacts.length > 0 && contacts.every((c) => selectedIds.has(c.id))
@@ -91,11 +153,32 @@ export function ContactsTable({
                 onCheckedChange={(v) => onSelectAll(!!v)}
               />
             </TableHead>
-            <TableHead>이름 / 이메일</TableHead>
-            <TableHead className="hidden sm:table-cell">회사 / 직책</TableHead>
+            <TableHead>
+              <SortableHeader field="name" current={sort} onChange={onSortChange}>
+                이름 / 이메일
+              </SortableHeader>
+            </TableHead>
+            <TableHead className="hidden sm:table-cell">
+              <SortableHeader field="parent_group" current={sort} onChange={onSortChange}>
+                그룹사
+              </SortableHeader>
+            </TableHead>
+            <TableHead className="hidden sm:table-cell">
+              <SortableHeader field="company_ko" current={sort} onChange={onSortChange}>
+                회사 / 직책
+              </SortableHeader>
+            </TableHead>
             <TableHead className="hidden md:table-cell">그룹</TableHead>
-            <TableHead className="hidden xl:table-cell">소유자</TableHead>
-            <TableHead className="hidden lg:table-cell">등록일</TableHead>
+            <TableHead className="hidden xl:table-cell">
+              <SortableHeader field="owner_name" current={sort} onChange={onSortChange}>
+                소유자
+              </SortableHeader>
+            </TableHead>
+            <TableHead className="hidden lg:table-cell">
+              <SortableHeader field="created_at" current={sort} onChange={onSortChange}>
+                등록일
+              </SortableHeader>
+            </TableHead>
             <TableHead className="w-10" />
           </TableRow>
         </TableHeader>
@@ -127,9 +210,16 @@ export function ContactsTable({
                   <span className="text-xs text-muted-foreground truncate max-w-[200px] sm:max-w-none">
                     {contact.email}
                   </span>
-                  {/* 모바일 전용: 회사/그룹 컬럼이 숨겨지므로 이름 셀 안에 요약 표시.
-                      - 회사 + 직책이 있으면 한 줄로, 아래에 그룹 뱃지 최대 2개 */}
+                  {/* 모바일 전용: 회사/그룹사/그룹 컬럼이 숨겨지므로 이름 셀 안에 요약 표시. */}
                   <div className="sm:hidden flex flex-col gap-1 mt-0.5">
+                    {contact.parent_group && (
+                      <Badge
+                        variant="outline"
+                        className="text-[10px] py-0 px-1.5 h-4 self-start border-violet-200 dark:border-violet-800 text-violet-700 dark:text-violet-300 bg-violet-50/60 dark:bg-violet-900/20"
+                      >
+                        {contact.parent_group}
+                      </Badge>
+                    )}
                     {(contact.company || contact.job_title) && (
                       <span className="text-[10px] text-muted-foreground truncate max-w-[220px]">
                         {contact.company ?? ''}
@@ -163,6 +253,20 @@ export function ContactsTable({
                   </div>
                 </div>
               </TableCell>
+              {/* 그룹사 — 이름 다음, 회사 앞에 위치. AI 가 식별한 한국 대기업 계열사. */}
+              <TableCell className="hidden sm:table-cell">
+                {contact.parent_group ? (
+                  <Badge
+                    variant="outline"
+                    className="text-xs py-0 px-2 h-5 border-violet-200 dark:border-violet-800 text-violet-700 dark:text-violet-300 bg-violet-50/60 dark:bg-violet-900/20"
+                    title="그룹사 (AI 식별)"
+                  >
+                    {contact.parent_group}
+                  </Badge>
+                ) : (
+                  <span className="text-xs text-muted-foreground">-</span>
+                )}
+              </TableCell>
               <TableCell className="hidden sm:table-cell">
                 <div className="flex flex-col gap-0.5">
                   <div className="flex items-center gap-1 flex-wrap">
@@ -177,15 +281,6 @@ export function ContactsTable({
                           공식
                         </Badge>
                       )}
-                    {contact.parent_group && (
-                      <Badge
-                        variant="outline"
-                        className="text-[10px] py-0 px-1.5 h-4 border-violet-200 dark:border-violet-800 text-violet-700 dark:text-violet-300 bg-violet-50/60 dark:bg-violet-900/20"
-                        title="그룹사 (AI 식별)"
-                      >
-                        {contact.parent_group}
-                      </Badge>
-                    )}
                   </div>
                   {contact.company_ko && contact.company_ko !== contact.company && (
                     <span className="text-[10px] text-muted-foreground truncate">
