@@ -165,7 +165,7 @@ export function ContactsTable({
               </TableCell>
               <TableCell className="hidden sm:table-cell">
                 <div className="flex flex-col gap-0.5">
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1 flex-wrap">
                     <span className="text-sm">{contact.company ?? '-'}</span>
                     {contact.company_lookup_status === 'resolved' &&
                       (contact.company_ko || contact.company_en) && (
@@ -177,6 +177,15 @@ export function ContactsTable({
                           공식
                         </Badge>
                       )}
+                    {contact.parent_group && (
+                      <Badge
+                        variant="outline"
+                        className="text-[10px] py-0 px-1.5 h-4 border-violet-200 dark:border-violet-800 text-violet-700 dark:text-violet-300 bg-violet-50/60 dark:bg-violet-900/20"
+                        title="그룹사 (AI 식별)"
+                      >
+                        {contact.parent_group}
+                      </Badge>
+                    )}
                   </div>
                   {contact.company_ko && contact.company_ko !== contact.company && (
                     <span className="text-[10px] text-muted-foreground truncate">
