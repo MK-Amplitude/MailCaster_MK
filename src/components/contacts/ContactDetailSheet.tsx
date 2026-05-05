@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -13,17 +13,21 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Pencil, UserX, UserCheck, Building2, Phone, Clock, FileText, Sparkles, User, History, Tag, Network } from 'lucide-react'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Pencil, UserX, UserCheck, Building2, Phone, Clock, FileText, Sparkles, User, History, Tag, Network, Plus, X, FolderPlus, Search } from 'lucide-react'
 import {
   CUSTOMER_TYPE_OPTIONS,
   type ContactWithGroups,
   type CustomerType,
+  type ContactGroupInfo,
 } from '@/types/contact'
 import { formatDateTime, cn } from '@/lib/utils'
 import { useContactHistory } from '@/hooks/useContactHistory'
 import type { ContactHistoryRow } from '@/hooks/useContactHistory'
 import { useAuth } from '@/hooks/useAuth'
 import { useUpdateContact, useParentGroupOptions } from '@/hooks/useContacts'
+import { useGroups, useAddMemberToGroup, useRemoveMemberFromGroup } from '@/hooks/useGroups'
+import { matchesSearch } from '@/lib/search'
 
 interface ContactDetailSheetProps {
   contact: ContactWithGroups | null
@@ -207,34 +211,12 @@ export function ContactDetailSheet({
 
             <Separator />
 
-            {/* 소속 그룹 */}
+            {/* 소속 그룹 — 인라인 추가/제거 */}
             <section className="space-y-2">
               <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
                 소속 그룹
               </h3>
-              {contact.groups.length === 0 ? (
-                <p className="text-sm text-muted-foreground">소속 그룹 없음</p>
-              ) : (
-                <div className="flex flex-wrap gap-1.5">
-                  {contact.groups.map((g) => (
-                    <Badge
-                      key={g.group_id}
-                      variant="outline"
-                      className="text-xs"
-                      style={
-                        g.category_color
-                          ? { borderColor: g.category_color, color: g.category_color }
-                          : undefined
-                      }
-                    >
-                      {g.category_name && (
-                        <span className="opacity-60 mr-1">{g.category_name} /</span>
-                      )}
-                      {g.group_name}
-                    </Badge>
-                  ))}
-                </div>
-              )}
+              <ContactGroupsEditor contact={contact} canMutate={canMutate} />
             </section>
 
             {/* 메모 */}
@@ -293,6 +275,161 @@ export function ContactDetailSheet({
         </ScrollArea>
       </SheetContent>
     </Sheet>
+  )
+}
+
+// 소속 그룹 인라인 편집기:
+//   - 기존 멤버십을 모두 뱃지로 표시 + canMutate 면 X 클릭으로 제거
+//   - "+ 추가" Popover: 검색 가능한 미가입 그룹 리스트, 클릭 시 즉시 추가
+function ContactGroupsEditor({
+  contact,
+  canMutate,
+}: {
+  contact: ContactWithGroups
+  canMutate: boolean
+}) {
+  const { data: allGroups = [] } = useGroups()
+  const addMember = useAddMemberToGroup()
+  const removeMember = useRemoveMemberFromGroup()
+  const [popoverOpen, setPopoverOpen] = useState(false)
+  const [search, setSearch] = useState('')
+
+  // 이미 가입된 그룹 id set — 추가 picker 에서 필터링
+  const memberGroupIds = useMemo(
+    () => new Set(contact.groups.map((g) => g.group_id)),
+    [contact.groups]
+  )
+
+  // 추가 가능한 그룹 = 전체 그룹 - 이미 멤버인 그룹. 검색어로 추가 필터.
+  const addableGroups = useMemo(() => {
+    const q = search.trim()
+    return allGroups
+      .filter((g) => !memberGroupIds.has(g.id))
+      .filter((g) => {
+        if (!q) return true
+        const cat = g.group_categories?.name ?? ''
+        return matchesSearch(g.name, q) || matchesSearch(cat, q)
+      })
+  }, [allGroups, memberGroupIds, search])
+
+  const handleAdd = async (groupId: string) => {
+    await addMember.mutateAsync({ contactId: contact.id, groupId })
+    // 같은 popover 안에서 연속 추가가 일반적 — 닫지 않고 검색만 초기화
+    setSearch('')
+  }
+
+  const handleRemove = (groupId: string) => {
+    removeMember.mutate({ contactId: contact.id, groupId })
+  }
+
+  if (contact.groups.length === 0 && !canMutate) {
+    return <p className="text-sm text-muted-foreground">소속 그룹 없음</p>
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {contact.groups.length === 0 && canMutate && (
+        <span className="text-sm text-muted-foreground">소속 그룹 없음 —</span>
+      )}
+      {contact.groups.map((g: ContactGroupInfo) => (
+        <Badge
+          key={g.group_id}
+          variant="outline"
+          className="text-xs gap-1 pr-1"
+          style={
+            g.category_color
+              ? { borderColor: g.category_color, color: g.category_color }
+              : undefined
+          }
+        >
+          {g.category_name && (
+            <span className="opacity-60">{g.category_name} /</span>
+          )}
+          {g.group_name}
+          {canMutate && (
+            <button
+              type="button"
+              onClick={() => handleRemove(g.group_id)}
+              disabled={removeMember.isPending}
+              className="ml-0.5 -mr-0.5 rounded-sm hover:bg-foreground/10 transition-colors p-0.5"
+              aria-label={`${g.group_name} 그룹에서 제거`}
+            >
+              <X className="w-3 h-3" />
+            </button>
+          )}
+        </Badge>
+      ))}
+
+      {canMutate && (
+        <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
+          <PopoverTrigger asChild>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-6 text-xs gap-1 px-2"
+            >
+              <Plus className="w-3 h-3" />
+              그룹 추가
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-72 p-0" align="start">
+            <div className="px-3 py-2 border-b">
+              <div className="relative">
+                <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+                <Input
+                  className="pl-7 h-7 text-xs"
+                  placeholder="그룹/카테고리 검색"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  autoFocus
+                />
+              </div>
+            </div>
+            <div className="max-h-64 overflow-y-auto py-1">
+              {allGroups.length === 0 ? (
+                <div className="px-3 py-6 text-center text-xs text-muted-foreground">
+                  <FolderPlus className="w-5 h-5 mx-auto mb-1 opacity-50" />
+                  먼저 그룹 페이지에서 그룹을 만들어주세요.
+                </div>
+              ) : addableGroups.length === 0 ? (
+                <div className="px-3 py-4 text-center text-xs text-muted-foreground">
+                  {search.trim()
+                    ? '검색 결과 없음.'
+                    : '추가 가능한 그룹이 없습니다 (모두 가입됨).'}
+                </div>
+              ) : (
+                addableGroups.map((g) => (
+                  <button
+                    key={g.id}
+                    type="button"
+                    onClick={() => handleAdd(g.id)}
+                    disabled={addMember.isPending}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-accent disabled:opacity-50 transition-colors"
+                  >
+                    {g.group_categories?.color && (
+                      <span
+                        className="w-2 h-2 rounded-full shrink-0"
+                        style={{ backgroundColor: g.group_categories.color }}
+                      />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-medium truncate">{g.name}</div>
+                      {g.group_categories?.name && (
+                        <div className="text-[10px] text-muted-foreground truncate">
+                          {g.group_categories.name}
+                        </div>
+                      )}
+                    </div>
+                    <Plus className="w-3 h-3 text-muted-foreground" />
+                  </button>
+                ))
+              )}
+            </div>
+          </PopoverContent>
+        </Popover>
+      )}
+    </div>
   )
 }
 

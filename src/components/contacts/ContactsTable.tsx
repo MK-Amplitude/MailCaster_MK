@@ -229,7 +229,7 @@ export function ContactsTable({
                     )}
                     {contact.groups.length > 0 && (
                       <div className="flex flex-wrap gap-1">
-                        {contact.groups.slice(0, 2).map((g) => (
+                        {contact.groups.map((g) => (
                           <Badge
                             key={g.group_id}
                             variant="outline"
@@ -243,11 +243,6 @@ export function ContactsTable({
                             {g.group_name}
                           </Badge>
                         ))}
-                        {contact.groups.length > 2 && (
-                          <Badge variant="outline" className="text-[10px] py-0 px-1.5 h-4">
-                            +{contact.groups.length - 2}
-                          </Badge>
-                        )}
                       </div>
                     )}
                   </div>
@@ -294,8 +289,10 @@ export function ContactsTable({
                 </div>
               </TableCell>
               <TableCell className="hidden md:table-cell">
-                <div className="flex flex-wrap gap-1">
-                  {contact.groups.slice(0, 3).map((g) => (
+                {/* 모든 그룹 표시 — flex-wrap 으로 자연스럽게 줄바꿈. 많으면 행이 살짝 높아지지만
+                    소속 정보가 데이터 신뢰성에 중요하므로 일부만 보여주고 가리지 않음. */}
+                <div className="flex flex-wrap gap-1 max-w-md">
+                  {contact.groups.map((g) => (
                     <Badge
                       key={g.group_id}
                       variant="outline"
@@ -309,11 +306,6 @@ export function ContactsTable({
                       {g.group_name}
                     </Badge>
                   ))}
-                  {contact.groups.length > 3 && (
-                    <Badge variant="outline" className="text-xs py-0 px-1.5">
-                      +{contact.groups.length - 3}
-                    </Badge>
-                  )}
                 </div>
               </TableCell>
               <TableCell className="hidden xl:table-cell text-xs">
