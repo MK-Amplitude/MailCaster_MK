@@ -44,6 +44,8 @@ export function useGroupMembers(groupId: string) {
         .select('added_at, contacts(id, email, name, company, department, job_title, is_unsubscribed, is_bounced)')
         .eq('group_id', groupId)
         .order('added_at', { ascending: false })
+        // PostgREST 기본 1000행 cap 우회 — 대형 그룹 멤버 표시 시 일부 누락 방지
+        .range(0, 9999)
       if (error) throw error
       type MemberRow = { added_at: string; contacts: { id: string; email: string; name: string | null; company: string | null; department: string | null; job_title: string | null; is_unsubscribed: boolean; is_bounced: boolean } | null }
       return (data as unknown as MemberRow[]).map((row) => ({ ...row.contacts, added_at: row.added_at }))
