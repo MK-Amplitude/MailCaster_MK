@@ -4,12 +4,24 @@ import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
 import { StatusBadge } from '@/components/common/StatusBadge'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Pencil, UserX, UserCheck, Building2, Phone, Clock, FileText, Sparkles, User, History } from 'lucide-react'
-import type { ContactWithGroups } from '@/types/contact'
-import { formatDateTime } from '@/lib/utils'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { Pencil, UserX, UserCheck, Building2, Phone, Clock, FileText, Sparkles, User, History, Tag } from 'lucide-react'
+import {
+  CUSTOMER_TYPE_OPTIONS,
+  type ContactWithGroups,
+  type CustomerType,
+} from '@/types/contact'
+import { formatDateTime, cn } from '@/lib/utils'
 import { useContactHistory } from '@/hooks/useContactHistory'
 import type { ContactHistoryRow } from '@/hooks/useContactHistory'
 import { useAuth } from '@/hooks/useAuth'
+import { useUpdateContact } from '@/hooks/useContacts'
 
 interface ContactDetailSheetProps {
   contact: ContactWithGroups | null
@@ -28,10 +40,19 @@ export function ContactDetailSheet({
 }: ContactDetailSheetProps) {
   const { data: history = [] } = useContactHistory(contact?.id)
   const { user, isOrgAdmin } = useAuth()
+  const updateContact = useUpdateContact()
   // 오너 또는 org admin 만 수정/수신거부 토글 가능 — RLS 와 일치
   const canMutate = !!contact && (contact.user_id === user?.id || isOrgAdmin)
 
+  const handleCustomerTypeChange = (value: CustomerType) => {
+    if (!contact || value === (contact.customer_type ?? 'general')) return
+    updateContact.mutate({ id: contact.id, data: { customer_type: value } })
+  }
+
   if (!contact) return null
+
+  const currentType = (contact.customer_type as CustomerType | null) ?? 'general'
+  const currentTypeOpt = CUSTOMER_TYPE_OPTIONS.find((o) => o.value === currentType)
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -90,6 +111,39 @@ export function ContactDetailSheet({
               <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
                 기본 정보
               </h3>
+              {/* 고객 분류 — 인라인 즉시 편집 (저장 후 토스트 표시됨) */}
+              <InfoRow icon={Tag} label="고객 분류">
+                {canMutate ? (
+                  <Select
+                    value={currentType}
+                    onValueChange={(v) => handleCustomerTypeChange(v as CustomerType)}
+                    disabled={updateContact.isPending}
+                  >
+                    <SelectTrigger
+                      className={cn(
+                        'h-7 w-fit min-w-[140px] text-xs gap-1.5 px-2 border',
+                        currentTypeOpt?.className
+                      )}
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {CUSTOMER_TYPE_OPTIONS.map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <Badge
+                    variant="outline"
+                    className={cn('text-xs border', currentTypeOpt?.className)}
+                  >
+                    {currentTypeOpt?.label ?? '일반'}
+                  </Badge>
+                )}
+              </InfoRow>
               {contact.company && (
                 <InfoRow icon={Building2} label="회사 (입력값)">
                   <span>{contact.company}</span>
@@ -265,6 +319,7 @@ const FIELD_LABELS: Record<string, string> = {
   job_title: '직책',
   phone: '전화번호',
   memo: '메모',
+  customer_type: '고객 분류',
 }
 
 function HistoryEntry({ row }: { row: ContactHistoryRow }) {
