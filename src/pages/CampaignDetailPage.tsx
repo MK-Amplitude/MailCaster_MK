@@ -14,13 +14,13 @@ import {
 import { useCampaignBlocks } from '@/hooks/useCampaignBlocks'
 import { useSendCampaign } from '@/hooks/useSendCampaign'
 import { useCampaignAttachments } from '@/hooks/useAttachments'
-import { useContactById, useToggleUnsubscribe } from '@/hooks/useContacts'
+import { useContactById, useToggleUnsubscribe, useContactsTitleMap } from '@/hooks/useContacts'
 import { ContactDetailSheet } from '@/components/contacts/ContactDetailSheet'
 import { ContactFormDialog } from '@/components/contacts/ContactFormDialog'
 import type { ContactWithGroups } from '@/types/contact'
 import { formatBytes } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import {
@@ -98,6 +98,22 @@ export default function CampaignDetailPage() {
   const [editFormOpen, setEditFormOpen] = useState(false)
   const { data: openContact = null } = useContactById(openContactId)
   const toggleUnsub = useToggleUnsubscribe()
+
+  // 수신자 직책 컬럼을 LIVE 한 contact 데이터로 표시.
+  // recipients.variables.job_title 은 캠페인 생성 시점 스냅샷이라 사용자가 그 사이
+  // 사용 직책 (display_title) 을 수정하면 stale 해짐. 별도 batch 조회로 최신값 적용.
+  const recipientContactIds = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          recipients
+            .map((r) => r.contact_id)
+            .filter((v): v is string => typeof v === 'string' && v.length > 0)
+        )
+      ),
+    [recipients]
+  )
+  const { data: liveTitleMap } = useContactsTitleMap(recipientContactIds)
 
   if (isLoading || !campaign) {
     return (
@@ -584,11 +600,17 @@ export default function CampaignDetailPage() {
                       const showOpened = r.opened && !r.bounced
                       const showReplied = r.replied && !r.bounced
                       const hasActivity = showOpened || showReplied || r.bounced
-                      // recipients.variables.job_title 은 캠페인 생성 시점에
-                      // display_title ?? job_title 로 이미 resolved 됨 (CampaignWizardPage 참조).
-                      // → 메일 본문의 {{job_title}} 와 동일한 값을 미리보기에 노출.
+                      // 직책 컬럼: LIVE contact 의 사용 직책(display_title || job_title) 우선,
+                      // contact 가 없거나 (deleted) 비어 있으면 캠페인 스냅샷 사용.
                       const vars = (r.variables ?? {}) as Record<string, string | undefined>
-                      const recipientTitle = vars.job_title?.trim() || ''
+                      const snapshotTitle = vars.job_title?.trim() || ''
+                      const liveTitle = r.contact_id ? liveTitleMap?.get(r.contact_id) : undefined
+                      const displayTitle = liveTitle || snapshotTitle
+                      // 스냅샷과 live 가 다르면 mail 발송 시 어떤 값이 쓰일지 안내 (편집 → 저장 시 갱신됨)
+                      const titleStale =
+                        liveTitle !== undefined &&
+                        snapshotTitle !== '' &&
+                        liveTitle !== snapshotTitle
                       return (
                         <tr key={r.id} className="border-t">
                           <td className="px-4 py-2 truncate max-w-[240px]">
@@ -611,11 +633,25 @@ export default function CampaignDetailPage() {
                           <td className="px-4 py-2 text-muted-foreground">{r.name ?? '-'}</td>
                           <td
                             className="px-4 py-2 text-muted-foreground truncate max-w-[180px]"
-                            title={vars.job_title_raw && vars.job_title_raw !== recipientTitle
-                              ? `원본: ${vars.job_title_raw}`
-                              : undefined}
+                            title={
+                              titleStale
+                                ? `최신값: ${liveTitle}\n발송 예정값(스냅샷): ${snapshotTitle}\n→ 편집 → 저장하면 최신값으로 갱신됨`
+                                : vars.job_title_raw && vars.job_title_raw !== displayTitle
+                                ? `원본: ${vars.job_title_raw}`
+                                : undefined
+                            }
                           >
-                            {recipientTitle || '-'}
+                            <span className="inline-flex items-center gap-1">
+                              {displayTitle || '-'}
+                              {titleStale && (
+                                <span
+                                  className="text-amber-500 text-xs"
+                                  aria-label="스냅샷과 다름"
+                                >
+                                  ⚠
+                                </span>
+                              )}
+                            </span>
                           </td>
                           <td className={`px-4 py-2 ${meta.color}`}>
                             <div className="flex items-center gap-1.5">

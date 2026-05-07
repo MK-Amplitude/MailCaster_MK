@@ -148,6 +148,39 @@ export function useContactsCommon() {
   })
 }
 
+// 다수 연락처 ID 로 효과적 직책(display_title || job_title)만 batch 조회.
+// 캠페인 수신자 목록의 직책 컬럼이 "메일 발송용 직책" 을 실시간 반영하도록 사용.
+// (recipients.variables 는 캠페인 생성 시점 스냅샷이라 사용자가 contact 에서 사용 직책을
+// 바꾸면 stale 해진다 — 이 훅은 항상 최신 contact 데이터를 반환.)
+export function useContactsTitleMap(ids: string[]) {
+  // ID 정렬해서 안정적인 query key — 동일한 set 이면 캐시 재사용
+  const key = [...ids].sort().join(',')
+  return useQuery({
+    queryKey: [QUERY_KEY, 'title-map', key],
+    queryFn: async (): Promise<Map<string, string>> => {
+      if (ids.length === 0) return new Map()
+      const { data, error } = await supabase
+        .from('contacts')
+        .select('id, job_title, display_title')
+        .in('id', ids)
+        .range(0, 9999)
+      if (error) throw error
+      const map = new Map<string, string>()
+      for (const r of (data ?? []) as Array<{
+        id: string
+        job_title: string | null
+        display_title: string | null
+      }>) {
+        const effective = r.display_title?.trim() || r.job_title || ''
+        if (effective) map.set(r.id, effective)
+      }
+      return map
+    },
+    enabled: ids.length > 0,
+    staleTime: 30_000,
+  })
+}
+
 // 단일 연락처 조회 — 캠페인 수신자 목록 등에서 contact_id 만 알고 ContactDetailSheet
 // 를 띄워야 할 때 사용. enabled=false 로 시작해 클릭 시점에만 fetch.
 export function useContactById(contactId: string | null | undefined) {
