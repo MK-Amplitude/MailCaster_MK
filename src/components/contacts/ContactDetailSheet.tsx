@@ -183,8 +183,15 @@ export function ContactDetailSheet({
                 </InfoRow>
               )}
               {contact.job_title && (
-                <InfoRow icon={FileText} label="직책">
-                  {contact.job_title}
+                <InfoRow icon={FileText} label="직책 (원본)">
+                  <div className="space-y-0.5">
+                    <div>{contact.job_title}</div>
+                    {contact.display_title && contact.display_title !== contact.job_title && (
+                      <div className="text-xs text-muted-foreground">
+                        ↳ 메일에는 <span className="font-medium text-foreground">{contact.display_title}</span> 사용
+                      </div>
+                    )}
+                  </div>
                 </InfoRow>
               )}
               {contact.phone && (
@@ -539,6 +546,7 @@ const FIELD_LABELS: Record<string, string> = {
   memo: '메모',
   customer_type: '고객 분류',
   parent_group: '그룹사',
+  display_title: '사용 직책',
 }
 
 function HistoryEntry({ row }: { row: ContactHistoryRow }) {

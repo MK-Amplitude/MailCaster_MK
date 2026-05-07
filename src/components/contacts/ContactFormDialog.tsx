@@ -33,11 +33,12 @@ const schema = z.object({
   company: z.string().optional(),
   department: z.string().optional(),
   job_title: z.string().optional(),
+  // 사용 직책 — job_title 이 "팀장/리드" 처럼 복수일 때 메일에 쓸 대표 직책.
+  // 비우면 job_title 그대로 사용.
+  display_title: z.string().optional(),
   phone: z.string().optional(),
   memo: z.string().optional(),
-  // 폼 입력 시점에는 optional (default 'general' 적용), submit 후에는 보장됨.
   customer_type: z.enum(['amplitude_customer', 'prospect', 'general']).optional(),
-  // 그룹사 — 자유 입력. 빈 문자열은 저장 시 null 로 변환.
   parent_group: z.string().optional(),
 })
 
@@ -79,21 +80,23 @@ export function ContactFormDialog({ open, onOpenChange, contact }: ContactFormDi
               company: contact.company ?? '',
               department: contact.department ?? '',
               job_title: contact.job_title ?? '',
+              display_title: contact.display_title ?? '',
               phone: contact.phone ?? '',
               memo: contact.memo ?? '',
               customer_type: (contact.customer_type as CustomerType | null) ?? 'general',
               parent_group: contact.parent_group ?? '',
             }
-          : { customer_type: 'general', parent_group: '' }
+          : { customer_type: 'general', parent_group: '', display_title: '' }
       )
     }
   }, [open, contact, reset])
 
   const onSubmit = async (data: FormData) => {
-    // 빈 문자열 → null 정규화 (특히 parent_group 은 NULL 의미가 명확해야 함)
+    // 빈 문자열 → null 정규화 (parent_group / display_title 둘 다 NULL 의미가 명확해야 함)
     const payload = {
       ...data,
       parent_group: data.parent_group?.trim() ? data.parent_group.trim() : null,
+      display_title: data.display_title?.trim() ? data.display_title.trim() : null,
     }
     if (isEdit && contact) {
       await update.mutateAsync({ id: contact.id, data: payload })
@@ -179,9 +182,22 @@ export function ContactFormDialog({ open, onOpenChange, contact }: ContactFormDi
               <Input id="department" placeholder="마케팅팀" {...register('department')} />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="job_title">직책</Label>
-              <Input id="job_title" placeholder="팀장" {...register('job_title')} />
+              <Label htmlFor="job_title">직책 (원본)</Label>
+              <Input id="job_title" placeholder="팀장 또는 팀장/리드" {...register('job_title')} />
             </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="display_title">사용 직책 (메일 발송용)</Label>
+            <Input
+              id="display_title"
+              placeholder="비우면 위 '직책'을 그대로 사용. 복수 직책이면 한 가지만 입력."
+              {...register('display_title')}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              메일 템플릿의 <code className="px-1 py-0.5 rounded bg-muted text-[10px]">{'{{job_title}}'}</code> 가 이 값을 우선 사용합니다.
+              비워두면 직책(원본)이 그대로 들어갑니다.
+            </p>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

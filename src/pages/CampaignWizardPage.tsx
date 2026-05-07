@@ -77,7 +77,10 @@ interface PreviewContact {
   name: string | null
   company: string | null
   department: string | null
+  /** 사용 직책 (display_title) > 원본 직책 (job_title) — 메일 템플릿 {{job_title}} 으로 들어감 */
   job_title: string | null
+  /** 원본 직책 — 메일 템플릿 {{job_title_raw}} 로 접근 가능 (선택) */
+  job_title_raw?: string | null
 }
 
 interface TemplateOpt {
@@ -679,6 +682,7 @@ export default function CampaignWizardPage() {
               company: vars.company ?? null,
               department: vars.department ?? null,
               job_title: vars.job_title ?? null,
+              job_title_raw: vars.job_title_raw ?? vars.job_title ?? null,
             }
           })
           setFixedRecipients(fixed)
@@ -705,6 +709,7 @@ export default function CampaignWizardPage() {
               company: vars.company ?? null,
               department: vars.department ?? null,
               job_title: vars.job_title ?? null,
+              job_title_raw: vars.job_title_raw ?? vars.job_title ?? null,
             }
           })
           setFixedRecipients(fixed)
@@ -766,6 +771,7 @@ export default function CampaignWizardPage() {
         company: string | null
         department: string | null
         job_title: string | null
+        display_title: string | null
         is_unsubscribed: boolean
         is_bounced: boolean
       }
@@ -776,7 +782,7 @@ export default function CampaignWizardPage() {
         const { data, error } = await supabase
           .from('contact_groups')
           .select(
-            'contacts!inner(id, email, name, company, department, job_title, is_unsubscribed, is_bounced)'
+            'contacts!inner(id, email, name, company, department, job_title, display_title, is_unsubscribed, is_bounced)'
           )
           .in('group_id', selectedGroupIds)
           // PostgREST 기본 1000행 cap 우회 — 대형 그룹 선택 시 수신자 누락 방지
@@ -799,7 +805,7 @@ export default function CampaignWizardPage() {
       if (selectedContactIds.length > 0) {
         const { data, error } = await supabase
           .from('contacts')
-          .select('id, email, name, company, department, job_title, is_unsubscribed, is_bounced')
+          .select('id, email, name, company, department, job_title, display_title, is_unsubscribed, is_bounced')
           .in('id', selectedContactIds)
           // PostgREST 기본 1000행 cap 우회 — 미리보기/발송 단계에서 수신자 누락 방지
           .range(0, 9999)
@@ -824,13 +830,16 @@ export default function CampaignWizardPage() {
         if (!em) continue
         if (seenEmails.has(em)) continue
         seenEmails.add(em)
+        // 사용 직책 우선 — 비어있으면 원본 직책 사용. 메일 템플릿 {{job_title}} 가 이 값을 받음.
+        const effectiveTitle = c.display_title?.trim() || c.job_title || null
         byId.set(c.id, {
           id: c.id,
           email: c.email,
           name: c.name,
           company: c.company,
           department: c.department,
-          job_title: c.job_title,
+          job_title: effectiveTitle,
+          job_title_raw: c.job_title,
         })
       }
 
@@ -1382,7 +1391,10 @@ export default function CampaignWizardPage() {
               email: c.email,
               company: c.company ?? '',
               department: c.department ?? '',
+              // job_title 은 사용 직책 우선 적용된 값 — 메일 템플릿 {{job_title}} 가 받음
               job_title: c.job_title ?? '',
+              // 원본 직책도 함께 보관 — 필요하면 {{job_title_raw}} 로 호출
+              job_title_raw: c.job_title_raw ?? c.job_title ?? '',
             },
             status: 'pending' as const,
           }))
