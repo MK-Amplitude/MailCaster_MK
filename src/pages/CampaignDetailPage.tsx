@@ -555,6 +555,7 @@ export default function CampaignDetailPage() {
                     <tr>
                       <th className="text-left px-4 py-2 font-medium">이메일</th>
                       <th className="text-left px-4 py-2 font-medium">이름</th>
+                      <th className="text-left px-4 py-2 font-medium">직책</th>
                       <th className="text-left px-4 py-2 font-medium">상태</th>
                       <th className="text-left px-4 py-2 font-medium">활동</th>
                       <th className="text-left px-4 py-2 font-medium">발송 시각</th>
@@ -572,10 +573,23 @@ export default function CampaignDetailPage() {
                       const showOpened = r.opened && !r.bounced
                       const showReplied = r.replied && !r.bounced
                       const hasActivity = showOpened || showReplied || r.bounced
+                      // recipients.variables.job_title 은 캠페인 생성 시점에
+                      // display_title ?? job_title 로 이미 resolved 됨 (CampaignWizardPage 참조).
+                      // → 메일 본문의 {{job_title}} 와 동일한 값을 미리보기에 노출.
+                      const vars = (r.variables ?? {}) as Record<string, string | undefined>
+                      const recipientTitle = vars.job_title?.trim() || ''
                       return (
                         <tr key={r.id} className="border-t">
                           <td className="px-4 py-2 truncate max-w-[240px]">{r.email}</td>
                           <td className="px-4 py-2 text-muted-foreground">{r.name ?? '-'}</td>
+                          <td
+                            className="px-4 py-2 text-muted-foreground truncate max-w-[180px]"
+                            title={vars.job_title_raw && vars.job_title_raw !== recipientTitle
+                              ? `원본: ${vars.job_title_raw}`
+                              : undefined}
+                          >
+                            {recipientTitle || '-'}
+                          </td>
                           <td className={`px-4 py-2 ${meta.color}`}>
                             <div className="flex items-center gap-1.5">
                               {r.status === 'sending' && (
