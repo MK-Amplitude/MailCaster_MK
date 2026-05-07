@@ -10,7 +10,12 @@ import {
   useCampaignRecipients,
   useDeleteCampaign,
   useUpdateCampaign,
+  useAddRecipientToCampaign,
+  useRemoveRecipientFromCampaign,
 } from '@/hooks/useCampaigns'
+import { useContacts } from '@/hooks/useContacts'
+import { matchesSearch } from '@/lib/search'
+import { Search, X, UserPlus } from 'lucide-react'
 import { useCampaignBlocks } from '@/hooks/useCampaignBlocks'
 import { useSendCampaign } from '@/hooks/useSendCampaign'
 import { useCampaignAttachments } from '@/hooks/useAttachments'
@@ -98,6 +103,36 @@ export default function CampaignDetailPage() {
   const [editFormOpen, setEditFormOpen] = useState(false)
   const { data: openContact = null } = useContactById(openContactId)
   const toggleUnsub = useToggleUnsubscribe()
+
+  // 수신자 추가/제거 (발송 전 캠페인에서만 활성화)
+  const addRecipient = useAddRecipientToCampaign()
+  const removeRecipient = useRemoveRecipientFromCampaign()
+  const [recipientSearch, setRecipientSearch] = useState('')
+  // 추가 검색용 — 전체 조직 연락처 풀에서 매칭
+  const { data: allContacts = [] } = useContacts({ status: 'all' })
+  const existingEmailSet = useMemo(
+    () => new Set(recipients.map((r) => r.email.trim().toLowerCase())),
+    [recipients]
+  )
+  const recipientSearchResults = useMemo(() => {
+    const q = recipientSearch.trim()
+    if (!q) return []
+    return allContacts
+      .filter((c) => {
+        if (c.is_unsubscribed || c.is_bounced) return false
+        if (!c.email) return false
+        if (existingEmailSet.has(c.email.trim().toLowerCase())) return false
+        return (
+          matchesSearch(c.name, q) ||
+          matchesSearch(c.email, q) ||
+          matchesSearch(c.company, q) ||
+          matchesSearch(c.company_ko, q) ||
+          matchesSearch(c.department, q) ||
+          matchesSearch(c.job_title, q)
+        )
+      })
+      .slice(0, 20)
+  }, [allContacts, recipientSearch, existingEmailSet])
 
   // 수신자 직책 컬럼을 LIVE 한 contact 데이터로 표시.
   // recipients.variables.job_title 은 캠페인 생성 시점 스냅샷이라 사용자가 그 사이
@@ -568,8 +603,69 @@ export default function CampaignDetailPage() {
         {/* 수신자 목록 */}
         <Card>
           <CardContent className="p-0">
-            <div className="px-4 py-3 border-b flex items-center justify-between">
+            <div className="px-4 py-3 border-b space-y-2">
               <div className="text-sm font-semibold">수신자 ({recipients.length})</div>
+              {/* 발송 전 캠페인에서만 인라인 추가 — sent/sending 캠페인은 변경 불가 */}
+              {canEdit && (
+                <div className="space-y-1.5">
+                  <div className="relative">
+                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                    <Input
+                      className="pl-8 h-8 text-sm"
+                      placeholder="이름/이메일/회사/부서/직책 검색해서 수신자 추가 (초성 가능)"
+                      value={recipientSearch}
+                      onChange={(e) => setRecipientSearch(e.target.value)}
+                    />
+                  </div>
+                  {recipientSearch.trim() && (
+                    <div className="border rounded-lg bg-popover shadow-sm divide-y max-h-56 overflow-y-auto">
+                      {recipientSearchResults.length === 0 ? (
+                        <div className="p-3 text-xs text-muted-foreground text-center">
+                          매칭되는 연락처가 없거나 이미 모두 수신자입니다.
+                        </div>
+                      ) : (
+                        recipientSearchResults.map((c) => (
+                          <button
+                            key={c.id}
+                            type="button"
+                            disabled={addRecipient.isPending}
+                            onClick={() => {
+                              addRecipient.mutate(
+                                {
+                                  campaignId: id!,
+                                  contact: {
+                                    id: c.id,
+                                    email: c.email,
+                                    name: c.name,
+                                    company: c.company,
+                                    department: c.department,
+                                    job_title: c.job_title,
+                                    display_title: c.display_title,
+                                  },
+                                },
+                                { onSuccess: () => setRecipientSearch('') }
+                              )
+                            }}
+                            className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-accent transition-colors disabled:opacity-50"
+                          >
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium truncate">
+                                {c.name ?? c.email}
+                              </p>
+                              <p className="text-xs text-muted-foreground truncate">
+                                {c.email}
+                                {c.company ? ` · ${c.company}` : ''}
+                                {c.job_title ? ` · ${c.job_title}` : ''}
+                              </p>
+                            </div>
+                            <UserPlus className="w-3.5 h-3.5 text-muted-foreground shrink-0 ml-2" />
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
             <div className="max-h-[480px] overflow-y-auto">
               {recipients.length === 0 ? (
@@ -586,6 +682,7 @@ export default function CampaignDetailPage() {
                       <th className="text-left px-4 py-2 font-medium">상태</th>
                       <th className="text-left px-4 py-2 font-medium">활동</th>
                       <th className="text-left px-4 py-2 font-medium">발송 시각</th>
+                      {canEdit && <th className="w-10 px-2" />}
                     </tr>
                   </thead>
                   <tbody>
@@ -715,6 +812,28 @@ export default function CampaignDetailPage() {
                               ? format(new Date(r.sent_at), 'M월 d일 HH:mm:ss', { locale: ko })
                               : '-'}
                           </td>
+                          {canEdit && (
+                            <td className="w-10 px-2 text-right">
+                              {/* pending 상태만 제거 가능 — 이미 발송된 row 는 보존 (이력) */}
+                              {r.status === 'pending' && (
+                                <button
+                                  type="button"
+                                  disabled={removeRecipient.isPending}
+                                  onClick={() =>
+                                    removeRecipient.mutate({
+                                      recipientId: r.id,
+                                      campaignId: id!,
+                                    })
+                                  }
+                                  className="text-muted-foreground hover:text-destructive transition-colors p-1 rounded hover:bg-destructive/10 disabled:opacity-50"
+                                  aria-label={`${r.email} 수신자 제외`}
+                                  title="수신자에서 제외"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </td>
+                          )}
                         </tr>
                       )
                     })}
