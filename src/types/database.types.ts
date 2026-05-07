@@ -101,6 +101,7 @@ export interface Database {
           company_lookup_at: string | null
           customer_type: string
           parent_group: string | null
+          display_title: string | null
           department: string | null
           job_title: string | null
           phone: string | null
@@ -129,6 +130,7 @@ export interface Database {
           company_lookup_at?: string | null
           customer_type?: string
           parent_group?: string | null
+          display_title?: string | null
           department?: string | null
           job_title?: string | null
           phone?: string | null
@@ -154,6 +156,7 @@ export interface Database {
           company_lookup_at?: string | null
           customer_type?: string
           parent_group?: string | null
+          display_title?: string | null
           department?: string | null
           job_title?: string | null
           phone?: string | null
@@ -1025,6 +1028,7 @@ export interface Database {
           company_lookup_at: string | null
           customer_type: string
           parent_group: string | null
+          display_title: string | null
           department: string | null
           job_title: string | null
           phone: string | null
