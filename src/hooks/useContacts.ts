@@ -148,6 +148,24 @@ export function useContactsCommon() {
   })
 }
 
+// 단일 연락처 조회 — 캠페인 수신자 목록 등에서 contact_id 만 알고 ContactDetailSheet
+// 를 띄워야 할 때 사용. enabled=false 로 시작해 클릭 시점에만 fetch.
+export function useContactById(contactId: string | null | undefined) {
+  return useQuery({
+    queryKey: [QUERY_KEY, 'by-id', contactId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('contact_with_groups')
+        .select('*')
+        .eq('id', contactId!)
+        .maybeSingle()
+      if (error) throw error
+      return (data ?? null) as unknown as ContactWithGroups | null
+    },
+    enabled: !!contactId,
+  })
+}
+
 export function useContactGroups(contactId: string) {
   return useQuery({
     queryKey: ['contact-groups', contactId],

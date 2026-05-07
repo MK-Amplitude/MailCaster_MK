@@ -14,6 +14,10 @@ import {
 import { useCampaignBlocks } from '@/hooks/useCampaignBlocks'
 import { useSendCampaign } from '@/hooks/useSendCampaign'
 import { useCampaignAttachments } from '@/hooks/useAttachments'
+import { useContactById, useToggleUnsubscribe } from '@/hooks/useContacts'
+import { ContactDetailSheet } from '@/components/contacts/ContactDetailSheet'
+import { ContactFormDialog } from '@/components/contacts/ContactFormDialog'
+import type { ContactWithGroups } from '@/types/contact'
 import { formatBytes } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
@@ -87,6 +91,13 @@ export default function CampaignDetailPage() {
   const [rescheduleOpen, setRescheduleOpen] = useState(false)
   const [rescheduleDraft, setRescheduleDraft] = useState<string>('')
   const [sendNowOpen, setSendNowOpen] = useState(false)
+  // 수신자 이메일 클릭 시 ContactDetailSheet 인라인 오픈 — 캠페인 페이지를 떠나지 않고
+  // 사용 직책/그룹사/메모 등을 즉시 수정할 수 있게 한다.
+  const [openContactId, setOpenContactId] = useState<string | null>(null)
+  const [editContact, setEditContact] = useState<ContactWithGroups | null>(null)
+  const [editFormOpen, setEditFormOpen] = useState(false)
+  const { data: openContact = null } = useContactById(openContactId)
+  const toggleUnsub = useToggleUnsubscribe()
 
   if (isLoading || !campaign) {
     return (
@@ -580,7 +591,23 @@ export default function CampaignDetailPage() {
                       const recipientTitle = vars.job_title?.trim() || ''
                       return (
                         <tr key={r.id} className="border-t">
-                          <td className="px-4 py-2 truncate max-w-[240px]">{r.email}</td>
+                          <td className="px-4 py-2 truncate max-w-[240px]">
+                            {r.contact_id ? (
+                              <button
+                                type="button"
+                                onClick={() => setOpenContactId(r.contact_id as string)}
+                                className="text-left hover:text-primary hover:underline transition-colors"
+                                title="클릭하면 연락처 상세 패널이 열립니다 — 사용 직책/그룹사 등을 즉시 수정 가능"
+                              >
+                                {r.email}
+                              </button>
+                            ) : (
+                              // contact_id 가 NULL = 원본 연락처가 삭제된 상태. 클릭 비활성.
+                              <span className="text-muted-foreground" title="원본 연락처가 삭제되어 편집할 수 없습니다.">
+                                {r.email}
+                              </span>
+                            )}
+                          </td>
                           <td className="px-4 py-2 text-muted-foreground">{r.name ?? '-'}</td>
                           <td
                             className="px-4 py-2 text-muted-foreground truncate max-w-[180px]"
@@ -767,6 +794,31 @@ export default function CampaignDetailPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* 수신자 행 이메일 클릭 → 연락처 상세 패널 (인라인 편집) */}
+      <ContactDetailSheet
+        contact={openContact}
+        open={!!openContactId}
+        onOpenChange={(v) => {
+          if (!v) setOpenContactId(null)
+        }}
+        onEdit={(c) => {
+          setEditContact(c)
+          setEditFormOpen(true)
+          setOpenContactId(null)
+        }}
+        onToggleUnsubscribe={(c) =>
+          toggleUnsub.mutate({ id: c.id, unsubscribe: !c.is_unsubscribed })
+        }
+      />
+      <ContactFormDialog
+        open={editFormOpen}
+        onOpenChange={(v) => {
+          setEditFormOpen(v)
+          if (!v) setEditContact(null)
+        }}
+        contact={editContact}
+      />
     </div>
   )
 }
