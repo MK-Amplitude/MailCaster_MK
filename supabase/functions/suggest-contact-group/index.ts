@@ -16,7 +16,11 @@ import { createClient } from 'jsr:@supabase/supabase-js@2'
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY')!
-const OPENAI_MODEL = Deno.env.get('OPENAI_MODEL') ?? 'gpt-4o-mini'
+// 자연어 매칭은 의미 추론이 핵심 — 기본 gpt-4o.
+// company resolver(gpt-4o-mini) 와 분리해 비용/정확도를 독립 관리한다.
+// 비용이 너무 오르면 SUGGEST_GROUP_MODEL=gpt-4o-mini 로 secrets 만 변경하면 됨.
+const OPENAI_MODEL =
+  Deno.env.get('SUGGEST_GROUP_MODEL') ?? 'gpt-4o'
 
 const DEFAULT_MAX = 200
 const MAX_LIMIT = 1000
