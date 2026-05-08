@@ -15,6 +15,7 @@ import { createClient } from 'jsr:@supabase/supabase-js@2'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+const ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY')!
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY')!
 // 자연어 매칭은 의미 추론이 핵심 — 기본 gpt-4o.
 // company resolver(gpt-4o-mini) 와 분리해 비용/정확도를 독립 관리한다.
@@ -68,17 +69,22 @@ Deno.serve(async (req) => {
     if (!description) return json({ error: 'description required' }, 400)
     if (!orgId) return json({ error: 'org_id required' }, 400)
 
-    // 1) 사용자 식별 — JWT 를 명시적으로 getUser 에 전달 (SERVICE_ROLE 와 혼용 시
-    // 인증 흐름이 꼬이는 케이스 회피).
+    // 1) 사용자 식별 — Supabase 권장 패턴: ANON_KEY 클라이언트에 Authorization 헤더 전달
+    const userClient = createClient(SUPABASE_URL, ANON_KEY, {
+      global: { headers: { Authorization: auth } },
+      auth: { persistSession: false },
+    })
+    const { data: userData, error: userErr } = await userClient.auth.getUser()
+    if (userErr || !userData?.user?.id) {
+      console.error('[suggest-contact-group] getUser failed:', userErr)
+      return json({ error: 'invalid token', detail: userErr?.message ?? 'no user' }, 401)
+    }
+    const userId = userData.user.id
+
+    // 2) admin 클라이언트는 RLS 우회용 — org 멤버십 확인 + contacts 조회.
     const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
       auth: { persistSession: false },
     })
-    const { data: userData, error: userErr } = await admin.auth.getUser(userJwt)
-    if (userErr || !userData?.user?.id) {
-      console.error('[suggest-contact-group] getUser failed:', userErr)
-      return json({ error: 'invalid token', detail: userErr?.message }, 401)
-    }
-    const userId = userData.user.id
 
     // 2) org 멤버십 확인
     const { data: membership, error: memErr } = await admin
