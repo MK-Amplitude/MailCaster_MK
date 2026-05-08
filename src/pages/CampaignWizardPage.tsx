@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef, type Dispatch, type SetStateAction } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -286,13 +286,26 @@ export default function CampaignWizardPage() {
   const editCampaignId = searchParams.get('edit')
   const isEditMode = !!editCampaignId
 
+  // 다른 페이지(관계 관리 등) 에서 navigate(state) 로 넘긴 pre-selected contact ids
+  // — 새 캠페인 모드 + reuse/edit 아닌 경우에만 적용.
+  const location = useLocation()
+  const preselectedContactIds: string[] = useMemo(() => {
+    const raw = (location.state as { preselectedContactIds?: unknown })?.preselectedContactIds
+    if (!Array.isArray(raw)) return []
+    return raw.filter((v): v is string => typeof v === 'string')
+  }, [location.state])
+
   const [step, setStep] = useState<Step>(1)
   const [submitting, setSubmitting] = useState(false)
 
   const [name, setName] = useState('')
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([])
-  // Phase 5: 개별 연락처 바구니 — 그룹과 병존, 최종 수신자는 양쪽을 union+dedupe
-  const [selectedContactIds, setSelectedContactIds] = useState<string[]>([])
+  // Phase 5: 개별 연락처 바구니 — 그룹과 병존, 최종 수신자는 양쪽을 union+dedupe.
+  // 관계 관리 등 다른 페이지에서 preselectedContactIds 로 시작하면 초기값으로 채움.
+  // (edit/reuse 모드는 별도 effect 가 덮어쓰므로 초기값만 영향)
+  const [selectedContactIds, setSelectedContactIds] = useState<string[]>(
+    !isEditMode && !reuseFrom ? preselectedContactIds : []
+  )
   // Phase 6 (B): 캠페인 단위 제외 명단 — campaign_exclusions 에 저장.
   // 그룹 union 안의 contact 를 최종 수신자에서 빼고 싶을 때 사용.
   const [excludedContactIds, setExcludedContactIds] = useState<string[]>([])

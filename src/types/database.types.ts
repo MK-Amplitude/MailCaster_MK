@@ -1048,6 +1048,35 @@ export interface Database {
         }
         Relationships: []
       }
+      contact_engagement: {
+        Row: {
+          id: string
+          org_id: string
+          user_id: string
+          email: string
+          name: string | null
+          company: string | null
+          company_ko: string | null
+          company_en: string | null
+          parent_group: string | null
+          customer_type: string | null
+          department: string | null
+          job_title: string | null
+          display_title: string | null
+          is_unsubscribed: boolean
+          is_bounced: boolean
+          contact_created_at: string
+          sent_campaigns: number
+          total_sent: number
+          total_opens: number
+          reply_count: number
+          last_sent_at: string | null
+          last_opened_at: string | null
+          last_replied_at: string | null
+          last_campaign: Json | null
+        }
+        Relationships: []
+      }
       campaign_stats: {
         Row: {
           id: string
