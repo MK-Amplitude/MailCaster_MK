@@ -7,12 +7,13 @@ import { ConfirmDialog } from '@/components/common/ConfirmDialog'
 import { CategoryList } from '@/components/groups/CategoryList'
 import { GroupFormDialog } from '@/components/groups/GroupFormDialog'
 import { GroupMembersSheet } from '@/components/groups/GroupMembersSheet'
+import { AISuggestGroupDialog } from '@/components/groups/AISuggestGroupDialog'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { useGroups, useDeleteGroup } from '@/hooks/useGroups'
 import { useGroupCategories } from '@/hooks/useGroupCategories'
 import { useAuth } from '@/hooks/useAuth'
 import type { Group } from '@/types/group'
-import { Plus, Users, MoreHorizontal, Pencil, Trash2, FolderOpen, Filter, ChevronDown, User } from 'lucide-react'
+import { Plus, Users, MoreHorizontal, Pencil, Trash2, FolderOpen, Filter, ChevronDown, User, Wand2 } from 'lucide-react'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -30,6 +31,7 @@ export default function GroupsPage() {
   const [membersOpen, setMembersOpen] = useState(false)
   // 모바일에서 CategoryList 패널을 Sheet 로 열기 위한 플래그
   const [mobileCategoryOpen, setMobileCategoryOpen] = useState(false)
+  const [aiSuggestOpen, setAiSuggestOpen] = useState(false)
 
   type GroupWithCat = Group & { group_categories: { id: string; name: string; color: string | null; icon: string | null } | null }
   const { data: groups = [] as GroupWithCat[], isLoading } = useGroups(selectedCategoryId ?? undefined)
@@ -114,6 +116,15 @@ export default function GroupsPage() {
                 />
               </SheetContent>
             </Sheet>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setAiSuggestOpen(true)}
+              title="자연어로 대상을 설명하면 AI 가 매칭되는 연락처로 그룹을 만들어줍니다"
+            >
+              <Wand2 className="w-4 h-4 sm:mr-1.5" />
+              <span className="hidden sm:inline">AI 그룹 생성</span>
+            </Button>
             <Button size="sm" onClick={openCreate}>
               <Plus className="w-4 h-4 mr-1.5" />
               그룹 추가
@@ -147,6 +158,7 @@ export default function GroupsPage() {
       </div>
 
       {/* 다이얼로그 / 시트 */}
+      <AISuggestGroupDialog open={aiSuggestOpen} onOpenChange={setAiSuggestOpen} />
       <GroupFormDialog
         open={formOpen}
         onOpenChange={(v) => { setFormOpen(v); if (!v) setEditGroup(null) }}
