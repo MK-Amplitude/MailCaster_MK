@@ -31,7 +31,20 @@ export function useSuggestContactGroup() {
         },
       })
       if (error) {
-        throw new Error(error.message ?? 'AI 그룹 제안 실패')
+        // supabase.functions.invoke 는 non-2xx 응답을 generic 에러로 감싸기 때문에
+        // 실제 detail 은 error.context.response 에 있다 — 가능하면 본문에서 추출.
+        let detail = error.message || 'AI 그룹 제안 실패'
+        try {
+          const errAny = error as { context?: { response?: Response } }
+          const resp = errAny.context?.response
+          if (resp) {
+            const body = (await resp.json()) as { error?: string; detail?: string }
+            detail = body.detail || body.error || detail
+          }
+        } catch {
+          // 파싱 실패 시 기본 메시지 사용
+        }
+        throw new Error(detail)
       }
       return data as SuggestGroupResult
     },

@@ -68,25 +68,30 @@ Deno.serve(async (req) => {
     if (!description) return json({ error: 'description required' }, 400)
     if (!orgId) return json({ error: 'org_id required' }, 400)
 
-    // 1) 사용자 식별 + org 멤버십 확인
-    const userClient = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-      global: { headers: { Authorization: `Bearer ${userJwt}` } },
-      auth: { persistSession: false },
-    })
-    const { data: userData } = await userClient.auth.getUser()
-    const userId = userData?.user?.id
-    if (!userId) return json({ error: 'invalid token' }, 401)
-
+    // 1) 사용자 식별 — JWT 를 명시적으로 getUser 에 전달 (SERVICE_ROLE 와 혼용 시
+    // 인증 흐름이 꼬이는 케이스 회피).
     const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
       auth: { persistSession: false },
     })
-    const { data: membership } = await admin
+    const { data: userData, error: userErr } = await admin.auth.getUser(userJwt)
+    if (userErr || !userData?.user?.id) {
+      console.error('[suggest-contact-group] getUser failed:', userErr)
+      return json({ error: 'invalid token', detail: userErr?.message }, 401)
+    }
+    const userId = userData.user.id
+
+    // 2) org 멤버십 확인
+    const { data: membership, error: memErr } = await admin
       .schema('mailcaster')
       .from('org_members')
       .select('user_id')
       .eq('org_id', orgId)
       .eq('user_id', userId)
       .maybeSingle()
+    if (memErr) {
+      console.error('[suggest-contact-group] membership check failed:', memErr)
+      return json({ error: 'membership check failed', detail: memErr.message }, 500)
+    }
     if (!membership) return json({ error: 'not a member of this org' }, 403)
 
     // 2) org 의 모든 연락처를 압축된 형태로 가져오기 (수신거부/반송 제외)
@@ -114,7 +119,14 @@ Deno.serve(async (req) => {
     }
 
     // 3) OpenAI 호출
-    const result = await callOpenAI(description, summaries, maxResults)
+    let result
+    try {
+      result = await callOpenAI(description, summaries, maxResults)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.error('[suggest-contact-group] OpenAI call failed:', msg)
+      return json({ error: 'AI 호출 실패', detail: msg }, 502)
+    }
 
     // 4) AI 가 hallucinated 한 ID 필터 — 실제 org 의 contact 만 통과
     const validIds = new Set(summaries.map((c) => c.id))
