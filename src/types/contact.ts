@@ -26,11 +26,20 @@ export type ContactStatus =
   | 'no_group'
   | 'needs_verification' // company_lookup_status ∈ {pending, failed, not_found}
 
-// Phase 9: 고객 분류
+// Phase 9: 고객 분류 (Phase 9.2 — 6 buckets)
 //   amplitude_customer = Amplitude 기존 고객
 //   prospect           = 영업 대상 고객
-//   general            = 일반 (기본값)
-export type CustomerType = 'amplitude_customer' | 'prospect' | 'general'
+//   partner            = 파트너 (제휴/리셀러)
+//   vendor             = 협력 벤더 (서비스/제품 공급사)
+//   relationship       = 관계유지 파트너 (장기 네트워크)
+//   general            = 일반 (분류 미지정 기본값)
+export type CustomerType =
+  | 'amplitude_customer'
+  | 'prospect'
+  | 'partner'
+  | 'vendor'
+  | 'relationship'
+  | 'general'
 
 export const CUSTOMER_TYPE_OPTIONS: Array<{
   value: CustomerType
@@ -51,10 +60,27 @@ export const CUSTOMER_TYPE_OPTIONS: Array<{
       'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300 border-amber-200 dark:border-amber-800',
   },
   {
+    value: 'partner',
+    label: '파트너',
+    className:
+      'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300 border-purple-200 dark:border-purple-800',
+  },
+  {
+    value: 'vendor',
+    label: '협력 벤더',
+    className:
+      'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300 border-teal-200 dark:border-teal-800',
+  },
+  {
+    value: 'relationship',
+    label: '관계유지',
+    className:
+      'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300 border-rose-200 dark:border-rose-800',
+  },
+  {
     value: 'general',
     label: '일반',
-    className:
-      'bg-muted text-muted-foreground border-border',
+    className: 'bg-muted text-muted-foreground border-border',
   },
 ]
 

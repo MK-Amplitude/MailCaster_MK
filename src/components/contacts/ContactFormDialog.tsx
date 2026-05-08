@@ -38,7 +38,9 @@ const schema = z.object({
   display_title: z.string().optional(),
   phone: z.string().optional(),
   memo: z.string().optional(),
-  customer_type: z.enum(['amplitude_customer', 'prospect', 'general']).optional(),
+  customer_type: z
+    .enum(['amplitude_customer', 'prospect', 'partner', 'vendor', 'relationship', 'general'])
+    .optional(),
   parent_group: z.string().optional(),
 })
 
