@@ -8,6 +8,7 @@ import LoginPage from '@/pages/LoginPage'
 import DashboardPage from '@/pages/DashboardPage'
 import ContactsPage from '@/pages/ContactsPage'
 import GroupsPage from '@/pages/GroupsPage'
+import EngagementPage from '@/pages/EngagementPage'
 import SignaturesPage from '@/pages/SignaturesPage'
 import TemplatesPage from '@/pages/TemplatesPage'
 import CampaignsPage from '@/pages/CampaignsPage'
@@ -52,6 +53,7 @@ export default function App() {
               <Route index element={<DashboardPage />} />
               <Route path="contacts" element={<ContactsPage />} />
               <Route path="groups" element={<GroupsPage />} />
+              <Route path="engagement" element={<EngagementPage />} />
               <Route path="signatures" element={<SignaturesPage />} />
               <Route path="templates" element={<TemplatesPage />} />
               <Route path="campaigns" element={<CampaignsPage />} />
