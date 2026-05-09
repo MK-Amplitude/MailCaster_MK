@@ -31,12 +31,11 @@ export function useSuggestContactGroup() {
         },
       })
       if (error) {
-        // supabase.functions.invoke 는 non-2xx 응답을 generic 에러로 감싸기 때문에
-        // 실제 detail 은 error.context.response 에 있다 — 가능하면 본문에서 추출.
+        // FunctionsHttpError.context IS the Response object (not { response: Response }).
+        // Supabase SDK: throw new FunctionsHttpError(response) → error.context === response.
         let detail = error.message || 'AI 그룹 제안 실패'
         try {
-          const errAny = error as { context?: { response?: Response } }
-          const resp = errAny.context?.response
+          const resp = (error as { context?: Response }).context
           if (resp) {
             const body = (await resp.json()) as { error?: string; detail?: string }
             detail = body.detail || body.error || detail
