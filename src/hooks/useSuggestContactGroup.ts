@@ -39,8 +39,8 @@ export function useSuggestContactGroup() {
       })
       if (error) {
         // FunctionsHttpError.context IS the Response object (not { response: Response }).
-        // Relay errors use {code, message}; function errors use {error, detail}.
-        let detail = error.message || 'AI 그룹 제안 실패'
+        // 우선순위: body.error (친화 메시지) > body.message (relay) > error.message (SDK 기본)
+        let friendly = 'AI 그룹 제안에 실패했습니다.'
         try {
           const resp = (error as { context?: Response }).context
           if (resp) {
@@ -49,12 +49,12 @@ export function useSuggestContactGroup() {
               detail?: string
               message?: string
             }
-            detail = body.detail || body.error || body.message || detail
+            friendly = body.error || body.message || body.detail || friendly
           }
         } catch {
-          // 파싱 실패 시 기본 메시지 사용
+          friendly = error.message || friendly
         }
-        throw new Error(detail)
+        throw new Error(friendly)
       }
       return data as SuggestGroupResult
     },
