@@ -1,5 +1,26 @@
-// 관계 관리 대시보드용 — contact_engagement view (migration 024) 의 row 타입.
-// recipients 테이블을 contact 별로 GROUP BY 한 집계 결과.
+// 관계 관리 대시보드용 — contact_engagement (024) / campaign_engagement (025) 뷰 row 타입.
+
+// migration 025
+export interface CampaignEngagementRow {
+  id: string
+  org_id: string
+  user_id: string
+  name: string
+  subject: string | null
+  status: string
+  created_at: string
+  scheduled_at: string | null
+  sent_count: number
+  total_opens: number
+  unique_opens: number
+  reply_count: number
+  bounce_count: number
+  total_recipients: number
+  open_rate: number  // 0~100
+  reply_rate: number // 0~100
+  first_sent_at: string | null
+  last_sent_at: string | null
+}
 
 export interface ContactEngagementRow {
   id: string
