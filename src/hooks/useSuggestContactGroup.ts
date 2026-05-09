@@ -23,22 +23,33 @@ export function useSuggestContactGroup() {
       orgId,
       maxResults,
     }: SuggestGroupArgs): Promise<SuggestGroupResult> => {
+      // sb_publishable_ 형식 anon key는 JWT 형식이 아니라 Supabase relay가 차단함.
+      // 세션 JWT를 명시적으로 가져와 Authorization 헤더에 직접 전달.
+      const { data: sessionData } = await supabase.auth.getSession()
+      const accessToken = sessionData.session?.access_token
+      if (!accessToken) throw new Error('로그인이 필요합니다.')
+
       const { data, error } = await supabase.functions.invoke('suggest-contact-group', {
         body: {
           description,
           org_id: orgId,
           max_results: maxResults,
         },
+        headers: { Authorization: `Bearer ${accessToken}` },
       })
       if (error) {
         // FunctionsHttpError.context IS the Response object (not { response: Response }).
-        // Supabase SDK: throw new FunctionsHttpError(response) → error.context === response.
+        // Relay errors use {code, message}; function errors use {error, detail}.
         let detail = error.message || 'AI 그룹 제안 실패'
         try {
           const resp = (error as { context?: Response }).context
           if (resp) {
-            const body = (await resp.json()) as { error?: string; detail?: string }
-            detail = body.detail || body.error || detail
+            const body = (await resp.json()) as {
+              error?: string
+              detail?: string
+              message?: string
+            }
+            detail = body.detail || body.error || body.message || detail
           }
         } catch {
           // 파싱 실패 시 기본 메시지 사용
