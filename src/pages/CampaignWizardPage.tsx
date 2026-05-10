@@ -34,6 +34,7 @@ import { useGroups } from '@/hooks/useGroups'
 import { useTemplates } from '@/hooks/useTemplates'
 import { useSignatures } from '@/hooks/useSignatures'
 import { useCreateCampaign, useUpdateCampaign } from '@/hooks/useCampaigns'
+import { useValidateEmails, type ValidationResult } from '@/hooks/useValidateEmails'
 import { renderTemplate, extractVariables } from '@/lib/mailMerge'
 import { toast } from 'sonner'
 import type { Database } from '@/types/database.types'
@@ -1573,6 +1574,7 @@ export default function CampaignWizardPage() {
               sendMode={sendMode}
               scheduledAt={scheduledAt}
               setScheduledAt={setScheduledAt}
+              recipientEmails={previewContacts.map((c) => c.email)}
             />
           )}
         </div>
@@ -2225,6 +2227,7 @@ function Step3({
   sendMode,
   scheduledAt,
   setScheduledAt,
+  recipientEmails,
 }: {
   name: string
   totalCount: number
@@ -2251,6 +2254,8 @@ function Step3({
   /** 예약 발송 시각 — null 이면 즉시 발송 */
   scheduledAt: string | null
   setScheduledAt: (v: string | null) => void
+  /** 발송 전 도메인 MX 검증용 — 수신자 이메일 목록 */
+  recipientEmails: string[]
 }) {
   const totalAttachmentSize = attachments.reduce((sum, a) => sum + (a.file_size ?? 0), 0)
   // useSendCampaign 의 실제 fallback 기준(SAFE_THRESHOLD)과 일치시킴
@@ -2258,6 +2263,9 @@ function Step3({
   const bulkBlocked = sendMode === 'bulk' && usedVariables.length > 0
   // 본문 편집 토글 — '본문 수정' 버튼으로 켜고, '완료' 로 끈다.
   const [editingBody, setEditingBody] = useState(false)
+  // 도메인 검증 결과 — Step3 진입 후 사용자가 버튼 누르면 채워짐
+  const validateEmails = useValidateEmails()
+  const [validation, setValidation] = useState<ValidationResult | null>(null)
   return (
     <div className="space-y-4">
       <Card>
@@ -2280,6 +2288,41 @@ function Step3({
                 <Users className="w-3 h-3 mr-1" />
                 {totalCount}명
               </Badge>
+              {/* 발송 전 도메인 MX 검증 — 반송 사전 차단 */}
+              <Button
+                type="button"
+                size="sm"
+                variant={validation && validation.invalid_emails.length > 0 ? 'destructive' : 'outline'}
+                className="h-6 text-[11px]"
+                onClick={async () => {
+                  if (recipientEmails.length === 0) return
+                  try {
+                    const r = await validateEmails.mutateAsync(recipientEmails)
+                    setValidation(r)
+                    if (r.invalid_emails.length === 0) {
+                      toast.success(`${r.checked_domains}개 도메인 검증 완료 — 모두 정상`)
+                    } else {
+                      toast.warning(
+                        `반송 가능성 ${r.invalid_emails.length}건 발견 (도메인 ${r.invalid_domains.length}개 무효)`
+                      )
+                    }
+                  } catch (e) {
+                    toast.error(e instanceof Error ? e.message : '검증 실패')
+                  }
+                }}
+                disabled={validateEmails.isPending || recipientEmails.length === 0}
+                title="수신자 도메인 MX 레코드 사전 확인 → 반송 가능성 있는 이메일 식별"
+              >
+                {validateEmails.isPending ? (
+                  <><Loader2 className="w-3 h-3 mr-1 animate-spin" />검증 중…</>
+                ) : validation ? (
+                  validation.invalid_emails.length > 0
+                    ? `⚠ 의심 ${validation.invalid_emails.length}건`
+                    : `✓ 도메인 OK`
+                ) : (
+                  '도메인 검증'
+                )}
+              </Button>
               {scheduledAt && (
                 <Badge variant="default" className="bg-blue-600 hover:bg-blue-600">
                   <CalendarClock className="w-3 h-3 mr-1" />
@@ -2300,6 +2343,33 @@ function Step3({
               )}
             </div>
           </div>
+          {validation && validation.invalid_emails.length > 0 && (
+            <div className="text-xs pt-2 border-t">
+              <div className="text-rose-700 dark:text-rose-300 font-medium mb-1">
+                ⚠ 반송 가능성 있는 이메일 — 도메인 MX 미발견 ({validation.invalid_emails.length}건)
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {validation.invalid_emails.slice(0, 30).map((e) => (
+                  <span
+                    key={e}
+                    className="inline-block text-[10px] px-1.5 py-0.5 rounded bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900 text-rose-700 dark:text-rose-300 font-mono"
+                  >
+                    {e}
+                  </span>
+                ))}
+                {validation.invalid_emails.length > 30 && (
+                  <span className="text-[10px] text-muted-foreground self-center">
+                    +{validation.invalid_emails.length - 30}건 더
+                  </span>
+                )}
+              </div>
+              <p className="text-[10px] text-muted-foreground mt-1.5">
+                연락처 페이지에서 해당 이메일을 수정하거나 수신자에서 제외 후 재시도 권장.
+                ({validation.malformed_count > 0 && `형식 오류 ${validation.malformed_count}건 포함, `}
+                도메인 {validation.invalid_domains.length}개 무효)
+              </p>
+            </div>
+          )}
           {(cc.length > 0 || bcc.length > 0) && (
             <div className="text-xs space-y-1 pt-1 border-t">
               {cc.length > 0 && (
