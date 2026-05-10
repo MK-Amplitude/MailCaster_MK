@@ -14,8 +14,8 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { Pencil, UserX, UserCheck, Building2, Phone, Clock, FileText, Sparkles, User, History, Tag, Network, Plus, X, FolderPlus, Search, Send } from 'lucide-react'
-import { ContactSendHistory } from '@/components/engagement/ContactSendHistory'
+import { Pencil, UserX, UserCheck, Building2, Phone, Clock, FileText, Sparkles, User, History, Tag, Network, Plus, X, FolderPlus, Search, Activity } from 'lucide-react'
+import { ContactTimeline } from '@/components/engagement/ContactTimeline'
 import {
   CUSTOMER_TYPE_OPTIONS,
   type ContactWithGroups,
@@ -262,14 +262,14 @@ export function ContactDetailSheet({
               </>
             )}
 
-            {/* 메일 발송 이력 — 관계 관리 timeline */}
+            {/* 활동 타임라인 — 메일 + 통화/미팅/메모 통합 */}
             <Separator />
             <section className="space-y-2">
               <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
-                <Send className="w-3 h-3" />
-                메일 발송 이력
+                <Activity className="w-3 h-3" />
+                활동 기록
               </h3>
-              <ContactSendHistory contactId={contact.id} />
+              <ContactTimeline contactId={contact.id} />
             </section>
 
             {/* 변경 이력 */}
