@@ -22,12 +22,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
+// DropdownMenu 는 ./campaign-wizard/VariableDropdown 으로 이동.
 import { SignaturePreview } from '@/components/signatures/SignaturePreview'
 import TipTapEditor from '@/components/signatures/TipTapEditor'
 import { AttachmentSection } from '@/components/attachments/AttachmentSection'
@@ -40,7 +35,6 @@ import { useTemplates } from '@/hooks/useTemplates'
 import { useSignatures } from '@/hooks/useSignatures'
 import { useCreateCampaign, useUpdateCampaign } from '@/hooks/useCampaigns'
 import { renderTemplate, extractVariables } from '@/lib/mailMerge'
-import { TEMPLATE_VARIABLES } from '@/types/template'
 import { toast } from 'sonner'
 import type { Database } from '@/types/database.types'
 
@@ -50,11 +44,9 @@ import {
   ArrowRight,
   Check,
   Users,
-  FileText,
-  Eye,
-  Braces,
   Send,
   Loader2,
+  CalendarClock,
   Plus,
   ArrowUp,
   ArrowDown,
@@ -64,12 +56,12 @@ import {
   Paperclip,
   Pencil,
   Undo2,
-  Clock,
-  CalendarClock,
 } from 'lucide-react'
 import { formatBytes, GMAIL_ATTACHMENT_SAFE_THRESHOLD } from '@/lib/utils'
-
-type Step = 1 | 2 | 3
+import { dedupeEmails, isMissingTableError } from './campaign-wizard/helpers'
+import { StepIndicator, type Step } from './campaign-wizard/StepIndicator'
+import { VariableDropdown } from './campaign-wizard/VariableDropdown'
+import { ScheduleSection } from './campaign-wizard/ScheduleSection'
 
 interface PreviewContact {
   id: string
@@ -159,39 +151,7 @@ async function resolveBasketEmails(
   return [...emails.values()]
 }
 
-function dedupeEmails(emails: string[]): string[] {
-  const seen = new Set<string>()
-  const out: string[] = []
-  for (const raw of emails) {
-    const trimmed = raw.trim()
-    if (!trimmed) continue
-    const key = trimmed.toLowerCase()
-    if (seen.has(key)) continue
-    seen.add(key)
-    out.push(trimmed)
-  }
-  return out
-}
-
-// "테이블 없음" 에러 감지 — migration 미적용 시나리오를 자연스럽게 처리하기 위함.
-// 예: migration 009 (campaign_contacts) 미적용 시 load 경로의 campaign_contacts 쿼리가 실패.
-//     이때 편집 화면 자체를 막기보다, 해당 섹션만 skip 하고 사용자가 수정/저장을 계속할 수 있게 한다.
-//
-// 다루는 코드:
-//   - 42P01  : PostgreSQL undefined_table (직접 DB 에러가 올라오는 경우)
-//   - PGRST205: PostgREST schema cache miss ("Could not find the table ... in the schema cache")
-//     ↳ migration 직후 PostgREST 가 캐시 리로드 전이거나, 권한/스키마 노출 설정이 안 된 경우.
-//       메시지 패턴으로도 방어(hint 만 있고 code 가 다른 경우를 대비).
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function isMissingTableError(err: any): boolean {
-  const msg: string = err?.message ?? ''
-  return (
-    err?.code === '42P01' ||
-    err?.code === 'PGRST205' ||
-    /relation .* does not exist/i.test(msg) ||
-    /could not find the table/i.test(msg)
-  )
-}
+// dedupeEmails / isMissingTableError 는 ./campaign-wizard/helpers.ts 로 이동.
 
 // ------------------------------------------------------------
 // CC / BCC 바구니 메타 교체 헬퍼 (편집 모드 + 신규 저장 모두 사용)
@@ -1637,39 +1597,7 @@ export default function CampaignWizardPage() {
   )
 }
 
-function StepIndicator({ step }: { step: Step }) {
-  const steps = [
-    { n: 1, label: '수신자', icon: Users },
-    { n: 2, label: '내용', icon: FileText },
-    { n: 3, label: '미리보기', icon: Eye },
-  ]
-  return (
-    <div className="flex items-center gap-2 mt-3">
-      {steps.map((s, i) => {
-        const Icon = s.icon
-        const active = step === s.n
-        const done = step > s.n
-        return (
-          <div key={s.n} className="flex items-center gap-2">
-            <div
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs ${
-                active
-                  ? 'bg-primary text-primary-foreground'
-                  : done
-                    ? 'bg-primary/10 text-primary'
-                    : 'bg-muted text-muted-foreground'
-              }`}
-            >
-              <Icon className="w-3.5 h-3.5" />
-              {s.label}
-            </div>
-            {i < steps.length - 1 && <div className="w-6 h-px bg-border" />}
-          </div>
-        )
-      })}
-    </div>
-  )
-}
+// StepIndicator 는 ./campaign-wizard/StepIndicator.tsx 로 이동.
 
 type GroupOpt = { id: string; name: string; color: string | null; member_count: number }
 
@@ -2484,157 +2412,3 @@ function Step3({
   )
 }
 
-// ------------------------------------------------------------
-// 발송 예약 섹션 — 즉시 / 예약 토글 + datetime-local 입력
-// ------------------------------------------------------------
-// scheduledAt 값은 DB 저장용 ISO(UTC) 문자열로 유지한다. <input type="datetime-local">
-// 은 "YYYY-MM-DDTHH:mm" 로컬 시간 문자열만 주고받으므로, toLocalInputValue /
-// fromLocalInputValue 로 변환한다.
-function toLocalInputValue(iso: string | null): string {
-  if (!iso) return ''
-  const d = new Date(iso)
-  if (isNaN(d.getTime())) return ''
-  // 로컬 오프셋 보정 — datetime-local 은 UTC 를 이해 못하고 "내 PC 시간대의 시각" 으로 해석함.
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
-}
-function fromLocalInputValue(v: string): string | null {
-  if (!v) return null
-  const d = new Date(v)
-  if (isNaN(d.getTime())) return null
-  return d.toISOString()
-}
-
-function ScheduleSection({
-  scheduledAt,
-  setScheduledAt,
-  hasAttachments,
-}: {
-  scheduledAt: string | null
-  setScheduledAt: (v: string | null) => void
-  hasAttachments: boolean
-}) {
-  const isScheduled = scheduledAt !== null
-  // 최소값은 현재로부터 2분 뒤 (서버 cron 이 1분 주기라 여유 필요)
-  const minLocal = useMemo(() => {
-    const d = new Date(Date.now() + 2 * 60_000)
-    const pad = (n: number) => String(n).padStart(2, '0')
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
-  }, [])
-
-  return (
-    <div className="space-y-1.5">
-      <Label className="flex items-center gap-1.5">
-        <CalendarClock className="w-3.5 h-3.5" />
-        발송 시점
-      </Label>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-        <Card
-          className={`cursor-pointer transition-colors ${!isScheduled ? 'border-primary bg-primary/5' : ''}`}
-          onClick={() => setScheduledAt(null)}
-        >
-          <CardContent className="p-3">
-            <div className="flex items-center gap-2 mb-1">
-              <Checkbox checked={!isScheduled} />
-              <span className="text-sm font-medium">즉시 발송</span>
-            </div>
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              초안으로 저장한 뒤 "발송하기" 버튼을 눌러 지금 바로 발송합니다.
-            </p>
-          </CardContent>
-        </Card>
-        <Card
-          className={`cursor-pointer transition-colors ${isScheduled ? 'border-primary bg-primary/5' : ''}`}
-          onClick={() => {
-            if (!isScheduled) {
-              // 기본값: 현재 + 10분 (반올림 없이 분 단위)
-              const d = new Date(Date.now() + 10 * 60_000)
-              d.setSeconds(0, 0)
-              setScheduledAt(d.toISOString())
-            }
-          }}
-        >
-          <CardContent className="p-3">
-            <div className="flex items-center gap-2 mb-1">
-              <Checkbox checked={isScheduled} />
-              <span className="text-sm font-medium">예약 발송</span>
-              <Badge variant="secondary" className="text-[10px]">
-                <Clock className="w-3 h-3 mr-0.5" />
-                자동
-              </Badge>
-            </div>
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              지정한 시각에 서버가 자동으로 발송합니다. 창을 닫아도 동작합니다.
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Phase 5: 첨부 + 예약 지원됨 — 안내 배너 */}
-      {isScheduled && hasAttachments && (
-        <p className="text-xs text-blue-700 dark:text-blue-300 bg-blue-50/60 dark:bg-blue-950/20 rounded p-2">
-          📎 첨부 파일은 예약된 시각에 Google Drive 에서 자동으로 처리됩니다. 총 15MB 를 초과하는
-          첨부는 Drive 공유 링크로 전환되어 본문에 포함됩니다.
-        </p>
-      )}
-
-      {isScheduled && (
-        <div className="space-y-1.5 pt-1">
-          <Label className="text-xs">발송 예정 일시 (내 PC 시간 기준)</Label>
-          <Input
-            type="datetime-local"
-            value={toLocalInputValue(scheduledAt)}
-            min={minLocal}
-            onChange={(e) => setScheduledAt(fromLocalInputValue(e.target.value))}
-            className="max-w-[260px]"
-          />
-          {scheduledAt && (
-            <p className="text-xs text-muted-foreground">
-              {new Date(scheduledAt).toLocaleString('ko-KR', {
-                weekday: 'short',
-                year: 'numeric',
-                month: 'long',
-                day: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit',
-              })}{' '}
-              (약 {formatRelativeFuture(scheduledAt)} 뒤)
-            </p>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function formatRelativeFuture(iso: string): string {
-  const ms = new Date(iso).getTime() - Date.now()
-  if (ms <= 0) return '지금'
-  const min = Math.round(ms / 60_000)
-  if (min < 60) return `${min}분`
-  const hr = Math.round(min / 60)
-  if (hr < 24) return `${hr}시간`
-  const day = Math.round(hr / 24)
-  return `${day}일`
-}
-
-function VariableDropdown({ onInsert }: { onInsert: (key: string) => void }) {
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button type="button" variant="outline" size="sm" className="h-7 text-xs">
-          <Braces className="w-3.5 h-3.5 mr-1" />
-          변수 삽입
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-48">
-        {TEMPLATE_VARIABLES.map((v) => (
-          <DropdownMenuItem key={v.key} onClick={() => onInsert(v.key)} className="text-xs">
-            <span className="font-medium">{`{{${v.key}}}`}</span>
-            <span className="ml-auto text-muted-foreground">{v.label}</span>
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  )
-}
