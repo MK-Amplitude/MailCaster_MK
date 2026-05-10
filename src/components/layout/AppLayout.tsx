@@ -2,6 +2,7 @@ import { Outlet } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
 import { Topbar } from './Topbar'
 import { MobileSidebar } from './MobileSidebar'
+import { ErrorBoundary } from '@/components/common/ErrorBoundary'
 import { Mail } from 'lucide-react'
 
 export function AppLayout() {
@@ -30,9 +31,12 @@ export function AppLayout() {
         <div className="hidden md:block">
           <Topbar />
         </div>
-        {/* 콘텐츠 */}
+        {/* 콘텐츠 — 페이지별 ErrorBoundary 로 감싸 한 페이지 에러가 전체
+            앱을 깨지 않게 한다. 사이드바/탑바는 살아 있어 다른 페이지 이동 가능. */}
         <main className="flex-1 overflow-y-auto">
-          <Outlet />
+          <ErrorBoundary>
+            <Outlet />
+          </ErrorBoundary>
         </main>
       </div>
     </div>

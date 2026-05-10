@@ -44,6 +44,13 @@ export default defineConfig(({ command }) => ({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  // production 빌드에서 console.* / debugger 호출 제거.
+  //   - 번들 크기 감소 (~5–10KB)
+  //   - 디버그 메시지를 통한 내부 정보 노출 방지
+  //   - dev (npm run dev) 에서는 그대로 살아 있음 — `command === 'build'` 로 분기
+  esbuild: command === 'build'
+    ? { drop: ['console', 'debugger'] }
+    : undefined,
   build: {
     // 500 KB 기본값 → 800 KB 로 상향 (벤더 청크 하나 정도는 허용)
     chunkSizeWarningLimit: 800,

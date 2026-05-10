@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Toaster } from 'sonner'
 import { AuthProvider } from '@/contexts/AuthContext'
 import { ProtectedRoute } from '@/components/common/ProtectedRoute'
+import { ErrorBoundary } from '@/components/common/ErrorBoundary'
 import { AppLayout } from '@/components/layout/AppLayout'
 import LoginPage from '@/pages/LoginPage'
 import ContactsPage from '@/pages/ContactsPage'
@@ -29,6 +30,7 @@ const queryClient = new QueryClient({
 
 export default function App() {
   return (
+    <ErrorBoundary>
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
         {/*
@@ -69,5 +71,6 @@ export default function App() {
         <Toaster position="bottom-right" richColors />
       </AuthProvider>
     </QueryClientProvider>
+    </ErrorBoundary>
   )
 }
