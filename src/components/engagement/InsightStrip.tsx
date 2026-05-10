@@ -1,7 +1,7 @@
 // 관계 관리 인사이트 — 한 줄 카드 그룹.
 // 클릭 시 상위에서 InsightFilter 를 받아 페이지 필터에 적용.
 
-import { AlertCircle, AlertTriangle, Sparkles, Info } from 'lucide-react'
+import { AlertCircle, AlertTriangle, Sparkles, Info, Users, Mail } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
   type Insight,
@@ -51,11 +51,24 @@ export function InsightStrip({ insights, onClick }: Props) {
                   </span>
                   <span className="text-xs font-medium truncate">{it.label}</span>
                 </div>
-                {it.hint && (
-                  <p className="text-[11px] text-muted-foreground mt-0.5 truncate">
-                    {it.hint}
-                  </p>
-                )}
+                <div className="flex items-center gap-1 mt-0.5">
+                  {it.target === 'people' ? (
+                    <Users className="w-2.5 h-2.5 text-muted-foreground" />
+                  ) : (
+                    <Mail className="w-2.5 h-2.5 text-muted-foreground" />
+                  )}
+                  <span className="text-[10px] text-muted-foreground">
+                    {it.target === 'people' ? '사람별' : '캠페인별'}
+                  </span>
+                  {it.hint && (
+                    <>
+                      <span className="text-[10px] text-muted-foreground">·</span>
+                      <span className="text-[11px] text-muted-foreground truncate">
+                        {it.hint}
+                      </span>
+                    </>
+                  )}
+                </div>
               </div>
             </div>
           </button>

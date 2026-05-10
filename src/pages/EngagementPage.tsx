@@ -13,25 +13,30 @@ import { useContactEngagement } from '@/hooks/useContactEngagement'
 import { useCampaignEngagement } from '@/hooks/useCampaignEngagement'
 import { computeTier, type EngagementTier } from '@/types/engagement'
 import { type CustomerType } from '@/types/contact'
-import { detectInsights } from '@/lib/insights'
+import { detectInsights, type Insight } from '@/lib/insights'
 import { DashboardCharts } from '@/components/engagement/DashboardCharts'
 import { InsightStrip } from '@/components/engagement/InsightStrip'
 import { PeopleTab, type PeopleTabExternalFilter } from '@/components/engagement/PeopleTab'
-import { CampaignTab } from '@/components/engagement/CampaignTab'
+import {
+  CampaignTab,
+  type CampaignTabExternalFilter,
+} from '@/components/engagement/CampaignTab'
 
 export default function EngagementPage() {
   const { data: rows = [] } = useContactEngagement()
   const { data: campaigns = [] } = useCampaignEngagement()
 
   const [tab, setTab] = useState<'people' | 'campaigns'>('people')
-  // 외부 필터 — 차트/인사이트 클릭 시 한번 push, PeopleTab 이 적용 후 자체 state 로 보유.
-  // counter 로 같은 값 재푸시도 useEffect 트리거.
-  const [externalFilter, setExternalFilter] = useState<
+  // 외부 필터 — 같은 값 재푸시 시에도 useEffect 트리거하기 위해 _v nonce 포함.
+  const [peopleExternal, setPeopleExternal] = useState<
     (PeopleTabExternalFilter & { _v: number }) | undefined
+  >()
+  const [campaignExternal, setCampaignExternal] = useState<
+    (CampaignTabExternalFilter & { _v: number }) | undefined
   >()
   const [highlightCampaignId, setHighlightCampaignId] = useState<string | null>(null)
 
-  const insights = useMemo(() => detectInsights(rows), [rows])
+  const insights = useMemo(() => detectInsights(rows, campaigns), [rows, campaigns])
 
   const stats = useMemo(() => {
     const acc = { total: 0, active: 0, dormant: 0, never: 0 }
@@ -46,9 +51,25 @@ export default function EngagementPage() {
     return acc
   }, [rows])
 
-  const pushFilter = (f: PeopleTabExternalFilter) => {
+  // 차트 클릭 — additive: 정의된 필드만 전달
+  const pushPeopleFilter = (f: PeopleTabExternalFilter) => {
     setTab('people')
-    setExternalFilter({ ...f, _v: Date.now() })
+    setPeopleExternal({ ...f, _v: Date.now() })
+  }
+
+  // 인사이트 클릭 — replace: 모든 필터 초기화 후 인사이트 조건만 적용
+  const handleInsightClick = (i: Insight) => {
+    if (i.target === 'people' && i.peopleFilter) {
+      setTab('people')
+      setPeopleExternal({ ...i.peopleFilter, _replace: true, _v: Date.now() })
+      // 캠페인 탭의 외부 필터도 초기화 — 탭 간 일관성
+      setCampaignExternal({ _replace: true, _v: Date.now() })
+    } else if (i.target === 'campaigns' && i.campaignFilter) {
+      setTab('campaigns')
+      setCampaignExternal({ ...i.campaignFilter, _replace: true, _v: Date.now() })
+      setPeopleExternal(undefined)
+      setHighlightCampaignId(null)
+    }
   }
 
   return (
@@ -83,9 +104,9 @@ export default function EngagementPage() {
           <DashboardCharts
             rows={rows}
             campaigns={campaigns}
-            onTierClick={(t: EngagementTier) => pushFilter({ tier: t })}
-            onCustomerTypeClick={(t: CustomerType) => pushFilter({ customerType: t })}
-            onParentGroupClick={(g) => pushFilter({ parentGroup: g })}
+            onTierClick={(t: EngagementTier) => pushPeopleFilter({ tier: t })}
+            onCustomerTypeClick={(t: CustomerType) => pushPeopleFilter({ customerType: t })}
+            onParentGroupClick={(g) => pushPeopleFilter({ parentGroup: g })}
             onCampaignClick={(id) => {
               setTab('campaigns')
               setHighlightCampaignId(id)
@@ -96,17 +117,7 @@ export default function EngagementPage() {
           {insights.length > 0 && (
             <>
               <SectionHeader title="추천 액션" subtitle="자동 탐지된 패턴 — 클릭 시 해당 조건으로 좁힘" />
-              <InsightStrip
-                insights={insights}
-                onClick={(i) =>
-                  pushFilter({
-                    customerType: i.filter.customerType,
-                    parentGroup: i.filter.parentGroup,
-                    tier: i.filter.tier,
-                    noReply: i.filter.noReply,
-                  })
-                }
-              />
+              <InsightStrip insights={insights} onClick={handleInsightClick} />
             </>
           )}
         </div>
@@ -121,12 +132,16 @@ export default function EngagementPage() {
           </div>
           <TabsContent value="people" className="m-0">
             <PeopleTab
-              externalFilter={externalFilter}
-              onClearExternal={() => setExternalFilter(undefined)}
+              externalFilter={peopleExternal}
+              onClearExternal={() => setPeopleExternal(undefined)}
             />
           </TabsContent>
           <TabsContent value="campaigns" className="m-0">
-            <CampaignTab highlightCampaignId={highlightCampaignId} />
+            <CampaignTab
+              highlightCampaignId={highlightCampaignId}
+              externalFilter={campaignExternal}
+              onClearExternal={() => setCampaignExternal(undefined)}
+            />
           </TabsContent>
         </Tabs>
       </div>

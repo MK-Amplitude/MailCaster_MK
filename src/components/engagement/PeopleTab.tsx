@@ -50,12 +50,17 @@ import {
 } from '@/types/engagement'
 
 // 상위 (EngagementPage) 가 차트/인사이트 클릭으로 설정하는 필터.
-// undefined = "건드리지 않음" (탭 자체 필터 유지). null 패턴은 쓰지 않음.
+// 두 가지 패턴:
+//   - 차트 클릭(additive): 정의된 필드만 덮어쓰기 (다른 필터 유지)
+//   - 인사이트 클릭(replace): _replace=true 와 함께 보내 모든 필터 초기화 후 적용
 export interface PeopleTabExternalFilter {
   customerType?: CustomerType | 'all'
   parentGroup?: string | 'all' | '__none__'
   tier?: EngagementTier | 'all'
-  noReply?: boolean // true 면 reply_count === 0 인 사람만
+  tiers?: EngagementTier[]   // 다중 — 비어있지 않으면 tier 무시
+  noReply?: boolean          // 발송 ≥1 && reply_count === 0
+  hasReply?: boolean         // reply_count > 0
+  _replace?: boolean         // true 면 적용 전에 모든 로컬 필터 초기화
 }
 
 interface Props {
@@ -73,19 +78,34 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
   const [customerType, setCustomerType] = useState<CustomerType | 'all'>('all')
   const [parentGroup, setParentGroup] = useState<string | 'all' | '__none__'>('all')
   const [tierFilter, setTierFilter] = useState<EngagementTier | 'all'>('all')
+  const [extraTiers, setExtraTiers] = useState<EngagementTier[]>([])
   const [noReplyOnly, setNoReplyOnly] = useState(false)
+  const [hasReplyOnly, setHasReplyOnly] = useState(false)
   const [sortKey, setSortKey] = useState<
     'last_sent_at' | 'total_opens' | 'reply_count' | 'total_sent'
   >('last_sent_at')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
-  // 외부 필터 적용 — 정의된 필드만 덮어쓰기
+  // 외부 필터 적용
   useEffect(() => {
     if (!externalFilter) return
+    if (externalFilter._replace) {
+      // 인사이트 클릭 — 다른 모든 필터 초기화 후 명시된 것만 적용
+      setCustomerType(externalFilter.customerType ?? 'all')
+      setParentGroup(externalFilter.parentGroup ?? 'all')
+      setTierFilter(externalFilter.tier ?? 'all')
+      setExtraTiers(externalFilter.tiers ?? [])
+      setNoReplyOnly(externalFilter.noReply ?? false)
+      setHasReplyOnly(externalFilter.hasReply ?? false)
+      return
+    }
+    // 차트 클릭 — 정의된 필드만 덮어쓰기 (additive)
     if (externalFilter.customerType !== undefined) setCustomerType(externalFilter.customerType)
     if (externalFilter.parentGroup !== undefined) setParentGroup(externalFilter.parentGroup)
     if (externalFilter.tier !== undefined) setTierFilter(externalFilter.tier)
+    if (externalFilter.tiers !== undefined) setExtraTiers(externalFilter.tiers)
     if (externalFilter.noReply !== undefined) setNoReplyOnly(externalFilter.noReply)
+    if (externalFilter.hasReply !== undefined) setHasReplyOnly(externalFilter.hasReply)
   }, [externalFilter])
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -108,6 +128,7 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
 
   const filtered = useMemo(() => {
     const q = search.trim()
+    const tiersSet = extraTiers.length > 0 ? new Set(extraTiers) : null
     return enriched.filter((r) => {
       if (customerType !== 'all') {
         if ((r.customer_type ?? 'general') !== customerType) return false
@@ -119,8 +140,12 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
           if (r.parent_group !== parentGroup) return false
         }
       }
-      if (tierFilter !== 'all' && r.tier !== tierFilter) return false
+      // 다중 tier 가 우선; 없으면 단일 tier
+      if (tiersSet) {
+        if (!tiersSet.has(r.tier)) return false
+      } else if (tierFilter !== 'all' && r.tier !== tierFilter) return false
       if (noReplyOnly && (r.reply_count > 0 || r.total_sent === 0)) return false
+      if (hasReplyOnly && r.reply_count === 0) return false
       if (q) {
         return (
           matchesSearch(r.name, q) ||
@@ -134,7 +159,7 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
       }
       return true
     })
-  }, [enriched, search, customerType, parentGroup, tierFilter, noReplyOnly])
+  }, [enriched, search, customerType, parentGroup, tierFilter, extraTiers, noReplyOnly, hasReplyOnly])
 
   const sorted = useMemo(() => {
     const dir = sortDir === 'asc' ? 1 : -1
@@ -189,15 +214,28 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
     customerType !== 'all' ||
     parentGroup !== 'all' ||
     tierFilter !== 'all' ||
-    noReplyOnly
+    extraTiers.length > 0 ||
+    noReplyOnly ||
+    hasReplyOnly
 
   const clearAll = () => {
     setCustomerType('all')
     setParentGroup('all')
     setTierFilter('all')
+    setExtraTiers([])
     setNoReplyOnly(false)
+    setHasReplyOnly(false)
     onClearExternal?.()
   }
+
+  // 다중 tier 가 활성일 때 보여줄 라벨 (예: "휴면 (180일)+오래됨 (180일+)")
+  const extraTiersLabel = useMemo(
+    () =>
+      extraTiers
+        .map((t) => ENGAGEMENT_TIER_OPTIONS.find((o) => o.value === t)?.label ?? t)
+        .join(' · '),
+    [extraTiers]
+  )
 
   return (
     <div className="flex flex-col h-full">
@@ -232,8 +270,17 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
               ))}
             </SelectContent>
           </Select>
-          <Select value={tierFilter} onValueChange={(v) => setTierFilter(v as EngagementTier | 'all')}>
-            <SelectTrigger className="h-8 w-36 text-sm"><SelectValue placeholder="참여도" /></SelectTrigger>
+          <Select
+            value={tierFilter}
+            onValueChange={(v) => {
+              setExtraTiers([]) // 단일 선택 시 다중 해제
+              setTierFilter(v as EngagementTier | 'all')
+            }}
+            disabled={extraTiers.length > 0}
+          >
+            <SelectTrigger className="h-8 w-36 text-sm">
+              <SelectValue placeholder="참여도" />
+            </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">참여도 전체</SelectItem>
               {ENGAGEMENT_TIER_OPTIONS.map((o) => (
@@ -241,9 +288,24 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
               ))}
             </SelectContent>
           </Select>
+          {extraTiers.length > 0 && (
+            <Badge
+              variant="outline"
+              className="h-7 text-xs gap-1.5 cursor-pointer"
+              onClick={() => setExtraTiers([])}
+              title={extraTiersLabel}
+            >
+              참여도: {extraTiersLabel} ✕
+            </Badge>
+          )}
           {noReplyOnly && (
             <Badge variant="outline" className="h-7 text-xs gap-1.5 cursor-pointer" onClick={() => setNoReplyOnly(false)}>
               답장 없음만 ✕
+            </Badge>
+          )}
+          {hasReplyOnly && (
+            <Badge variant="outline" className="h-7 text-xs gap-1.5 cursor-pointer" onClick={() => setHasReplyOnly(false)}>
+              답장 있음만 ✕
             </Badge>
           )}
           {hasActiveFilter && (
