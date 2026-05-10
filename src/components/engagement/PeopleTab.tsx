@@ -553,10 +553,17 @@ function PersonRow({
         <Checkbox checked={checked} onCheckedChange={(v) => onToggleSelect(!!v)} />
       </TableCell>
       <TableCell>
-        <div className="flex flex-col">
-          <span className="text-sm font-medium truncate max-w-[180px] sm:max-w-none">
-            {r.name ?? '이름 없음'}
-          </span>
+        <div className="flex flex-col min-w-0">
+          <div className="flex items-baseline gap-1.5 min-w-0">
+            <span className="text-sm font-medium truncate max-w-[140px] sm:max-w-[180px] md:max-w-[220px]">
+              {r.name ?? '이름 없음'}
+            </span>
+            {(r.display_title || r.job_title) && (
+              <span className="text-[11px] text-muted-foreground truncate max-w-[120px] sm:max-w-[160px] shrink-0">
+                {r.display_title || r.job_title}
+              </span>
+            )}
+          </div>
           <span className="text-[11px] text-muted-foreground truncate max-w-[200px] sm:max-w-none">
             {r.email}
           </span>
