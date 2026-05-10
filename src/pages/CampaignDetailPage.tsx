@@ -16,6 +16,7 @@ import {
 import { useContacts } from '@/hooks/useContacts'
 import { useSignatureById } from '@/hooks/useSignatures'
 import { replyCategoryOption, type ReplyCategory } from '@/types/replyCategory'
+import { useBackfillReplyCategories } from '@/hooks/useBackfillReplyCategories'
 import { matchesSearch } from '@/lib/search'
 import { Search, X, UserPlus } from 'lucide-react'
 import { useCampaignBlocks } from '@/hooks/useCampaignBlocks'
@@ -102,6 +103,17 @@ export default function CampaignDetailPage() {
     if (body.includes(sigHtml)) return body
     return body ? `${body}<br/><br/>${sigHtml}` : sigHtml
   }, [campaign?.body_html, signature?.html])
+
+  // 답장이 있지만 reply_category 가 NULL 인 행 — 028 마이그레이션 이전 답장 또는
+  // 분류 시점 예산 부족으로 누락된 케이스. "이전 답장 분류" 버튼이 이 수를 보고 표시.
+  const unclassifiedReplyCount = useMemo(() => {
+    return recipients.filter((r) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ext = r as any as { reply_category?: ReplyCategory | null }
+      return r.replied && ext.reply_category == null
+    }).length
+  }, [recipients])
+  const backfill = useBackfillReplyCategories()
   const sendCampaign = useSendCampaign()
   const deleteCampaign = useDeleteCampaign()
   const updateCampaign = useUpdateCampaign()
@@ -619,7 +631,39 @@ export default function CampaignDetailPage() {
         <Card>
           <CardContent className="p-0">
             <div className="px-4 py-3 border-b space-y-2">
-              <div className="text-sm font-semibold">수신자 ({recipients.length})</div>
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-sm font-semibold">수신자 ({recipients.length})</div>
+                {/* 이전 답장 백필 — NULL reply_category 행만 토대로 LLM 분류 */}
+                {unclassifiedReplyCount > 0 && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-xs"
+                    onClick={async () => {
+                      try {
+                        const r = await backfill.mutateAsync({
+                          campaignId: id!,
+                          limit: 200,
+                        })
+                        toast.success(
+                          `답장 ${r.classified}건 분류 완료${r.remaining > 0 ? ` (남은 ${r.remaining}건은 다시 클릭)` : ''}`
+                        )
+                      } catch (e) {
+                        toast.error(e instanceof Error ? e.message : '백필 실패')
+                      }
+                    }}
+                    disabled={backfill.isPending}
+                    title="이전에 도착한 답장도 톤 분류 (관심·질문·거절·부재중)"
+                  >
+                    {backfill.isPending ? (
+                      <><Loader2 className="w-3 h-3 mr-1 animate-spin" />분류 중…</>
+                    ) : (
+                      <>이전 답장 {unclassifiedReplyCount}건 분류</>
+                    )}
+                  </Button>
+                )}
+              </div>
               {/* 발송 전 캠페인에서만 인라인 추가 — sent/sending 캠페인은 변경 불가 */}
               {canEdit && (
                 <div className="space-y-1.5">
