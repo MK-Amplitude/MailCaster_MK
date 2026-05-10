@@ -624,8 +624,14 @@ export function useSendCampaign() {
 
           try {
             const vars = buildVariables(r)
-            const subject = renderTemplate(campaign.subject ?? '', vars)
-            const renderedBody = renderTemplate(finalBody, vars)
+            // 개인화 모드 — recipients 행에 자체 subject/body 오버라이드가 있으면 그대로 사용.
+            // (LLM 이 사람마다 직접 작성한 문장이라 템플릿 변수 치환 X)
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const ovr = r as any as { subject_override?: string | null; body_html_override?: string | null }
+            const subjOverride = ovr.subject_override ?? null
+            const bodyOverride = ovr.body_html_override ?? null
+            const subject = subjOverride ?? renderTemplate(campaign.subject ?? '', vars)
+            const renderedBody = bodyOverride ?? renderTemplate(finalBody, vars)
             const htmlWithLinks = linkSection ? `${renderedBody}${linkSection}` : renderedBody
             // Phase 6 (C) — 오픈 추적 픽셀 주입 (캠페인 설정이 enable 이고 수신자 id 가 있을 때)
             const html = campaign.enable_open_tracking

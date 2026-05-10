@@ -28,7 +28,8 @@ import {
 import { EmptyState } from '@/components/common/EmptyState'
 import { ContactDetailSheet } from '@/components/contacts/ContactDetailSheet'
 import { ContactFormDialog } from '@/components/contacts/ContactFormDialog'
-import { Send, Search, Eye, Reply, Mail, Clock } from 'lucide-react'
+import { Send, Search, Eye, Reply, Mail, Clock, Wand2 } from 'lucide-react'
+import { PersonalizedSendDialog } from '@/components/campaigns/PersonalizedSendDialog'
 import { matchesSearch } from '@/lib/search'
 import { cn } from '@/lib/utils'
 import {
@@ -131,6 +132,7 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
   const [openContactId, setOpenContactId] = useState<string | null>(null)
   const [editContact, setEditContact] = useState<ContactWithGroups | null>(null)
   const [editFormOpen, setEditFormOpen] = useState(false)
+  const [personalizeOpen, setPersonalizeOpen] = useState(false)
 
   const { data: openContact = null } = useContactById(openContactId)
   const toggleUnsub = useToggleUnsubscribe()
@@ -424,10 +426,22 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
             {sorted.length.toLocaleString()}명
           </span>
           {selectedIds.size > 0 && (
-            <Button size="sm" onClick={sendToSelected} className="h-8">
-              <Send className="w-3.5 h-3.5 mr-1.5" />
-              {selectedIds.size}명에게 메일
-            </Button>
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setPersonalizeOpen(true)}
+                className="h-8"
+                title="사람마다 다른 본문을 AI 가 생성"
+              >
+                <Wand2 className="w-3.5 h-3.5 mr-1.5" />
+                AI 개인화
+              </Button>
+              <Button size="sm" onClick={sendToSelected} className="h-8">
+                <Send className="w-3.5 h-3.5 mr-1.5" />
+                {selectedIds.size}명에게 메일
+              </Button>
+            </>
           )}
         </div>
       </div>
@@ -519,6 +533,13 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
           if (!v) setEditContact(null)
         }}
         contact={editContact}
+      />
+      <PersonalizedSendDialog
+        open={personalizeOpen}
+        onOpenChange={setPersonalizeOpen}
+        contacts={sorted
+          .filter((r) => selectedIds.has(r.id) && !r.is_unsubscribed && !r.is_bounced)
+          .map((r) => ({ id: r.id, name: r.name, email: r.email }))}
       />
     </div>
   )
