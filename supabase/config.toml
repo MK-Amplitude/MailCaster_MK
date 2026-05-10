@@ -16,6 +16,10 @@ verify_jwt = false
 # pg_cron 이 Bearer <CRON_SECRET> 으로 자체 인증하므로 jwt 검증은 끈다.
 verify_jwt = false
 
+[functions.classify-existing-replies]
+# 사용자 JWT 와 CRON_SECRET 두 경로 모두 함수 내부에서 자체 검증.
+verify_jwt = false
+
 [functions.track-open]
 # 이메일 클라이언트의 단순 GET 픽셀 요청이므로 jwt 검증 불가.
 verify_jwt = false
