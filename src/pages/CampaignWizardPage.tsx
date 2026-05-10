@@ -279,6 +279,10 @@ export default function CampaignWizardPage() {
   // 블록을 바꾸면 바로 반영돼야 할지(= null 유지) 그대로 둘지(= override 유지) 는 UX 결정.
   // 여기선 "override 우선" — 사용자가 직접 편집한 건 본인이 명시적으로 '블록으로 되돌리기' 하기 전엔 안 사라진다.
   const [bodyOverride, setBodyOverride] = useState<string | null>(null)
+  // bodyOverride 가 어디서 왔는지: 'auto' = 편집 모드 로드 시 db 에서 자동 시드,
+  //                                'manual' = 사용자가 Step3 에서 직접 편집.
+  // 서명만 바꿨을 때 자동 시드 본문을 폐기하고 새 composedHtml 로 다시 그려주기 위해 분리.
+  const bodyOverrideOriginRef = useRef<'auto' | 'manual' | null>(null)
 
   const [delaySeconds, setDelaySeconds] = useState(3)
 
@@ -329,6 +333,17 @@ export default function CampaignWizardPage() {
   const { data: signatures = [] } = useSignatures()
   const createCampaign = useCreateCampaign()
   const updateCampaign = useUpdateCampaign()
+
+  // 새 캠페인 — 사용자의 기본 서명(signatures.is_default) 을 자동 선택.
+  // 편집/재사용 모드는 db 에서 로드된 signature_id 가 우선 (별도 useEffect 에서 setSignatureId).
+  useEffect(() => {
+    if (isEditMode || reuseFrom) return
+    if (signatureId) return
+    if (signatures.length === 0) return
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const def = signatures.find((s: any) => s.is_default)
+    if (def) setSignatureId(def.id as string)
+  }, [signatures, isEditMode, reuseFrom, signatureId])
 
   const templateById = useMemo(() => {
     const m = new Map<string, TemplateOpt>()
@@ -517,7 +532,10 @@ export default function CampaignWizardPage() {
           // 블록/서명 로딩이 비동기라 초기 composedHtml 과 비교하기 어려움 + "내가 저장한 그대로"
           // 보이는 게 가장 직관적. '블록으로 되돌리기' 버튼으로 언제든 초기화 가능.
           const storedBody = (c.body_html as string | null) ?? null
-          if (storedBody && storedBody.trim()) setBodyOverride(storedBody)
+          if (storedBody && storedBody.trim()) {
+            setBodyOverride(storedBody)
+            bodyOverrideOriginRef.current = 'auto'
+          }
           // 예약 발송 시각 로드 — 편집 모드 & status='scheduled' 일 때만 의미.
           // (reuseMode 로 재사용할 땐 원본의 예약 시각을 그대로 계승하지 않음 — 새 캠페인이므로)
           if (isEditMode && (c.status as string) === 'scheduled' && c.scheduled_at) {
@@ -889,8 +907,24 @@ export default function CampaignWizardPage() {
   useEffect(() => {
     if (bodyOverride === null) return
     if (!composedHtml.trim()) return  // 블록/템플릿 로딩 중
-    if (composedHtml === bodyOverride) setBodyOverride(null)
+    if (composedHtml === bodyOverride) {
+      setBodyOverride(null)
+      bodyOverrideOriginRef.current = null
+    }
   }, [composedHtml, bodyOverride])
+
+  // 편집 모드에서 사용자가 서명을 변경할 때, auto-seed 된 bodyOverride 가 새
+  // composedHtml(블록 + 새 서명) 을 가리지 않도록 자동 폐기.
+  // 'manual' 편집한 본문은 보존 — 사용자가 이 경우엔 명시적으로 '블록으로 되돌리기'
+  // 버튼을 눌러야 한다.
+  useEffect(() => {
+    if (bodyOverrideOriginRef.current === 'auto' && bodyOverride !== null) {
+      setBodyOverride(null)
+      bodyOverrideOriginRef.current = null
+    }
+    // 의도적으로 signatureId 변경에만 반응 — 다른 deps 는 다른 effect 들이 처리.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signatureId])
 
   const usedVariables = useMemo(
     () => Array.from(new Set([...extractVariables(subject), ...extractVariables(effectiveBody)])),
@@ -1525,8 +1559,14 @@ export default function CampaignWizardPage() {
               setSubject={setSubject}
               effectiveBody={effectiveBody}
               bodyOverridden={bodyOverride !== null}
-              onBodyChange={(html) => setBodyOverride(html)}
-              onResetBody={() => setBodyOverride(null)}
+              onBodyChange={(html) => {
+                setBodyOverride(html)
+                bodyOverrideOriginRef.current = 'manual'
+              }}
+              onResetBody={() => {
+                setBodyOverride(null)
+                bodyOverrideOriginRef.current = null
+              }}
               insertSubject={insertVariableIntoSubject}
               cc={resolvedCcEmails}
               bcc={resolvedBccEmails}
