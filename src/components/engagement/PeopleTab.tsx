@@ -71,6 +71,7 @@ export interface PeopleTabExternalFilter {
   dueForTouch?: boolean              // cadence 임박 또는 초과
   overdueOnly?: boolean              // cadence 초과만 (강한 신호)
   awaitingResponse?: boolean         // 답장 받았는데 내가 답장 안 함
+  interestedReply?: boolean          // '관심·미팅 의향' 분류된 답장만
   _replace?: boolean
 }
 
@@ -97,6 +98,7 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
   const [dueForTouchOnly, setDueForTouchOnly] = useState(false)
   const [overdueOnly, setOverdueOnly] = useState(false)
   const [awaitingResponseOnly, setAwaitingResponseOnly] = useState(false)
+  const [interestedReplyOnly, setInterestedReplyOnly] = useState(false)
   const [sortKey, setSortKey] = useState<
     'last_sent_at' | 'total_opens' | 'reply_count' | 'total_sent'
   >('last_sent_at')
@@ -118,6 +120,7 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
       setDueForTouchOnly(externalFilter.dueForTouch ?? false)
       setOverdueOnly(externalFilter.overdueOnly ?? false)
       setAwaitingResponseOnly(externalFilter.awaitingResponse ?? false)
+      setInterestedReplyOnly(externalFilter.interestedReply ?? false)
       return
     }
     if (externalFilter.customerType !== undefined) setCustomerType(externalFilter.customerType)
@@ -132,6 +135,8 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
     if (externalFilter.overdueOnly !== undefined) setOverdueOnly(externalFilter.overdueOnly)
     if (externalFilter.awaitingResponse !== undefined)
       setAwaitingResponseOnly(externalFilter.awaitingResponse)
+    if (externalFilter.interestedReply !== undefined)
+      setInterestedReplyOnly(externalFilter.interestedReply)
   }, [externalFilter])
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -184,6 +189,9 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       if (awaitingResponseOnly && (((r as any).awaiting_my_response_count ?? 0) <= 0))
         return false
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      if (interestedReplyOnly && (((r as any).interested_reply_count ?? 0) <= 0))
+        return false
       if (q) {
         return (
           matchesSearch(r.name, q) ||
@@ -211,6 +219,7 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
     dueForTouchOnly,
     overdueOnly,
     awaitingResponseOnly,
+    interestedReplyOnly,
   ])
 
   const sorted = useMemo(() => {
@@ -273,7 +282,8 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
     hasReplyOnly ||
     dueForTouchOnly ||
     overdueOnly ||
-    awaitingResponseOnly
+    awaitingResponseOnly ||
+    interestedReplyOnly
 
   const clearAll = () => {
     setCustomerType('all')
@@ -287,6 +297,7 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
     setDueForTouchOnly(false)
     setOverdueOnly(false)
     setAwaitingResponseOnly(false)
+    setInterestedReplyOnly(false)
     onClearExternal?.()
   }
 
@@ -435,6 +446,15 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
               onClick={() => setAwaitingResponseOnly(false)}
             >
               내 답장 대기만 ✕
+            </Badge>
+          )}
+          {interestedReplyOnly && (
+            <Badge
+              variant="outline"
+              className="h-7 text-xs gap-1.5 cursor-pointer text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-900"
+              onClick={() => setInterestedReplyOnly(false)}
+            >
+              관심·미팅 의향만 ✕
             </Badge>
           )}
           {hasActiveFilter && (
