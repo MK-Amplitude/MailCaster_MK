@@ -32,6 +32,7 @@ import {
 import { Sparkles, Loader2, RotateCcw, Wand2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useAuth } from '@/hooks/useAuth'
+import { useSignatures } from '@/hooks/useSignatures'
 import {
   useGeneratePersonalizedBodies,
   useCreatePersonalizedCampaign,
@@ -59,8 +60,18 @@ const TONE_OPTIONS: Array<{ value: 'formal' | 'friendly' | 'concise'; label: str
 export function PersonalizedSendDialog({ open, onOpenChange, contacts }: Props) {
   const navigate = useNavigate()
   const { user } = useAuth()
+  const { data: signatures = [] } = useSignatures()
   const generate = useGeneratePersonalizedBodies()
   const create = useCreatePersonalizedCampaign()
+
+  // 사용자의 기본 서명을 LLM 본문 끝에 붙여 일관성 유지.
+  // is_default 가 없으면 최신 서명을 fallback 으로.
+  const defaultSignatureHtml = useMemo(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const list = signatures as any[]
+    const def = list.find((s) => s.is_default) ?? list[0]
+    return (def?.html as string | undefined) ?? undefined
+  }, [signatures])
 
   const [intent, setIntent] = useState('')
   const [tone, setTone] = useState<'formal' | 'friendly' | 'concise'>('friendly')
@@ -97,6 +108,7 @@ export function PersonalizedSendDialog({ open, onOpenChange, contacts }: Props) 
         intent: intent.trim(),
         tone,
         senderName,
+        signatureHtml: defaultSignatureHtml,
       })
       const next: Record<string, { subject: string; body: string }> = {}
       for (const r of results) {
@@ -121,6 +133,7 @@ export function PersonalizedSendDialog({ open, onOpenChange, contacts }: Props) 
         intent: intent.trim(),
         tone,
         senderName,
+        signatureHtml: defaultSignatureHtml,
       })
       if (results[0]) {
         setDrafts((prev) => ({

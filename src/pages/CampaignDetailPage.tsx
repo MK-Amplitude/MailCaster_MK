@@ -851,7 +851,9 @@ export default function CampaignDetailPage() {
                                     last_thread_message_from_me?: boolean | null
                                   }
                                   const catOpt = replyCategoryOption(rExt.reply_category ?? null)
-                                  const awaitingMe = rExt.last_thread_message_from_me === false
+                                  // null = cron pass2 미반영 — 보수적으로 '대기' 로 간주.
+                                  const awaitingMe =
+                                    rExt.last_thread_message_from_me !== true
                                   const replyHref = rExt.gmail_thread_id
                                     ? `https://mail.google.com/mail/u/0/#all/${rExt.gmail_thread_id}`
                                     : null
