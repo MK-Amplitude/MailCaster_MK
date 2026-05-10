@@ -15,6 +15,7 @@
 //   2) DB: FilterSpec → SQL ILIKE/IN/NOT NULL 조합으로 matched_ids 조회
 
 import { createClient, type SupabaseClient } from 'jsr:@supabase/supabase-js@2'
+import { z } from 'npm:zod@3'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -33,11 +34,26 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
-interface RequestInput {
-  description: string
-  org_id: string
-  max_results?: number
-}
+// 입력 스키마 — runtime 검증 + 친화 에러 메시지.
+// 잘못된 입력은 LLM 호출 전에 차단해 비용/지연 절감.
+const RequestSchema = z.object({
+  description: z
+    .string({ required_error: '대상 설명을 입력해주세요.' })
+    .trim()
+    .min(1, '대상 설명을 입력해주세요.')
+    .max(500, '대상 설명이 너무 깁니다 (최대 500자).'),
+  org_id: z
+    .string({ required_error: '조직 정보가 없습니다.' })
+    .uuid('조직 ID 형식이 올바르지 않습니다.'),
+  max_results: z
+    .number()
+    .int()
+    .min(1)
+    .max(MAX_LIMIT)
+    .optional(),
+})
+
+type RequestInput = z.infer<typeof RequestSchema>
 
 // AI 가 반환하는 구조화된 필터 — 자연어를 SQL-friendly 한 키워드로 분해.
 interface FilterSpec {
@@ -81,13 +97,20 @@ Deno.serve(async (req) => {
       return json({ error: '로그인이 필요합니다.' }, 401)
     }
 
-    const body: RequestInput = await req.json()
-    const description = body.description?.trim() ?? ''
-    const orgId = body.org_id?.trim() ?? ''
-    const maxResults = Math.min(Math.max(body.max_results ?? DEFAULT_MAX, 1), MAX_LIMIT)
-
-    if (!description) return json({ error: '대상 설명을 입력해주세요.' }, 400)
-    if (!orgId) return json({ error: '조직 정보가 없습니다.' }, 400)
+    let parsed: RequestInput
+    try {
+      const raw = await req.json()
+      parsed = RequestSchema.parse(raw)
+    } catch (e) {
+      const msg =
+        e instanceof z.ZodError
+          ? e.errors[0]?.message ?? '잘못된 요청입니다.'
+          : '요청 본문을 읽을 수 없습니다.'
+      return json({ error: msg }, 400)
+    }
+    const description = parsed.description
+    const orgId = parsed.org_id
+    const maxResults = parsed.max_results ?? DEFAULT_MAX
 
     // 1) 사용자 식별
     const userClient = createClient(SUPABASE_URL, ANON_KEY, {
