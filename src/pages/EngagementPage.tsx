@@ -1,20 +1,41 @@
-// 관계 관리 — 3-tier 통합 대시보드.
-//   Top   : 차트 그리드 (참여도/분류/그룹사/발송 트렌드/캠페인 오픈율/답장률)
-//   Mid   : 인사이트 카드 (자동 탐지된 액션 후보)
-//   Bottom: 탭 (사람별 / 캠페인별)
-// 차트·인사이트 클릭은 PeopleTab 의 필터 state 를 변경해 드릴다운.
+// 관계 관리 대시보드 — 오프라인 영업의 보조 채널 관점.
+// 메일 마케팅 최적화가 아니라 "정기 터치 / 관계 cadence" 가 중심.
+//
+// 구조:
+//   Top   : KPI 카드 4개
+//   Mid-1 : "관계 cadence" 차트 4개 — 누구를 언제 터치할지
+//   Mid-2 : "발송 활동 / 호응" 차트 4개 — 어떤 메일이 호응 받았는지 (재활용 판단)
+//   Mid-3 : 추천 액션 카드 — 자동 탐지된 패턴 (사람별 / 캠페인별 혼합)
+//   Bottom: 두 탭 — 사람별 / 캠페인별
+// 차트·인사이트 클릭 시 하단 탭의 필터로 자동 드릴다운.
 
 import { useMemo, useState } from 'react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
-import { Heart, Users, TrendingUp, Clock, Mail, BarChart3 } from 'lucide-react'
+import {
+  Heart,
+  Users,
+  TrendingUp,
+  Clock,
+  Mail,
+  AlertCircle,
+  Zap,
+  Layers,
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useContactEngagement } from '@/hooks/useContactEngagement'
 import { useCampaignEngagement } from '@/hooks/useCampaignEngagement'
-import { computeTier, type EngagementTier } from '@/types/engagement'
+import {
+  computeTier,
+  isOverdue,
+  isDueSoon,
+  type EngagementTier,
+  type TouchBucket,
+} from '@/types/engagement'
 import { type CustomerType } from '@/types/contact'
-import { detectInsights, type Insight } from '@/lib/insights'
-import { DashboardCharts } from '@/components/engagement/DashboardCharts'
+import { detectInsights, sortInsights, type Insight } from '@/lib/insights'
+import { CadenceCharts } from '@/components/engagement/CadenceCharts'
+import { ReactionCharts } from '@/components/engagement/ReactionCharts'
 import { InsightStrip } from '@/components/engagement/InsightStrip'
 import { PeopleTab, type PeopleTabExternalFilter } from '@/components/engagement/PeopleTab'
 import {
@@ -27,7 +48,6 @@ export default function EngagementPage() {
   const { data: campaigns = [] } = useCampaignEngagement()
 
   const [tab, setTab] = useState<'people' | 'campaigns'>('people')
-  // 외부 필터 — 같은 값 재푸시 시에도 useEffect 트리거하기 위해 _v nonce 포함.
   const [peopleExternal, setPeopleExternal] = useState<
     (PeopleTabExternalFilter & { _v: number }) | undefined
   >()
@@ -36,33 +56,36 @@ export default function EngagementPage() {
   >()
   const [highlightCampaignId, setHighlightCampaignId] = useState<string | null>(null)
 
-  const insights = useMemo(() => detectInsights(rows, campaigns), [rows, campaigns])
+  const insights = useMemo(
+    () => sortInsights(detectInsights(rows, campaigns)),
+    [rows, campaigns]
+  )
 
+  // KPI — 오프라인 영업 cadence 관점에 맞춰 재구성
   const stats = useMemo(() => {
-    const acc = { total: 0, active: 0, dormant: 0, never: 0 }
+    const acc = { total: 0, dueSoon: 0, overdue: 0, freshThisMonth: 0 }
     for (const r of rows) {
       if (r.is_unsubscribed || r.is_bounced) continue
       acc.total++
       const t = computeTier(r.last_sent_at)
-      if (t === 'active') acc.active++
-      if (t === 'dormant' || t === 'cold') acc.dormant++
-      if (t === 'never') acc.never++
+      if (t === 'active') acc.freshThisMonth++
+      if (isOverdue(r.customer_type, r.last_sent_at)) acc.overdue++
+      if (isDueSoon(r.customer_type, r.last_sent_at)) acc.dueSoon++
     }
     return acc
   }, [rows])
 
-  // 차트 클릭 — additive: 정의된 필드만 전달
+  // 차트 클릭 — additive
   const pushPeopleFilter = (f: PeopleTabExternalFilter) => {
     setTab('people')
     setPeopleExternal({ ...f, _v: Date.now() })
   }
 
-  // 인사이트 클릭 — replace: 모든 필터 초기화 후 인사이트 조건만 적용
+  // 인사이트 클릭 — replace + tab routing
   const handleInsightClick = (i: Insight) => {
     if (i.target === 'people' && i.peopleFilter) {
       setTab('people')
       setPeopleExternal({ ...i.peopleFilter, _replace: true, _v: Date.now() })
-      // 캠페인 탭의 외부 필터도 초기화 — 탭 간 일관성
       setCampaignExternal({ _replace: true, _v: Date.now() })
     } else if (i.target === 'campaigns' && i.campaignFilter) {
       setTab('campaigns')
@@ -83,51 +106,119 @@ export default function EngagementPage() {
               관계 관리
             </h1>
             <p className="text-sm text-muted-foreground mt-0.5">
-              차트로 한눈에, 인사이트로 액션, 사람·캠페인 단위로 깊이 보기
+              오프라인 영업의 정기 터치 — 관계 cadence 와 메일 호응을 한눈에
             </p>
           </div>
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          <KpiCard icon={Users} label="총 연락처" value={stats.total} accent="text-foreground" />
-          <KpiCard icon={TrendingUp} label="활성 (30일)" value={stats.active} accent="text-emerald-600 dark:text-emerald-400" />
-          <KpiCard icon={Clock} label="뜸함 (90일+)" value={stats.dormant} accent="text-amber-600 dark:text-amber-400" />
-          <KpiCard icon={Mail} label="미발송" value={stats.never} accent="text-muted-foreground" />
+          <KpiCard
+            icon={Users}
+            label="총 연락처"
+            value={stats.total}
+            accent="text-foreground"
+          />
+          <KpiCard
+            icon={AlertCircle}
+            label="주기 초과 (즉시 터치)"
+            value={stats.overdue}
+            accent="text-rose-600 dark:text-rose-400"
+            onClick={() =>
+              pushPeopleFilter({ overdueOnly: true })
+            }
+          />
+          <KpiCard
+            icon={Clock}
+            label="곧 터치 권장"
+            value={stats.dueSoon}
+            accent="text-amber-600 dark:text-amber-400"
+            onClick={() =>
+              pushPeopleFilter({ dueForTouch: true })
+            }
+          />
+          <KpiCard
+            icon={TrendingUp}
+            label="최근 30일 터치"
+            value={stats.freshThisMonth}
+            accent="text-emerald-600 dark:text-emerald-400"
+            onClick={() => pushPeopleFilter({ tier: 'active' })}
+          />
         </div>
       </div>
 
-      {/* 본문 — 차트 / 인사이트 / 탭 */}
       <div className="flex-1 overflow-auto">
-        <div className="px-4 sm:px-6 py-4 space-y-4 border-b">
-          {/* Tier 1 — 차트 */}
-          <SectionHeader icon={BarChart3} title="대시보드" subtitle="모든 차트 클릭으로 드릴다운" />
-          <DashboardCharts
-            rows={rows}
-            campaigns={campaigns}
-            onTierClick={(t: EngagementTier) => pushPeopleFilter({ tier: t })}
-            onCustomerTypeClick={(t: CustomerType) => pushPeopleFilter({ customerType: t })}
-            onParentGroupClick={(g) => pushPeopleFilter({ parentGroup: g })}
-            onCampaignClick={(id) => {
-              setTab('campaigns')
-              setHighlightCampaignId(id)
-            }}
-          />
+        <div className="px-4 sm:px-6 py-4 space-y-5 border-b">
+          {/* 섹션 1 — 관계 cadence */}
+          <section className="space-y-3">
+            <SectionHeader
+              icon={Layers}
+              title="관계 cadence"
+              subtitle="누구를 언제 터치할지 — 클릭 시 사람별 탭 자동 좁힘"
+            />
+            <CadenceCharts
+              rows={rows}
+              onTierClick={(t: EngagementTier) => pushPeopleFilter({ tier: t })}
+              onTouchBucketClick={(b: TouchBucket) =>
+                pushPeopleFilter({ touchBucket: b })
+              }
+              onParentGroupClick={(g) => pushPeopleFilter({ parentGroup: g })}
+              onCustomerTypeClick={(t: CustomerType) =>
+                pushPeopleFilter({ customerType: t })
+              }
+            />
+          </section>
 
-          {/* Tier 2 — 인사이트 */}
+          {/* 섹션 2 — 발송 활동 / 호응 */}
+          <section className="space-y-3">
+            <SectionHeader
+              icon={Mail}
+              title="발송 활동 / 호응"
+              subtitle="어떤 메일이 호응 받았나 — 재활용·재발송 판단 자료"
+            />
+            <ReactionCharts
+              rows={rows}
+              campaigns={campaigns}
+              onCustomerTypeClick={(t: CustomerType) =>
+                pushPeopleFilter({ customerType: t })
+              }
+              onCampaignClick={(id) => {
+                setTab('campaigns')
+                setHighlightCampaignId(id)
+              }}
+            />
+          </section>
+
+          {/* 섹션 3 — 추천 액션 (인사이트) */}
           {insights.length > 0 && (
-            <>
-              <SectionHeader title="추천 액션" subtitle="자동 탐지된 패턴 — 클릭 시 해당 조건으로 좁힘" />
+            <section className="space-y-3">
+              <SectionHeader
+                icon={Zap}
+                title="추천 액션"
+                subtitle="자동 탐지된 패턴 — 클릭 시 해당 조건으로 좁힘"
+              />
               <InsightStrip insights={insights} onClick={handleInsightClick} />
-            </>
+            </section>
           )}
         </div>
 
-        {/* Tier 3 — 탭 */}
-        <Tabs value={tab} onValueChange={(v) => setTab(v as 'people' | 'campaigns')} className="flex flex-col">
+        {/* 탭 — 사람별 / 캠페인별 */}
+        <Tabs
+          value={tab}
+          onValueChange={(v) => setTab(v as 'people' | 'campaigns')}
+          className="flex flex-col"
+        >
           <div className="px-4 sm:px-6 pt-3">
             <TabsList>
-              <TabsTrigger value="people">사람별 ({stats.total.toLocaleString()})</TabsTrigger>
-              <TabsTrigger value="campaigns">캠페인별 ({campaigns.filter((c) => c.sent_count > 0).length.toLocaleString()})</TabsTrigger>
+              <TabsTrigger value="people">
+                사람별 ({stats.total.toLocaleString()})
+              </TabsTrigger>
+              <TabsTrigger value="campaigns">
+                발송별 (
+                {campaigns
+                  .filter((c) => c.sent_count > 0)
+                  .length.toLocaleString()}
+                )
+              </TabsTrigger>
             </TabsList>
           </div>
           <TabsContent value="people" className="m-0">
@@ -154,14 +245,34 @@ function KpiCard({
   label,
   value,
   accent,
+  onClick,
 }: {
   icon: React.ElementType
   label: string
   value: number
   accent: string
+  onClick?: () => void
 }) {
   return (
-    <Card>
+    <Card
+      className={cn(
+        'overflow-hidden',
+        onClick && 'transition-colors hover:bg-muted/30 cursor-pointer'
+      )}
+      onClick={onClick}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={
+        onClick
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                onClick()
+              }
+            }
+          : undefined
+      }
+    >
       <CardContent className="p-3">
         <div className="flex items-center gap-2">
           <Icon className={cn('w-4 h-4', accent)} />

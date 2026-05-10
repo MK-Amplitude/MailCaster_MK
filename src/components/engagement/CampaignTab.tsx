@@ -72,10 +72,9 @@ export function CampaignTab({
     if (!externalFilter) return
     if (externalFilter._replace) {
       setActiveFilter({
-        lowOpenRate: externalFilter.lowOpenRate,
-        highOpenRate: externalFilter.highOpenRate,
+        lowEngagement: externalFilter.lowEngagement,
+        highEngagement: externalFilter.highEngagement,
         noReply: externalFilter.noReply,
-        highReplyRate: externalFilter.highReplyRate,
         highBounce: externalFilter.highBounce,
         recentlySent: externalFilter.recentlySent,
       })

@@ -28,7 +28,7 @@ import {
 import { EmptyState } from '@/components/common/EmptyState'
 import { ContactDetailSheet } from '@/components/contacts/ContactDetailSheet'
 import { ContactFormDialog } from '@/components/contacts/ContactFormDialog'
-import { Send, Search, Eye, Reply, Mail } from 'lucide-react'
+import { Send, Search, Eye, Reply, Mail, Clock } from 'lucide-react'
 import { matchesSearch } from '@/lib/search'
 import { cn } from '@/lib/utils'
 import {
@@ -45,22 +45,30 @@ import {
 import {
   ENGAGEMENT_TIER_OPTIONS,
   computeTier,
+  computeTouchBucket,
+  isDueForTouch,
+  isOverdue,
+  TOUCH_BUCKETS,
   type EngagementTier,
   type ContactEngagementRow,
+  type TouchBucket,
 } from '@/types/engagement'
 
 // 상위 (EngagementPage) 가 차트/인사이트 클릭으로 설정하는 필터.
-// 두 가지 패턴:
 //   - 차트 클릭(additive): 정의된 필드만 덮어쓰기 (다른 필터 유지)
-//   - 인사이트 클릭(replace): _replace=true 와 함께 보내 모든 필터 초기화 후 적용
+//   - 인사이트 클릭(replace): _replace=true → 모든 필터 초기화 후 적용
 export interface PeopleTabExternalFilter {
   customerType?: CustomerType | 'all'
+  customerTypes?: CustomerType[]    // 다중 — 비면 customerType 사용
   parentGroup?: string | 'all' | '__none__'
   tier?: EngagementTier | 'all'
-  tiers?: EngagementTier[]   // 다중 — 비어있지 않으면 tier 무시
-  noReply?: boolean          // 발송 ≥1 && reply_count === 0
-  hasReply?: boolean         // reply_count > 0
-  _replace?: boolean         // true 면 적용 전에 모든 로컬 필터 초기화
+  tiers?: EngagementTier[]
+  touchBucket?: TouchBucket          // fine-grained 6 버킷
+  noReply?: boolean
+  hasReply?: boolean
+  dueForTouch?: boolean              // cadence 임박 또는 초과
+  overdueOnly?: boolean              // cadence 초과만 (강한 신호)
+  _replace?: boolean
 }
 
 interface Props {
@@ -76,11 +84,15 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
 
   const [search, setSearch] = useState('')
   const [customerType, setCustomerType] = useState<CustomerType | 'all'>('all')
+  const [customerTypes, setCustomerTypes] = useState<CustomerType[]>([])
   const [parentGroup, setParentGroup] = useState<string | 'all' | '__none__'>('all')
   const [tierFilter, setTierFilter] = useState<EngagementTier | 'all'>('all')
   const [extraTiers, setExtraTiers] = useState<EngagementTier[]>([])
+  const [touchBucket, setTouchBucket] = useState<TouchBucket | undefined>(undefined)
   const [noReplyOnly, setNoReplyOnly] = useState(false)
   const [hasReplyOnly, setHasReplyOnly] = useState(false)
+  const [dueForTouchOnly, setDueForTouchOnly] = useState(false)
+  const [overdueOnly, setOverdueOnly] = useState(false)
   const [sortKey, setSortKey] = useState<
     'last_sent_at' | 'total_opens' | 'reply_count' | 'total_sent'
   >('last_sent_at')
@@ -92,20 +104,27 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
     if (externalFilter._replace) {
       // 인사이트 클릭 — 다른 모든 필터 초기화 후 명시된 것만 적용
       setCustomerType(externalFilter.customerType ?? 'all')
+      setCustomerTypes(externalFilter.customerTypes ?? [])
       setParentGroup(externalFilter.parentGroup ?? 'all')
       setTierFilter(externalFilter.tier ?? 'all')
       setExtraTiers(externalFilter.tiers ?? [])
+      setTouchBucket(externalFilter.touchBucket)
       setNoReplyOnly(externalFilter.noReply ?? false)
       setHasReplyOnly(externalFilter.hasReply ?? false)
+      setDueForTouchOnly(externalFilter.dueForTouch ?? false)
+      setOverdueOnly(externalFilter.overdueOnly ?? false)
       return
     }
-    // 차트 클릭 — 정의된 필드만 덮어쓰기 (additive)
     if (externalFilter.customerType !== undefined) setCustomerType(externalFilter.customerType)
+    if (externalFilter.customerTypes !== undefined) setCustomerTypes(externalFilter.customerTypes)
     if (externalFilter.parentGroup !== undefined) setParentGroup(externalFilter.parentGroup)
     if (externalFilter.tier !== undefined) setTierFilter(externalFilter.tier)
     if (externalFilter.tiers !== undefined) setExtraTiers(externalFilter.tiers)
+    if (externalFilter.touchBucket !== undefined) setTouchBucket(externalFilter.touchBucket)
     if (externalFilter.noReply !== undefined) setNoReplyOnly(externalFilter.noReply)
     if (externalFilter.hasReply !== undefined) setHasReplyOnly(externalFilter.hasReply)
+    if (externalFilter.dueForTouch !== undefined) setDueForTouchOnly(externalFilter.dueForTouch)
+    if (externalFilter.overdueOnly !== undefined) setOverdueOnly(externalFilter.overdueOnly)
   }, [externalFilter])
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -129,9 +148,14 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
   const filtered = useMemo(() => {
     const q = search.trim()
     const tiersSet = extraTiers.length > 0 ? new Set(extraTiers) : null
+    const typesSet = customerTypes.length > 0 ? new Set(customerTypes) : null
     return enriched.filter((r) => {
-      if (customerType !== 'all') {
-        if ((r.customer_type ?? 'general') !== customerType) return false
+      const ct = (r.customer_type ?? 'general') as CustomerType
+      // 다중 customerTypes 가 우선; 없으면 단일 customerType
+      if (typesSet) {
+        if (!typesSet.has(ct)) return false
+      } else if (customerType !== 'all') {
+        if (ct !== customerType) return false
       }
       if (parentGroup !== 'all') {
         if (parentGroup === '__none__') {
@@ -140,12 +164,15 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
           if (r.parent_group !== parentGroup) return false
         }
       }
-      // 다중 tier 가 우선; 없으면 단일 tier
       if (tiersSet) {
         if (!tiersSet.has(r.tier)) return false
       } else if (tierFilter !== 'all' && r.tier !== tierFilter) return false
+      if (touchBucket && computeTouchBucket(r.last_sent_at) !== touchBucket) return false
       if (noReplyOnly && (r.reply_count > 0 || r.total_sent === 0)) return false
       if (hasReplyOnly && r.reply_count === 0) return false
+      if (overdueOnly && !isOverdue(r.customer_type, r.last_sent_at)) return false
+      if (dueForTouchOnly && !overdueOnly && !isDueForTouch(r.customer_type, r.last_sent_at))
+        return false
       if (q) {
         return (
           matchesSearch(r.name, q) ||
@@ -159,7 +186,20 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
       }
       return true
     })
-  }, [enriched, search, customerType, parentGroup, tierFilter, extraTiers, noReplyOnly, hasReplyOnly])
+  }, [
+    enriched,
+    search,
+    customerType,
+    customerTypes,
+    parentGroup,
+    tierFilter,
+    extraTiers,
+    touchBucket,
+    noReplyOnly,
+    hasReplyOnly,
+    dueForTouchOnly,
+    overdueOnly,
+  ])
 
   const sorted = useMemo(() => {
     const dir = sortDir === 'asc' ? 1 : -1
@@ -212,29 +252,49 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
 
   const hasActiveFilter =
     customerType !== 'all' ||
+    customerTypes.length > 0 ||
     parentGroup !== 'all' ||
     tierFilter !== 'all' ||
     extraTiers.length > 0 ||
+    touchBucket !== undefined ||
     noReplyOnly ||
-    hasReplyOnly
+    hasReplyOnly ||
+    dueForTouchOnly ||
+    overdueOnly
 
   const clearAll = () => {
     setCustomerType('all')
+    setCustomerTypes([])
     setParentGroup('all')
     setTierFilter('all')
     setExtraTiers([])
+    setTouchBucket(undefined)
     setNoReplyOnly(false)
     setHasReplyOnly(false)
+    setDueForTouchOnly(false)
+    setOverdueOnly(false)
     onClearExternal?.()
   }
 
-  // 다중 tier 가 활성일 때 보여줄 라벨 (예: "휴면 (180일)+오래됨 (180일+)")
   const extraTiersLabel = useMemo(
     () =>
       extraTiers
         .map((t) => ENGAGEMENT_TIER_OPTIONS.find((o) => o.value === t)?.label ?? t)
         .join(' · '),
     [extraTiers]
+  )
+
+  const customerTypesLabel = useMemo(
+    () =>
+      customerTypes
+        .map((t) => CUSTOMER_TYPE_OPTIONS.find((o) => o.value === t)?.label ?? t)
+        .join(' · '),
+    [customerTypes]
+  )
+
+  const touchBucketLabel = useMemo(
+    () => TOUCH_BUCKETS.find((b) => b.value === touchBucket)?.label ?? '',
+    [touchBucket]
   )
 
   return (
@@ -251,7 +311,14 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
-          <Select value={customerType} onValueChange={(v) => setCustomerType(v as CustomerType | 'all')}>
+          <Select
+            value={customerType}
+            onValueChange={(v) => {
+              setCustomerTypes([])
+              setCustomerType(v as CustomerType | 'all')
+            }}
+            disabled={customerTypes.length > 0}
+          >
             <SelectTrigger className="h-8 w-32 text-sm"><SelectValue placeholder="분류" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">분류 전체</SelectItem>
@@ -288,6 +355,16 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
               ))}
             </SelectContent>
           </Select>
+          {customerTypes.length > 0 && (
+            <Badge
+              variant="outline"
+              className="h-7 text-xs gap-1.5 cursor-pointer"
+              onClick={() => setCustomerTypes([])}
+              title={customerTypesLabel}
+            >
+              분류: {customerTypesLabel} ✕
+            </Badge>
+          )}
           {extraTiers.length > 0 && (
             <Badge
               variant="outline"
@@ -296,6 +373,35 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
               title={extraTiersLabel}
             >
               참여도: {extraTiersLabel} ✕
+            </Badge>
+          )}
+          {touchBucket && (
+            <Badge
+              variant="outline"
+              className="h-7 text-xs gap-1.5 cursor-pointer"
+              onClick={() => setTouchBucket(undefined)}
+            >
+              터치: {touchBucketLabel} ✕
+            </Badge>
+          )}
+          {overdueOnly && (
+            <Badge
+              variant="outline"
+              className="h-7 text-xs gap-1.5 cursor-pointer text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-900"
+              onClick={() => setOverdueOnly(false)}
+            >
+              <Clock className="w-3 h-3" />
+              주기 초과만 ✕
+            </Badge>
+          )}
+          {dueForTouchOnly && !overdueOnly && (
+            <Badge
+              variant="outline"
+              className="h-7 text-xs gap-1.5 cursor-pointer text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-900"
+              onClick={() => setDueForTouchOnly(false)}
+            >
+              <Clock className="w-3 h-3" />
+              지금 터치 권장 ✕
             </Badge>
           )}
           {noReplyOnly && (
