@@ -13,7 +13,6 @@ import {
   Ban,
   FileText,
   Paperclip,
-  Heart,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -21,7 +20,6 @@ const navItems = [
   { to: '/', icon: LayoutDashboard, label: '대시보드', end: true },
   { to: '/contacts', icon: Users, label: '연락처' },
   { to: '/groups', icon: FolderOpen, label: '그룹' },
-  { to: '/engagement', icon: Heart, label: '관계 관리' },
   { to: '/campaigns', icon: Mail, label: '메일 발송' },
   { to: '/templates', icon: FileText, label: '템플릿' },
   { to: '/signatures', icon: PenLine, label: '서명' },

@@ -1,11 +1,10 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Toaster } from 'sonner'
 import { AuthProvider } from '@/contexts/AuthContext'
 import { ProtectedRoute } from '@/components/common/ProtectedRoute'
 import { AppLayout } from '@/components/layout/AppLayout'
 import LoginPage from '@/pages/LoginPage'
-import DashboardPage from '@/pages/DashboardPage'
 import ContactsPage from '@/pages/ContactsPage'
 import GroupsPage from '@/pages/GroupsPage'
 import EngagementPage from '@/pages/EngagementPage'
@@ -50,10 +49,11 @@ export default function App() {
                 </ProtectedRoute>
               }
             >
-              <Route index element={<DashboardPage />} />
+              {/* "/" 가 곧 관계 관리 대시보드. /engagement 는 옛 북마크용 redirect. */}
+              <Route index element={<EngagementPage />} />
+              <Route path="engagement" element={<Navigate to="/" replace />} />
               <Route path="contacts" element={<ContactsPage />} />
               <Route path="groups" element={<GroupsPage />} />
-              <Route path="engagement" element={<EngagementPage />} />
               <Route path="signatures" element={<SignaturesPage />} />
               <Route path="templates" element={<TemplatesPage />} />
               <Route path="campaigns" element={<CampaignsPage />} />

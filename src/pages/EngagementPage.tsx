@@ -13,7 +13,7 @@ import { useMemo, useState } from 'react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import {
-  Heart,
+  LayoutDashboard,
   Users,
   TrendingUp,
   Clock,
@@ -102,8 +102,8 @@ export default function EngagementPage() {
         <div className="flex items-center justify-between gap-2 mb-3">
           <div className="min-w-0">
             <h1 className="text-xl font-bold flex items-center gap-2">
-              <Heart className="w-5 h-5 text-rose-500" />
-              관계 관리
+              <LayoutDashboard className="w-5 h-5 text-primary" />
+              대시보드
             </h1>
             <p className="text-sm text-muted-foreground mt-0.5">
               오프라인 영업의 정기 터치 — 관계 cadence 와 메일 호응을 한눈에
