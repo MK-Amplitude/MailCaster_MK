@@ -113,6 +113,7 @@ export interface Database {
           is_bounced: boolean
           bounce_count: number
           last_bounced_at: string | null
+          archived_at: string | null
           created_at: string
           updated_at: string
         }
@@ -142,6 +143,7 @@ export interface Database {
           is_bounced?: boolean
           bounce_count?: number
           last_bounced_at?: string | null
+          archived_at?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -168,6 +170,7 @@ export interface Database {
           is_bounced?: boolean
           bounce_count?: number
           last_bounced_at?: string | null
+          archived_at?: string | null
           updated_at?: string
         }
         Relationships: []
@@ -1040,6 +1043,7 @@ export interface Database {
           is_bounced: boolean
           bounce_count: number
           last_bounced_at: string | null
+          archived_at: string | null
           created_at: string
           updated_at: string
           owner_email: string | null
@@ -1139,6 +1143,11 @@ export interface Database {
       // RPC — 내 이메일로 온 미수락 초대를 일괄 수락 (016)
       accept_pending_invitations: {
         Args: Record<string, never>
+        Returns: number
+      }
+      // RPC — 1년+ 비활성 연락처 자동 보관 (036)
+      archive_inactive_contacts: {
+        Args: { p_org_id?: string; p_threshold_days?: number }
         Returns: number
       }
     }

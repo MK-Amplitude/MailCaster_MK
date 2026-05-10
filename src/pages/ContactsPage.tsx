@@ -24,6 +24,8 @@ import {
   useDeleteContacts,
   useToggleUnsubscribe,
   useBulkUpdateCustomerType,
+  useBulkArchiveContacts,
+  useArchiveInactiveContacts,
   useParentGroupOptions,
   type ContactScope,
   type ContactSort,
@@ -34,7 +36,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { UserPlus, Upload, Users, Search, UserX, Trash2, FolderPlus, Tag, Wand2, ScanLine, Loader2 } from 'lucide-react'
+import { UserPlus, Upload, Users, Search, UserX, Trash2, FolderPlus, Tag, Wand2, ScanLine, Loader2, Archive, ArchiveRestore } from 'lucide-react'
 import { PersonalizedSendDialog } from '@/components/campaigns/PersonalizedSendDialog'
 import { useOcrBusinessCard, type OcrFields } from '@/hooks/useOcrBusinessCard'
 import { toast } from 'sonner'
@@ -128,6 +130,8 @@ export default function ContactsPage() {
   const deleteContacts = useDeleteContacts()
   const toggleUnsub = useToggleUnsubscribe()
   const bulkUpdateType = useBulkUpdateCustomerType()
+  const bulkArchive = useBulkArchiveContacts()
+  const archiveInactive = useArchiveInactiveContacts()
 
   // 그룹사 필터 옵션 — 별도 쿼리로 unfiltered distinct 값을 가져옴.
   // (allContacts 기반으로 추출하면 '그룹 미소속' 선택 시 옵션이 0개가 되어
@@ -275,6 +279,15 @@ export default function ContactsPage() {
     clearSelection()
   }
 
+  const handleBulkArchive = async (archive: boolean) => {
+    const ids = scope === 'common' ? expandedCommonContactIds : [...selectedIds]
+    if (ids.length === 0) return
+    await bulkArchive.mutateAsync({ contactIds: ids, archive })
+    clearSelection()
+  }
+
+  const isArchivedView = status === 'archived'
+
   return (
     <div className="flex flex-col h-full">
       {/* 헤더 */}
@@ -310,6 +323,20 @@ export default function ContactsPage() {
                 <ScanLine className="w-4 h-4 sm:mr-1.5" />
               )}
               <span className="hidden sm:inline">명함 인식</span>
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => archiveInactive.mutate(365)}
+              disabled={archiveInactive.isPending}
+              title="1년 이상 메일/응답/노트 활동이 없는 연락처를 보관함으로 이동"
+            >
+              {archiveInactive.isPending ? (
+                <Loader2 className="w-4 h-4 sm:mr-1.5 animate-spin" />
+              ) : (
+                <Archive className="w-4 h-4 sm:mr-1.5" />
+              )}
+              <span className="hidden sm:inline">비활성 자동 보관</span>
             </Button>
             <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
               <Upload className="w-4 h-4 sm:mr-1.5" />
@@ -354,6 +381,9 @@ export default function ContactsPage() {
               <SelectItem value="bounced">바운스</SelectItem>
               {scope !== 'common' && (
                 <SelectItem value="needs_verification">⚠️ 회사 확인 필요</SelectItem>
+              )}
+              {scope !== 'common' && (
+                <SelectItem value="archived">📦 보관함 (비활성)</SelectItem>
               )}
             </SelectContent>
           </Select>
@@ -492,6 +522,17 @@ export default function ContactsPage() {
             icon: <UserX className="w-3.5 h-3.5 mr-1" />,
             onClick: handleBulkUnsubscribe,
           },
+          isArchivedView
+            ? {
+                label: '복원',
+                icon: <ArchiveRestore className="w-3.5 h-3.5 mr-1" />,
+                onClick: () => handleBulkArchive(false),
+              }
+            : {
+                label: '보관',
+                icon: <Archive className="w-3.5 h-3.5 mr-1" />,
+                onClick: () => handleBulkArchive(true),
+              },
           {
             label: '삭제',
             icon: <Trash2 className="w-3.5 h-3.5 mr-1" />,
