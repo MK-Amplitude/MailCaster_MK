@@ -39,6 +39,7 @@ export interface PeopleFilter {
   hasReply?: boolean               // reply_count > 0
   dueForTouch?: boolean            // cadence 임박 또는 초과
   overdueOnly?: boolean            // cadence 초과만 (더 강한 신호)
+  awaitingResponse?: boolean       // 답장 받았는데 내가 답장 안 함 (awaiting_my_response_count > 0)
 }
 
 export interface CampaignFilter {
@@ -231,7 +232,7 @@ function detectPeopleInsights(rows: ContactEngagementRow[]): Insight[] {
       count: awaitingMyResponse.length,
       label: '내가 답장 못 한 응답',
       hint: '고객이 답장했는데 내 답장이 마지막이 아닌 thread — 즉시 회신',
-      peopleFilter: { hasReply: true },
+      peopleFilter: { awaitingResponse: true },
     })
   }
 
