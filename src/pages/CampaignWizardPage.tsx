@@ -1232,8 +1232,34 @@ export default function CampaignWizardPage() {
           }
         }
 
-        // 4) recipients 교체 — draft/scheduled 캠페인은 모두 pending 이라 데이터 손실 없음
+        // 4) recipients 교체 — draft/scheduled 캠페인은 모두 pending 이라 발송 이력 손실은 없음.
+        //    단, AI 개인화 발송으로 만든 subject_override / body_html_override 는
+        //    delete-and-reinsert 사이클에서 사라지므로 사전에 보존한다.
+        //    contact_id 가 있으면 그걸 키로, 없으면 email 을 키로 매칭.
         {
+          const { data: existingRaw } = await supabase
+            .from('recipients')
+            .select('contact_id, email, subject_override, body_html_override')
+            .eq('campaign_id', editCampaignId)
+          const existing = (existingRaw ?? []) as Array<{
+            contact_id: string | null
+            email: string
+            subject_override: string | null
+            body_html_override: string | null
+          }>
+          const overrideMap = new Map<string, {
+            subject_override: string | null
+            body_html_override: string | null
+          }>()
+          for (const r of existing) {
+            if (!r.subject_override && !r.body_html_override) continue
+            const key = r.contact_id ?? `email:${r.email}`
+            overrideMap.set(key, {
+              subject_override: r.subject_override,
+              body_html_override: r.body_html_override,
+            })
+          }
+
           const { error: delErr } = await supabase
             .from('recipients')
             .delete()
@@ -1242,21 +1268,30 @@ export default function CampaignWizardPage() {
           const BATCH = 500
           for (let i = 0; i < previewContacts.length; i += BATCH) {
             const chunk = previewContacts.slice(i, i + BATCH)
-            const rows = chunk.map((c) => ({
-              campaign_id: editCampaignId,
-              contact_id: c.id || null,
-              email: c.email,
-              name: c.name,
-              variables: {
-                name: c.name ?? '',
+            const rows = chunk.map((c) => {
+              const key = c.id ?? `email:${c.email}`
+              const ov = overrideMap.get(key)
+              return {
+                campaign_id: editCampaignId,
+                contact_id: c.id || null,
                 email: c.email,
-                company: c.company ?? '',
-                department: c.department ?? '',
-                job_title: c.job_title ?? '',
-              },
-              status: 'pending' as const,
-            }))
-            const { error: insErr } = await supabase.from('recipients').insert(rows)
+                name: c.name,
+                variables: {
+                  name: c.name ?? '',
+                  email: c.email,
+                  company: c.company ?? '',
+                  department: c.department ?? '',
+                  job_title: c.job_title ?? '',
+                },
+                status: 'pending' as const,
+                ...(ov && {
+                  subject_override: ov.subject_override,
+                  body_html_override: ov.body_html_override,
+                }),
+              }
+            })
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const { error: insErr } = await supabase.from('recipients').insert(rows as any)
             if (insErr) throw insErr
           }
         }

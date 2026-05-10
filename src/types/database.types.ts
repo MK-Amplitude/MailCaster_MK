@@ -634,6 +634,9 @@ export interface Database {
           first_opened_at: string | null
           bounce_reason: string | null
           last_reply_check_at: string | null
+          // Phase 11 (migration 031) — AI 개인화 발송 per-recipient override
+          subject_override: string | null
+          body_html_override: string | null
         }
         Insert: {
           id?: string
@@ -662,6 +665,8 @@ export interface Database {
           first_opened_at?: string | null
           bounce_reason?: string | null
           last_reply_check_at?: string | null
+          subject_override?: string | null
+          body_html_override?: string | null
         }
         Update: {
           status?: DbRecipientStatus
@@ -682,6 +687,8 @@ export interface Database {
           first_opened_at?: string | null
           bounce_reason?: string | null
           last_reply_check_at?: string | null
+          subject_override?: string | null
+          body_html_override?: string | null
         }
         Relationships: []
       }

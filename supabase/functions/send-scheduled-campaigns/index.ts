@@ -417,8 +417,9 @@ async function processCampaign(
   // ------------------------------------------------------------
   if (sendMode === 'bulk') {
     // 개인화 오버라이드가 하나라도 있으면 일괄 발송 불가 — 개인별 본문이 손실됨.
+    // 빈 문자열은 무시 (실질적으로 override 없음).
     const hasOverride = (recipients as Recipient[]).some(
-      (r) => r.subject_override || r.body_html_override,
+      (r) => !!r.subject_override?.trim() || !!r.body_html_override?.trim(),
     )
     if (hasOverride) {
       const errMsg =
@@ -626,9 +627,12 @@ async function processCampaign(
       const vars = buildVariables(r)
       // 개인화 오버라이드 우선 — useSendCampaign.ts 와 동일 정책. (LLM 이 사람마다 직접
       // 작성한 문장이라 템플릿 변수 치환은 적용하지 않는다.)
-      const subject = r.subject_override ?? renderTemplate(c.subject ?? '', vars)
-      const renderedHtml = r.body_html_override
-        ? (linkSection ? `${r.body_html_override}${linkSection}` : r.body_html_override)
+      // 빈 문자열은 null 처럼 취급 — '' 가 들어 있으면 빈 제목/본문 발송 위험.
+      const subjOverride = r.subject_override?.trim() ? r.subject_override : null
+      const bodyOverride = r.body_html_override?.trim() ? r.body_html_override : null
+      const subject = subjOverride ?? renderTemplate(c.subject ?? '', vars)
+      const renderedHtml = bodyOverride
+        ? (linkSection ? `${bodyOverride}${linkSection}` : bodyOverride)
         : renderTemplate(bodyWithLinks, vars)
       // Phase 6 (C) — 오픈 추적 픽셀 주입 (캠페인 설정 on 일 때만)
       const html = c.enable_open_tracking

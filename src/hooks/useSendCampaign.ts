@@ -471,6 +471,25 @@ export function useSendCampaign() {
       //   - 실패 시 전원 'failed'.
       // ============================================================
       if (sendMode === 'bulk') {
+        // 개인화 오버라이드가 있는 수신자가 한 명이라도 있으면 BULK 발송 차단.
+        // BULK 는 단일 메일 1통이라 사람별 본문을 표현할 수 없음 — 개인화가 silently 손실됨.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const hasPersonalizedOverride = recipients.some((r: any) => {
+          const s = (r?.subject_override as string | null | undefined)?.trim()
+          const b = (r?.body_html_override as string | null | undefined)?.trim()
+          return !!s || !!b
+        })
+        if (hasPersonalizedOverride) {
+          await supabase
+            .from('campaigns')
+            .update({ status: previousStatus })
+            .eq('id', campaignId)
+          qc.invalidateQueries({ queryKey: ['campaigns'] })
+          throw new Error(
+            '일괄 발송 모드인데 일부 수신자에 AI 개인화 본문이 저장돼 있습니다. 개별 발송 모드로 전환하세요.'
+          )
+        }
+
         const rawSubject = campaign.subject ?? ''
         // bulk 에서는 수신자별 variables 치환이 불가능하므로 모든 {{...}} 변수는 차단 대상.
         // (개별 모드에서만 buildVariables/renderTemplate 이 돌아간다)
@@ -649,10 +668,11 @@ export function useSendCampaign() {
             const vars = buildVariables(r)
             // 개인화 모드 — recipients 행에 자체 subject/body 오버라이드가 있으면 그대로 사용.
             // (LLM 이 사람마다 직접 작성한 문장이라 템플릿 변수 치환 X)
+            // 빈 문자열은 null 처럼 취급 — '' 가 들어 있으면 빈 제목/본문으로 발송될 위험.
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const ovr = r as any as { subject_override?: string | null; body_html_override?: string | null }
-            const subjOverride = ovr.subject_override ?? null
-            const bodyOverride = ovr.body_html_override ?? null
+            const subjOverride = ovr.subject_override?.trim() ? ovr.subject_override : null
+            const bodyOverride = ovr.body_html_override?.trim() ? ovr.body_html_override : null
             const subject = subjOverride ?? renderTemplate(campaign.subject ?? '', vars)
             const renderedBody = bodyOverride ?? renderTemplate(finalBody, vars)
             const htmlWithLinks = linkSection ? `${renderedBody}${linkSection}` : renderedBody
