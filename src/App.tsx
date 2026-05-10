@@ -29,11 +29,23 @@ const AttachmentsPage = lazy(() => import('@/pages/AttachmentsPage'))
 const UnsubscribesPage = lazy(() => import('@/pages/UnsubscribesPage'))
 const SettingsPage = lazy(() => import('@/pages/SettingsPage'))
 
+// React Query 기본값.
+//   - refetchOnWindowFocus: false
+//     기본 true 면 사용자가 다른 탭 갔다 돌아올 때마다 stale 쿼리 일제 refetch.
+//     이 앱은 모든 mutation 후 invalidateQueries(98곳) 로 캐시 무효화 처리하고 있어
+//     focus 시 자동 refetch 가 사실상 중복 작업. 트래픽/지연 절감 위해 끔.
+//     (실시간성 필요한 곳은 refetchInterval 로 명시 — 예: useRecipients 발송 중 폴링)
+//   - staleTime: 5분
+//     대부분 데이터(연락처/그룹/캠페인 목록)는 분 단위로 안 바뀜.
+//     동일 페이지 재방문 시 즉시 캐시 반환 → 체감 속도 향상.
+//   - retry: 1
+//     네트워크 일시 오류는 한 번만 재시도. 진짜 에러는 빨리 사용자에게 표시.
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: 1000 * 60,
+      staleTime: 1000 * 60 * 5,
       retry: 1,
+      refetchOnWindowFocus: false,
     },
   },
 })
