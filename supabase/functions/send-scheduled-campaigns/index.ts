@@ -64,6 +64,8 @@ interface Recipient {
   email: string
   name: string | null
   variables: Record<string, unknown> | null
+  subject_override: string | null
+  body_html_override: string | null
 }
 
 interface Campaign {
@@ -262,10 +264,12 @@ async function processCampaign(
   }
 
   // 2) 수신자 로드 (pending 만)
+  //    개인화 발송(personalized-send) 으로 미리 작성된 per-recipient subject/body
+  //    오버라이드도 함께 가져온다 — useSendCampaign.ts 클라이언트 경로와 동작 일치.
   const { data: recipients, error: rErr } = await supabase
     .schema('mailcaster')
     .from('recipients')
-    .select('id, email, name, variables')
+    .select('id, email, name, variables, subject_override, body_html_override')
     .eq('campaign_id', c.id)
     .eq('status', 'pending')
     .order('created_at', { ascending: true })
@@ -384,6 +388,11 @@ async function processCampaign(
   }
 
   const fromEmail = (profile.email as string | null) ?? ''
+  if (!fromEmail.trim()) {
+    // From 이 빈 값이면 Gmail 이 malformed MIME 으로 거부하거나 정체불명의 발송이 됨.
+    // 캠페인 자체를 fail 시키는 게 sane default — 운영자가 profile.email 을 채우게 유도.
+    throw new Error('사용자 프로필의 이메일 주소가 비어 있습니다.')
+  }
   const fromName =
     (profile.default_sender_name as string | null) ?? (profile.display_name as string | null) ?? ''
   const from = fromName ? `${fromName} <${fromEmail}>` : fromEmail
@@ -407,6 +416,27 @@ async function processCampaign(
   // BULK — 1회 호출
   // ------------------------------------------------------------
   if (sendMode === 'bulk') {
+    // 개인화 오버라이드가 하나라도 있으면 일괄 발송 불가 — 개인별 본문이 손실됨.
+    const hasOverride = (recipients as Recipient[]).some(
+      (r) => r.subject_override || r.body_html_override,
+    )
+    if (hasOverride) {
+      const errMsg =
+        '일괄 발송 모드인데 일부 수신자에 개인화 오버라이드가 있습니다. 개별 발송 모드로 전환하세요.'
+      await supabase
+        .schema('mailcaster')
+        .from('recipients')
+        .update({ status: 'failed', error_message: errMsg })
+        .eq('campaign_id', c.id)
+        .eq('status', 'pending')
+      await supabase
+        .schema('mailcaster')
+        .from('campaigns')
+        .update({ status: 'failed', failed_count: recipients.length })
+        .eq('id', c.id)
+      return { sent: 0, failed: recipients.length }
+    }
+
     // 개인화 변수 사전 차단
     const vars = [...extractVariables(c.subject ?? ''), ...extractVariables(finalBody)]
     if (vars.length > 0) {
@@ -427,7 +457,26 @@ async function processCampaign(
       return { sent: 0, failed: recipients.length }
     }
 
-    const toList = (recipients as Recipient[]).map((r) => r.email)
+    // 빈 이메일은 일괄 발송에 포함하면 Gmail 이 전체 호출을 거부할 수 있음.
+    // 개별 사전 차단 후 toList 구성.
+    const validRecipients = (recipients as Recipient[]).filter((r) => r.email?.trim())
+    const invalidRecipients = (recipients as Recipient[]).filter((r) => !r.email?.trim())
+    if (invalidRecipients.length > 0) {
+      await supabase
+        .schema('mailcaster')
+        .from('recipients')
+        .update({ status: 'failed', error_message: '이메일 주소가 비어 있습니다.' })
+        .in('id', invalidRecipients.map((r) => r.id))
+    }
+    if (validRecipients.length === 0) {
+      await supabase
+        .schema('mailcaster')
+        .from('campaigns')
+        .update({ status: 'failed', failed_count: invalidRecipients.length })
+        .eq('id', c.id)
+      return { sent: 0, failed: invalidRecipients.length }
+    }
+    const toList = validRecipients.map((r) => r.email)
     if (toList.length + campaignCc.length + campaignBcc.length > 500) {
       await supabase
         .schema('mailcaster')
@@ -474,19 +523,19 @@ async function processCampaign(
         .from('campaigns')
         .update({
           status: 'sent',
-          sent_count: recipients.length,
-          failed_count: 0,
+          sent_count: validRecipients.length,
+          failed_count: invalidRecipients.length,
         })
         .eq('id', c.id)
-      // 첨부 이력 기록 — 수신자 × 첨부 개수만큼 recipient_attachments 행 추가
+      // 첨부 이력 기록 — 발송된 수신자만 (invalidRecipients 제외)
       await recordRecipientAttachments(
         supabase,
         c.user_id,
-        (recipients as Recipient[]).map((r) => r.id),
+        validRecipients.map((r) => r.id),
         prepared,
         deliveryMode,
       )
-      return { sent: recipients.length, failed: 0 }
+      return { sent: validRecipients.length, failed: invalidRecipients.length }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       await supabase
@@ -555,6 +604,18 @@ async function processCampaign(
     }
 
     const r = recipients[i] as Recipient
+
+    // 빈 이메일 사전 차단 — Gmail API 가 묵묵히 실패하거나 부분 성공으로 빠져 사용자가 인지 못 함.
+    if (!r.email || !r.email.trim()) {
+      await supabase
+        .schema('mailcaster')
+        .from('recipients')
+        .update({ status: 'failed', error_message: '이메일 주소가 비어 있습니다.' })
+        .eq('id', r.id)
+      failed++
+      continue
+    }
+
     await supabase
       .schema('mailcaster')
       .from('recipients')
@@ -563,8 +624,12 @@ async function processCampaign(
 
     try {
       const vars = buildVariables(r)
-      const subject = renderTemplate(c.subject ?? '', vars)
-      const renderedHtml = renderTemplate(bodyWithLinks, vars)
+      // 개인화 오버라이드 우선 — useSendCampaign.ts 와 동일 정책. (LLM 이 사람마다 직접
+      // 작성한 문장이라 템플릿 변수 치환은 적용하지 않는다.)
+      const subject = r.subject_override ?? renderTemplate(c.subject ?? '', vars)
+      const renderedHtml = r.body_html_override
+        ? (linkSection ? `${r.body_html_override}${linkSection}` : r.body_html_override)
+        : renderTemplate(bodyWithLinks, vars)
       // Phase 6 (C) — 오픈 추적 픽셀 주입 (캠페인 설정 on 일 때만)
       const html = c.enable_open_tracking
         ? injectTrackingPixel(renderedHtml, buildTrackingPixel(r.id, c.id))
