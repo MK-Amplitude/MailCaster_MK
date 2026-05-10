@@ -39,7 +39,25 @@
       "Bash(deno --version)",
       "Bash(echo \"BUILD_EXIT=$?\")",
       "Bash(npm view *)",
-      "Bash(grep -iE \"^\\(use-sync|scheduler|react-is|jsx-runtime|use-callback-ref|object-assign\\)$\")"
+      "Bash(grep -iE \"^\\(use-sync|scheduler|react-is|jsx-runtime|use-callback-ref|object-assign\\)$\")",
+      "Bash(git checkout *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(git config *)",
+      "Bash(git credential-osxkeychain *)",
+      "Bash(gh auth *)",
+      "Bash(git pull *)",
+      "Bash(git fetch *)",
+      "Bash(git merge *)",
+      "Bash(supabase status *)",
+      "Bash(supabase functions *)",
+      "Bash(supabase secrets *)",
+      "Bash(find /Users/myoungkyu.hoamplitude.com/MailCaster_MK/src/components/templates -name \"*.tsx\" -exec grep -l \"TemplateCard\\\\|mine\" {} \\\\;)",
+      "Bash(echo \"---EXIT: $?---\")",
+      "Bash(gh pr create --title 'Phase 7/8 — organizations + org-scoped unsubscribe sync' --body ' *)",
+      "Bash(git stash *)",
+      "Bash(gh pr create --title 'feat: pass email domain as hint to AI company resolver' --body ' *)"
     ]
   }
 }
