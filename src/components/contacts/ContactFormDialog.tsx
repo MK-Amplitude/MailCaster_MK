@@ -50,9 +50,12 @@ interface ContactFormDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   contact?: Contact | null
+  /** 신규 모드에서 미리 채울 값 — 명함 OCR 결과 등.
+   *  contact 가 있으면 무시 (수정 모드 우선). */
+  prefill?: Partial<FormData>
 }
 
-export function ContactFormDialog({ open, onOpenChange, contact }: ContactFormDialogProps) {
+export function ContactFormDialog({ open, onOpenChange, contact, prefill }: ContactFormDialogProps) {
   const isEdit = !!contact
   const create = useCreateContact()
   const update = useUpdateContact()
@@ -88,10 +91,22 @@ export function ContactFormDialog({ open, onOpenChange, contact }: ContactFormDi
               customer_type: (contact.customer_type as CustomerType | null) ?? 'general',
               parent_group: contact.parent_group ?? '',
             }
-          : { customer_type: 'general', parent_group: '', display_title: '' }
+          : {
+              customer_type: 'general',
+              parent_group: '',
+              display_title: '',
+              // OCR 등 외부 prefill 값 — undefined 필드는 빈 폼으로
+              email: prefill?.email ?? '',
+              name: prefill?.name ?? '',
+              company: prefill?.company ?? '',
+              department: prefill?.department ?? '',
+              job_title: prefill?.job_title ?? '',
+              phone: prefill?.phone ?? '',
+              ...(prefill?.parent_group ? { parent_group: prefill.parent_group } : {}),
+            }
       )
     }
-  }, [open, contact, reset])
+  }, [open, contact, prefill, reset])
 
   const onSubmit = async (data: FormData) => {
     // 빈 문자열 → null 정규화 (parent_group / display_title 둘 다 NULL 의미가 명확해야 함)
