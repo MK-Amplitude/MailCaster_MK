@@ -14,6 +14,8 @@ export interface CampaignEngagementRow {
   total_opens: number
   unique_opens: number
   reply_count: number
+  /** migration 029 — '관심' 카테고리로 분류된 답장 수 */
+  interested_reply_count: number
   bounce_count: number
   total_recipients: number
   open_rate: number  // 0~100
@@ -44,10 +46,12 @@ export interface ContactEngagementRow {
   total_sent: number
   total_opens: number
   reply_count: number
+  /** migration 029 — '관심' 카테고리로 분류된 답장 수 */
+  interested_reply_count: number
   last_sent_at: string | null
   last_opened_at: string | null
   last_replied_at: string | null
-  // 마지막 캠페인 요약 (one-row latest, JSONB)
+  // 마지막 캠페인 요약 (one-row latest, JSONB) — migration 029 부터 reply_category 포함
   last_campaign: {
     campaign_id: string
     campaign_name: string
@@ -55,6 +59,7 @@ export interface ContactEngagementRow {
     opened: boolean
     open_count: number
     replied: boolean
+    reply_category?: string | null
   } | null
 }
 

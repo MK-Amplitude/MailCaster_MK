@@ -3,6 +3,7 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
+import type { ReplyCategory } from '@/types/replyCategory'
 
 export interface SendHistoryRow {
   recipient_id: string
@@ -17,6 +18,8 @@ export interface SendHistoryRow {
   bounced: boolean
   // Gmail thread id — 답장 클릭 시 Gmail 새 탭으로 점프하기 위해 필요
   gmail_thread_id: string | null
+  /** 답장 자동 분류 (migration 028). 답장 없거나 미분류면 null. */
+  reply_category: ReplyCategory | null
 }
 
 const QK = 'contact-send-history'
@@ -29,7 +32,7 @@ export function useContactSendHistory(contactId: string | null | undefined) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const { data, error } = await (supabase.from('recipients') as any)
         .select(
-          'id, campaign_id, sent_at, opened, open_count, replied, replied_at, bounced, gmail_thread_id, campaigns:campaign_id(name, subject)'
+          'id, campaign_id, sent_at, opened, open_count, replied, replied_at, bounced, gmail_thread_id, reply_category, campaigns:campaign_id(name, subject)'
         )
         .eq('contact_id', contactId!)
         .eq('status', 'sent')
@@ -49,6 +52,7 @@ export function useContactSendHistory(contactId: string | null | undefined) {
         replied_at: r.replied_at,
         bounced: r.bounced,
         gmail_thread_id: r.gmail_thread_id ?? null,
+        reply_category: (r.reply_category ?? null) as ReplyCategory | null,
       }))
     },
     enabled: !!contactId,

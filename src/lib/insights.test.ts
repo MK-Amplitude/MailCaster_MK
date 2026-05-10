@@ -45,6 +45,7 @@ function row(over: Partial<ContactEngagementRow>): ContactEngagementRow {
     total_sent: 0,
     total_opens: 0,
     reply_count: 0,
+    interested_reply_count: 0,
     last_sent_at: null,
     last_opened_at: null,
     last_replied_at: null,
@@ -67,6 +68,7 @@ function campaign(over: Partial<CampaignEngagementRow>): CampaignEngagementRow {
     total_opens: 0,
     unique_opens: 0,
     reply_count: 0,
+    interested_reply_count: 0,
     bounce_count: 0,
     total_recipients: 100,
     open_rate: 0,
@@ -141,6 +143,19 @@ describe('detectInsights — people insights count == filter applied count', () 
     if (!overdue || !overdue.peopleFilter) throw new Error('insight missing')
     const matched = applyPeopleFilter(rows, overdue.peopleFilter)
     expect(matched.length).toBe(overdue.count)
+  })
+
+  it('interested-replies: counts contacts with interested_reply_count > 0', () => {
+    const rows: ContactEngagementRow[] = [
+      row({ reply_count: 1, interested_reply_count: 1 }),  // 관심
+      row({ reply_count: 1, interested_reply_count: 0 }),  // 답장은 있지만 관심 아님
+      row({ reply_count: 0, interested_reply_count: 0 }),  // 답장 없음
+      row({ customer_type: 'partner', reply_count: 2, interested_reply_count: 2 }),  // 관심 (다른 분류)
+    ]
+    const insights = detectInsights(rows)
+    const interested = insights.find((i) => i.id === 'interested-replies')
+    expect(interested?.count).toBe(2)
+    expect(interested?.severity).toBe('positive')
   })
 
   it('replied-prospects: filter must restrict to reply_count > 0', () => {

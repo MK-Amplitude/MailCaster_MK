@@ -9,6 +9,7 @@ import { useNavigate } from 'react-router-dom'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useContactSendHistory } from '@/hooks/useContactSendHistory'
 import { cn } from '@/lib/utils'
+import { replyCategoryOption } from '@/types/replyCategory'
 
 interface Props {
   contactId: string | null | undefined
@@ -51,6 +52,7 @@ export function ContactSendHistory({ contactId, limit = 8 }: Props) {
     <div className="space-y-1.5">
       {visible.map((h) => {
         const replyUrl = h.replied && h.gmail_thread_id ? gmailThreadUrl(h.gmail_thread_id) : null
+        const categoryOpt = h.replied ? replyCategoryOption(h.reply_category) : null
         return (
           <div
             key={h.recipient_id}
@@ -106,10 +108,20 @@ export function ContactSendHistory({ contactId, limit = 8 }: Props) {
                   <ResultBadge
                     icon={Reply}
                     active={h.replied}
-                    // thread_id 가 없는 답장은 클릭해도 갈 곳이 없어 일반 배지로 표시
                     label={h.replied ? '답장' : '답장 없음'}
                     tone={h.replied ? 'positive' : 'muted'}
                   />
+                )}
+                {categoryOpt && (
+                  <span
+                    className={cn(
+                      'inline-flex items-center text-[10px] px-1.5 py-0 h-4 rounded border',
+                      categoryOpt.className
+                    )}
+                    title={categoryOpt.hint}
+                  >
+                    {categoryOpt.label}
+                  </span>
                 )}
                 {h.bounced && (
                   <ResultBadge icon={AlertOctagon} active label="반송" tone="critical" />

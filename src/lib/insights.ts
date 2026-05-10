@@ -205,7 +205,22 @@ function detectPeopleInsights(rows: ContactEngagementRow[]): Insight[] {
     })
   }
 
-  // 6) [POSITIVE] 답장이 온 영업대상 — 팔로업 우선
+  // 6) [POSITIVE] '관심' 카테고리로 분류된 답장이 있는 연락처 — 최우선 액션
+  // 이 카드는 일반 "답장 온" 보다 강한 신호이므로 별도로 부각.
+  const interestedRepliers = active.filter((r) => r.interested_reply_count > 0)
+  if (interestedRepliers.length >= 1) {
+    insights.push({
+      id: 'interested-replies',
+      target: 'people',
+      severity: 'positive',
+      count: interestedRepliers.length,
+      label: '관심·미팅 의향 답장',
+      hint: '톤 분석상 관심 표현 — 즉시 미팅 제안 권장',
+      peopleFilter: { hasReply: true },
+    })
+  }
+
+  // 7) [POSITIVE] 답장이 온 영업대상 — 팔로업 우선
   const repliedProspects = prospects.filter((r) => r.reply_count > 0)
   if (repliedProspects.length >= 1) {
     insights.push({
@@ -214,7 +229,7 @@ function detectPeopleInsights(rows: ContactEngagementRow[]): Insight[] {
       severity: 'positive',
       count: repliedProspects.length,
       label: '답장 온 영업대상',
-      hint: '팔로업 우선순위 — 미팅 제안 후보',
+      hint: '팔로업 우선순위',
       peopleFilter: { customerType: 'prospect', hasReply: true },
     })
   }

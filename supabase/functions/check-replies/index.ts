@@ -42,13 +42,37 @@ const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 const CRON_SECRET = Deno.env.get('CRON_SECRET') ?? ''
 const GOOGLE_CLIENT_ID = Deno.env.get('GOOGLE_CLIENT_ID')!
 const GOOGLE_CLIENT_SECRET = Deno.env.get('GOOGLE_CLIENT_SECRET')!
+// 답장 분류용 — 부재 시 분류 단계만 skip (감지/저장은 그대로 동작).
+const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY') ?? ''
+// 답장 분류는 짧은 input 으로 충분 — mini 가 비용/지연 최적.
+const OPENAI_CLASSIFY_MODEL =
+  Deno.env.get('REPLY_CLASSIFY_MODEL') ?? 'gpt-4o-mini'
 
 // 한 tick 당 최대 처리 시간 (ms). pg_cron 55s 컷 직전에 자진 종료.
 const RUN_BUDGET_MS = 50_000
 // Gmail threads.get 1회 호출 + DB update 여유 (예상 400~1500ms).
 const GMAIL_CALL_BUDGET_MS = 2_000
+// 답장 분류 1건 추가 시간 (Gmail messages.get + OpenAI). 보수적 추정.
+const CLASSIFY_BUDGET_MS = 2_500
 // 한 번에 큐에서 집어올 후보 수. 5분마다 × BATCH_SIZE 개씩 순환.
 const BATCH_SIZE = 150
+// 답장 본문 LLM 으로 보낼 때 최대 길이 (긴 thread 의 quoted history 잘라냄).
+const REPLY_BODY_MAX_CHARS = 2000
+
+type ReplyCategory =
+  | 'interested'
+  | 'not_interested'
+  | 'question'
+  | 'out_of_office'
+  | 'unclear'
+
+const VALID_CATEGORIES = new Set<ReplyCategory>([
+  'interested',
+  'not_interested',
+  'question',
+  'out_of_office',
+  'unclear',
+])
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -113,11 +137,17 @@ Deno.serve(async (req) => {
 
     // 결과 버퍼 — 한 번에 몰아서 DB 반영.
     const noReplyIds: string[] = [] // last_reply_check_at 만 갱신
-    const repliedInfos: Array<{ id: string; repliedAtIso: string; cid: string }> = []
+    const repliedInfos: Array<{
+      id: string
+      repliedAtIso: string
+      cid: string
+      category: ReplyCategory
+    }> = []
     const campaignIdsTouched = new Set<string>()
     let processed = 0
     let tokenErrors = 0
     let gmailErrors = 0
+    let classifyErrors = 0
 
     // ------------------------------------------------------------
     // 3) 사용자 루프 — 각자의 access_token 으로 threads.get
@@ -163,10 +193,28 @@ Deno.serve(async (req) => {
           const reply = await detectReply(accessToken, r, userEmail)
           processed++
           if (reply) {
+            // 답장 본문 분류 — 실패해도 'unclear' 로 기록하고 진행 (감지 자체는 보존).
+            // 분류 예산 잔량이 부족하면 skip ('unclear' 저장) — 다음 cron tick 에선
+            // replied=true 가 되어 분류 큐에서 제외되니, 사실상 한 번에 처리.
+            let category: ReplyCategory = 'unclear'
+            const remainingMs = RUN_BUDGET_MS - (Date.now() - runStartedAt)
+            if (remainingMs > CLASSIFY_BUDGET_MS) {
+              try {
+                category = await classifyReply(accessToken, reply.messageId)
+              } catch (e) {
+                classifyErrors++
+                console.warn(
+                  '[check-replies] classify error rid=',
+                  r.id,
+                  e instanceof Error ? e.message : e
+                )
+              }
+            }
             repliedInfos.push({
               id: r.id,
               repliedAtIso: reply.repliedAtIso,
               cid: r.campaign_id,
+              category,
             })
             campaignIdsTouched.add(r.campaign_id)
           } else {
@@ -190,7 +238,7 @@ Deno.serve(async (req) => {
     // ------------------------------------------------------------
     const nowIso = new Date().toISOString()
 
-    // 4-1) 답장 확인된 수신자 — 개별 update (replied_at 이 행마다 다름)
+    // 4-1) 답장 확인된 수신자 — 개별 update (replied_at + reply_category 가 행마다 다름)
     for (const info of repliedInfos) {
       const { error } = await supabase
         .schema('mailcaster')
@@ -198,6 +246,7 @@ Deno.serve(async (req) => {
         .update({
           replied: true,
           replied_at: info.repliedAtIso,
+          reply_category: info.category,
           last_reply_check_at: nowIso,
         })
         .eq('id', info.id)
@@ -241,6 +290,7 @@ Deno.serve(async (req) => {
       no_reply: noReplyIds.length,
       token_errors: tokenErrors,
       gmail_errors: gmailErrors,
+      classify_errors: classifyErrors,
       users: byUser.size,
       batch_fetched: rows.length,
       elapsed_ms: Date.now() - runStartedAt,
@@ -266,7 +316,7 @@ async function detectReply(
   accessToken: string,
   r: Row,
   userEmailLower: string
-): Promise<{ repliedAtIso: string } | null> {
+): Promise<{ repliedAtIso: string; messageId: string } | null> {
   const url =
     `https://gmail.googleapis.com/gmail/v1/users/me/threads/${encodeURIComponent(r.gmail_thread_id)}` +
     `?format=metadata&metadataHeaders=From&metadataHeaders=Date`
@@ -304,7 +354,7 @@ async function detectReply(
   //
   // 주의: alias (myoungkyu.ho+test@amplitude.com) 는 다른 문자열이므로
   // "다른 사람 답장" 으로 잡힐 수 있음 — 드물지만 edge case.
-  let earliestOtherMs: number | null = null
+  let earliest: { ms: number; messageId: string } | null = null
   for (const m of messages) {
     const ts = Number(m.internalDate ?? 0)
     if (!ts || ts <= sentAtMs) continue
@@ -313,10 +363,180 @@ async function detectReply(
     if (!from) continue
     if (from.toLowerCase() === userEmailLower) continue
 
-    if (earliestOtherMs === null || ts < earliestOtherMs) earliestOtherMs = ts
+    if (earliest === null || ts < earliest.ms) earliest = { ms: ts, messageId: m.id }
   }
-  if (earliestOtherMs === null) return null
-  return { repliedAtIso: new Date(earliestOtherMs).toISOString() }
+  if (earliest === null) return null
+  return {
+    repliedAtIso: new Date(earliest.ms).toISOString(),
+    messageId: earliest.messageId,
+  }
+}
+
+// ============================================================
+// Gmail messages.get + OpenAI 분류
+// ============================================================
+// 1) Gmail API 로 답장 메시지 본문 (text/plain 우선, fallback text/html stripped)
+// 2) 인용 부분(>로 시작하는 라인) 과 시그니처 영역을 휴리스틱으로 제거 → 본문만 남김
+// 3) OpenAI 로 5분류 — 짧은 system prompt, 50~100 token 응답.
+async function classifyReply(
+  accessToken: string,
+  messageId: string
+): Promise<ReplyCategory> {
+  if (!OPENAI_API_KEY) return 'unclear'
+
+  const text = await fetchReplyBody(accessToken, messageId)
+  const trimmed = stripQuotedAndSignature(text).slice(0, REPLY_BODY_MAX_CHARS)
+  if (!trimmed.trim()) return 'unclear'
+
+  const systemPrompt = `당신은 한국어 B2B 영업 답장의 톤을 5가지로 분류합니다.
+입력은 답장 본문(인용/서명 제거됨). 출력은 JSON: {"category": "..."}.
+
+분류:
+- interested      : 관심 표현·미팅 의향·후속 컨택 동의·긍정 응답
+- not_interested  : 정중한 거절·관심 없음·이미 충분함·다음 기회
+- question        : 구체적 질문·자료 요청·일정·가격·기능 문의
+- out_of_office   : 자동응답·휴가·부재중·자리 비움·자동 회신
+- unclear         : 위에 안 맞거나 톤이 모호
+
+규칙:
+1) 반드시 위 5개 중 하나.
+2) JSON 외 다른 출력 금지.`
+
+  const userPrompt = `답장 본문:\n"""\n${trimmed}\n"""\n\n위 5개 중 하나로 분류:`
+
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: OPENAI_CLASSIFY_MODEL,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      response_format: { type: 'json_object' },
+      temperature: 0,
+      max_tokens: 30,
+    }),
+  })
+  if (!res.ok) {
+    const body = await res.text()
+    throw new Error(`OpenAI ${res.status}: ${body.slice(0, 200)}`)
+  }
+  const data = await res.json()
+  const content = data.choices?.[0]?.message?.content ?? '{}'
+  let parsed: { category?: string } = {}
+  try {
+    parsed = JSON.parse(content)
+  } catch {
+    return 'unclear'
+  }
+  const cat = parsed.category as ReplyCategory | undefined
+  if (cat && VALID_CATEGORIES.has(cat)) return cat
+  return 'unclear'
+}
+
+async function fetchReplyBody(accessToken: string, messageId: string): Promise<string> {
+  const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}?format=full`
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } })
+  if (!res.ok) {
+    throw new Error(`Gmail messages.get ${res.status}`)
+  }
+  const msg = (await res.json()) as {
+    payload?: GmailPart
+  }
+  const body = extractTextBody(msg.payload)
+  return body ?? ''
+}
+
+interface GmailPart {
+  mimeType?: string
+  body?: { data?: string; size?: number }
+  parts?: GmailPart[]
+}
+
+// 재귀적으로 text/plain → text/html (HTML 태그 제거) 순으로 본문 추출.
+function extractTextBody(part?: GmailPart): string | null {
+  if (!part) return null
+  // text/plain 우선
+  if (part.mimeType === 'text/plain' && part.body?.data) {
+    return decodeBase64Url(part.body.data)
+  }
+  // multipart: 자식들 재귀 — text/plain 우선, 없으면 text/html
+  if (part.parts && part.parts.length > 0) {
+    for (const p of part.parts) {
+      if (p.mimeType === 'text/plain' && p.body?.data) {
+        return decodeBase64Url(p.body.data)
+      }
+    }
+    for (const p of part.parts) {
+      const nested = extractTextBody(p)
+      if (nested) return nested
+    }
+    for (const p of part.parts) {
+      if (p.mimeType === 'text/html' && p.body?.data) {
+        return stripHtml(decodeBase64Url(p.body.data))
+      }
+    }
+  }
+  if (part.mimeType === 'text/html' && part.body?.data) {
+    return stripHtml(decodeBase64Url(part.body.data))
+  }
+  return null
+}
+
+function decodeBase64Url(s: string): string {
+  // Gmail base64url → 표준 base64
+  const b64 = s.replace(/-/g, '+').replace(/_/g, '/')
+  try {
+    // atob → bytes → utf-8 디코딩
+    const binary = atob(b64)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+    return new TextDecoder('utf-8').decode(bytes)
+  } catch {
+    return ''
+  }
+}
+
+function stripHtml(html: string): string {
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// 인용(>로 시작) + Gmail 의 "On … wrote:" 헤더 + 시그니처 구분자(--) 이후 제거.
+// 휴리스틱이라 100% 정확하진 않지만 LLM 입력의 노이즈를 크게 줄여줌.
+function stripQuotedAndSignature(text: string): string {
+  // 1) "On {date}, {name} wrote:" / "{date} ... 작성:" 같은 답장 헤더 이후를 자르기
+  const replyHeaderPatterns = [
+    /\n\s*On .+ wrote:[\s\S]*$/m,
+    /\n\s*\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2}[\s\S]+(작성|wrote|쓴 글|보낸 메일):[\s\S]*$/m,
+    /\n\s*-+\s*Original Message\s*-+[\s\S]*$/im,
+    /\n\s*From:.+\nSent:.+[\s\S]*$/im,
+  ]
+  let out = text
+  for (const re of replyHeaderPatterns) out = out.replace(re, '')
+
+  // 2) 시그니처 구분자 (-- 단독 라인) 이후 제거
+  out = out.replace(/\n--\s*\n[\s\S]*$/m, '')
+
+  // 3) 인용된 라인 (> 로 시작) 제거
+  out = out
+    .split('\n')
+    .filter((l) => !/^\s*>/.test(l))
+    .join('\n')
+
+  return out.trim()
 }
 
 // RFC 5322 From header 에서 이메일 부분만 정확히 추출.
