@@ -247,9 +247,10 @@ export function ReactionCharts({
               <Tooltip
                 formatter={fmtPercent}
                 labelFormatter={
-                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  /* eslint-disable @typescript-eslint/no-explicit-any */
                   ((_label: unknown, payload: any) =>
                     payload?.[0]?.payload?.fullName ?? '') as any
+                  /* eslint-enable @typescript-eslint/no-explicit-any */
                 }
               />
               <Bar
