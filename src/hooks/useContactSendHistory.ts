@@ -15,6 +15,8 @@ export interface SendHistoryRow {
   replied: boolean
   replied_at: string | null
   bounced: boolean
+  // Gmail thread id — 답장 클릭 시 Gmail 새 탭으로 점프하기 위해 필요
+  gmail_thread_id: string | null
 }
 
 const QK = 'contact-send-history'
@@ -27,7 +29,7 @@ export function useContactSendHistory(contactId: string | null | undefined) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const { data, error } = await (supabase.from('recipients') as any)
         .select(
-          'id, campaign_id, sent_at, opened, open_count, replied, replied_at, bounced, campaigns:campaign_id(name, subject)'
+          'id, campaign_id, sent_at, opened, open_count, replied, replied_at, bounced, gmail_thread_id, campaigns:campaign_id(name, subject)'
         )
         .eq('contact_id', contactId!)
         .eq('status', 'sent')
@@ -46,6 +48,7 @@ export function useContactSendHistory(contactId: string | null | undefined) {
         replied: r.replied,
         replied_at: r.replied_at,
         bounced: r.bounced,
+        gmail_thread_id: r.gmail_thread_id ?? null,
       }))
     },
     enabled: !!contactId,
