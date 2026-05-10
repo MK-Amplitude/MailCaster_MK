@@ -168,6 +168,13 @@ function CampaignRow({
         : successRate >= 50
           ? 'text-slate-600 dark:text-slate-300'
           : 'text-red-600 dark:text-red-400'
+  // 응답률 = 발송 성공한 사람 중 답장한 사람 비율.
+  // 현재 데이터 모델에서 recipient 한 행당 replied true/false 1번이라 응답수 == 응답자수.
+  // 표시는 "응답 N (X%)" 한 칸으로 압축.
+  const replyCount = campaign.reply_count ?? 0
+  const replyRate = campaign.sent_count > 0
+    ? Math.round((replyCount / campaign.sent_count) * 1000) / 10
+    : null
 
   return (
     <Card className="hover:border-primary/30 transition-colors">
@@ -210,6 +217,20 @@ function CampaignRow({
                   {successRate !== null && (
                     <span className={`font-medium ${successRateTone}`}>
                       성공률 {successRate.toFixed(1)}%
+                    </span>
+                  )}
+                  {/* 응답: 발송 성공한 사람 중 답장한 사람. reply_count 가 0 이어도 표시 — \"아직 0\" 정보 가치 있음 */}
+                  {campaign.sent_count > 0 && (
+                    <span
+                      className={
+                        replyCount > 0
+                          ? 'text-emerald-600 dark:text-emerald-400 font-medium'
+                          : 'text-muted-foreground'
+                      }
+                      title={`응답자 ${replyCount}명 / 발송 ${campaign.sent_count}명`}
+                    >
+                      응답 {replyCount}명
+                      {replyRate !== null && ` (${replyRate.toFixed(1)}%)`}
                     </span>
                   )}
                 </>
