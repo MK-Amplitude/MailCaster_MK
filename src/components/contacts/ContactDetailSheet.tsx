@@ -269,7 +269,7 @@ export function ContactDetailSheet({
                 <Activity className="w-3 h-3" />
                 활동 기록
               </h3>
-              <ContactTimeline contactId={contact.id} />
+              <ContactTimeline contactId={contact.id} contactEmail={contact.email} />
             </section>
 
             {/* 변경 이력 */}
