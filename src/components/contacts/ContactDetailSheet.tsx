@@ -63,7 +63,7 @@ export function ContactDetailSheet({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent className="w-full sm:max-w-md p-0 flex flex-col">
+      <SheetContent className="w-full sm:max-w-md p-0 pt-safe pb-safe flex flex-col">
         <SheetHeader className="px-5 py-4 border-b">
           <SheetTitle className="text-left">
             <div className="flex items-center justify-between">

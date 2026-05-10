@@ -102,7 +102,7 @@ export default function GroupsPage() {
                   <ChevronDown className="w-3 h-3 ml-1 shrink-0 opacity-60" />
                 </Button>
               </SheetTrigger>
-              <SheetContent side="left" className="w-72 p-0 pt-safe">
+              <SheetContent side="left" className="w-72 p-0 pt-safe pb-safe">
                 <SheetHeader className="px-4 py-3 border-b">
                   <SheetTitle className="text-sm">카테고리 필터</SheetTitle>
                 </SheetHeader>
