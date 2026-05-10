@@ -62,15 +62,21 @@ export function useContacts(filters?: ContactQueryOptions) {
       }
 
       // 상태 필터만 서버에서 처리. 텍스트 검색은 클라이언트에서(초성 지원).
-      if (filters?.status === 'unsubscribed') {
-        query = query.eq('is_unsubscribed', true)
-      } else if (filters?.status === 'bounced') {
-        query = query.eq('is_bounced', true)
-      } else if (filters?.status === 'normal') {
-        query = query.eq('is_unsubscribed', false).eq('is_bounced', false)
-      } else if (filters?.status === 'needs_verification') {
-        // 회사명 확인이 필요한 상태들 (pending=재시도 대기, failed=에러, not_found=모델이 모름)
-        query = query.in('company_lookup_status', ['pending', 'failed', 'not_found'])
+      // archived: 보관함만 보기. 그 외 모든 상태는 archived_at IS NULL 만 노출 (기본 = 활성).
+      if (filters?.status === 'archived') {
+        query = query.not('archived_at', 'is', null)
+      } else {
+        query = query.is('archived_at', null)
+        if (filters?.status === 'unsubscribed') {
+          query = query.eq('is_unsubscribed', true)
+        } else if (filters?.status === 'bounced') {
+          query = query.eq('is_bounced', true)
+        } else if (filters?.status === 'normal') {
+          query = query.eq('is_unsubscribed', false).eq('is_bounced', false)
+        } else if (filters?.status === 'needs_verification') {
+          // 회사명 확인이 필요한 상태들 (pending=재시도 대기, failed=에러, not_found=모델이 모름)
+          query = query.in('company_lookup_status', ['pending', 'failed', 'not_found'])
+        }
       }
 
       // 고객 분류 필터 (Phase 9). 'all' 또는 undefined 면 무필터.
@@ -345,6 +351,58 @@ export function useToggleUnsubscribe() {
       qc.invalidateQueries({ queryKey: [QUERY_KEY] })
       qc.invalidateQueries({ queryKey: [COMMON_QUERY_KEY] })
       toast.success(unsubscribe ? '수신거부 처리되었습니다.' : '수신거부가 해제되었습니다.')
+    },
+  })
+}
+
+export function useBulkArchiveContacts() {
+  const qc = useQueryClient()
+
+  return useMutation({
+    mutationFn: async ({ contactIds, archive }: { contactIds: string[]; archive: boolean }) => {
+      if (contactIds.length === 0) return 0
+      const { error } = await supabase
+        .from('contacts')
+        .update({ archived_at: archive ? new Date().toISOString() : null })
+        .in('id', contactIds)
+      if (error) throw error
+      return contactIds.length
+    },
+    onSuccess: (count, { archive }) => {
+      qc.invalidateQueries({ queryKey: [QUERY_KEY] })
+      qc.invalidateQueries({ queryKey: [COMMON_QUERY_KEY] })
+      toast.success(
+        archive
+          ? `${count}명의 연락처를 보관함으로 이동했습니다.`
+          : `${count}명의 연락처를 복원했습니다.`
+      )
+    },
+  })
+}
+
+// 1년+ 비활성 연락처를 자동 archive — Postgres 함수 호출.
+// 반환: archive 처리된 행 수.
+export function useArchiveInactiveContacts() {
+  const qc = useQueryClient()
+  const { currentOrg } = useAuth()
+
+  return useMutation<number, Error, number | undefined>({
+    mutationFn: async (thresholdDays) => {
+      const { data, error } = await supabase.rpc('archive_inactive_contacts', {
+        p_org_id: currentOrg!.id,
+        p_threshold_days: thresholdDays ?? 365,
+      })
+      if (error) throw error
+      return (data as unknown as number) ?? 0
+    },
+    onSuccess: (count) => {
+      qc.invalidateQueries({ queryKey: [QUERY_KEY] })
+      qc.invalidateQueries({ queryKey: [COMMON_QUERY_KEY] })
+      if (count > 0) {
+        toast.success(`비활성 연락처 ${count}명을 보관했습니다.`)
+      } else {
+        toast.info('1년 이상 비활성인 연락처가 없습니다.')
+      }
     },
   })
 }

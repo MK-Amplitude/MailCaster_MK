@@ -25,6 +25,7 @@ export type ContactStatus =
   | 'bounced'
   | 'no_group'
   | 'needs_verification' // company_lookup_status ∈ {pending, failed, not_found}
+  | 'archived' // archived_at IS NOT NULL — 1년+ 비활성 (수동 또는 cron 보관)
 
 // Phase 9: 고객 분류 (Phase 9.2 — 6 buckets)
 //   amplitude_customer = Amplitude 기존 고객
