@@ -14,6 +14,8 @@ import {
   useRemoveRecipientFromCampaign,
 } from '@/hooks/useCampaigns'
 import { useContacts } from '@/hooks/useContacts'
+import { useSignatureById } from '@/hooks/useSignatures'
+import { replyCategoryOption, type ReplyCategory } from '@/types/replyCategory'
 import { matchesSearch } from '@/lib/search'
 import { Search, X, UserPlus } from 'lucide-react'
 import { useCampaignBlocks } from '@/hooks/useCampaignBlocks'
@@ -87,6 +89,19 @@ export default function CampaignDetailPage() {
   const { data: recipients = [] } = useCampaignRecipients(id)
   const { data: blocks = [] } = useCampaignBlocks(id)
   const { data: attachments = [] } = useCampaignAttachments(id)
+  // 미리보기에서 서명을 동적으로 append — body_html 에 이미 포함돼 있지 않을 때만.
+  // (편집 모드에서 서명만 바꿨는데 body_html 이 갱신되지 않은 케이스 방어)
+  const { data: signature } = useSignatureById(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (campaign as any)?.signature_id ?? null
+  )
+  const previewBodyHtml = useMemo(() => {
+    const body = campaign?.body_html ?? ''
+    const sigHtml = signature?.html ?? ''
+    if (!sigHtml) return body
+    if (body.includes(sigHtml)) return body
+    return body ? `${body}<br/><br/>${sigHtml}` : sigHtml
+  }, [campaign?.body_html, signature?.html])
   const sendCampaign = useSendCampaign()
   const deleteCampaign = useDeleteCampaign()
   const updateCampaign = useUpdateCampaign()
@@ -510,7 +525,7 @@ export default function CampaignDetailPage() {
             <div>
               <Label>본문 미리보기</Label>
               <div className="mt-1 border rounded bg-white dark:bg-gray-950">
-                <SignaturePreview html={campaign.body_html ?? ''} />
+                <SignaturePreview html={previewBodyHtml} />
               </div>
             </div>
           </CardContent>
@@ -782,18 +797,52 @@ export default function CampaignDetailPage() {
                                     ) : null}
                                   </span>
                                 )}
-                                {showReplied && (
-                                  <span
-                                    className="inline-flex items-center gap-0.5 text-[11px] text-green-600 dark:text-green-400"
-                                    title={
-                                      r.replied_at
-                                        ? `답장: ${format(new Date(r.replied_at), 'M월 d일 HH:mm', { locale: ko })}`
-                                        : '답장 수신'
-                                    }
-                                  >
-                                    <Reply className="w-3.5 h-3.5" />
-                                  </span>
-                                )}
+                                {showReplied && (() => {
+                                  // generated types 가 아직 reply_category / gmail_thread_id 를 포함 안 해서 cast.
+                                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                                  const rExt = r as any as {
+                                    reply_category?: ReplyCategory | null
+                                    gmail_thread_id?: string | null
+                                  }
+                                  const catOpt = replyCategoryOption(rExt.reply_category ?? null)
+                                  const replyHref = rExt.gmail_thread_id
+                                    ? `https://mail.google.com/mail/u/0/#all/${rExt.gmail_thread_id}`
+                                    : null
+                                  const replyTitle = r.replied_at
+                                    ? `답장: ${format(new Date(r.replied_at), 'M월 d일 HH:mm', { locale: ko })}${catOpt ? ` · ${catOpt.label}` : ''}`
+                                    : '답장 수신'
+                                  return (
+                                    <span className="inline-flex items-center gap-1">
+                                      {replyHref ? (
+                                        <a
+                                          href={replyHref}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          onClick={(e) => e.stopPropagation()}
+                                          className="inline-flex items-center text-[11px] text-green-600 dark:text-green-400 hover:underline"
+                                          title={`${replyTitle} — Gmail 새 탭`}
+                                        >
+                                          <Reply className="w-3.5 h-3.5" />
+                                        </a>
+                                      ) : (
+                                        <span
+                                          className="inline-flex items-center text-[11px] text-green-600 dark:text-green-400"
+                                          title={replyTitle}
+                                        >
+                                          <Reply className="w-3.5 h-3.5" />
+                                        </span>
+                                      )}
+                                      {catOpt && (
+                                        <span
+                                          className={`inline-flex items-center text-[10px] px-1 py-0 h-4 rounded border ${catOpt.className}`}
+                                          title={catOpt.hint}
+                                        >
+                                          {catOpt.label}
+                                        </span>
+                                      )}
+                                    </span>
+                                  )
+                                })()}
                                 {r.bounced && (
                                   <span
                                     className="inline-flex items-center gap-0.5 text-[11px] text-orange-600 dark:text-orange-400"

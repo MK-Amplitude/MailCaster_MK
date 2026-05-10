@@ -85,6 +85,23 @@ export function useUpdateSignature() {
   })
 }
 
+// 단일 서명 조회 — CampaignDetailPage 미리보기에서 signature_id 로 html 을 끌어오는 용도.
+export function useSignatureById(signatureId: string | null | undefined) {
+  return useQuery({
+    queryKey: [QK, 'one', signatureId],
+    queryFn: async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { data, error } = await (supabase.from('signatures') as any)
+        .select('id, name, html')
+        .eq('id', signatureId!)
+        .maybeSingle()
+      if (error) throw error
+      return data as { id: string; name: string; html: string } | null
+    },
+    enabled: !!signatureId,
+  })
+}
+
 export function useDeleteSignature() {
   const qc = useQueryClient()
 

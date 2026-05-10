@@ -34,7 +34,8 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { UserPlus, Upload, Users, Search, UserX, Trash2, FolderPlus, Tag } from 'lucide-react'
+import { UserPlus, Upload, Users, Search, UserX, Trash2, FolderPlus, Tag, Wand2 } from 'lucide-react'
+import { PersonalizedSendDialog } from '@/components/campaigns/PersonalizedSendDialog'
 import {
   CUSTOMER_TYPE_OPTIONS,
   type ContactWithGroups,
@@ -64,6 +65,7 @@ export default function ContactsPage() {
   const [deleteTarget, setDeleteTarget] = useState<ContactWithGroups | null>(null)
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
   const [addToGroupOpen, setAddToGroupOpen] = useState(false)
+  const [personalizeOpen, setPersonalizeOpen] = useState(false)
 
   // 기본(개별) 스코프용 쿼리 — scope='common' 일 때는 enabled 되더라도 결과를 쓰지 않음
   const {
@@ -396,6 +398,11 @@ export default function ContactsPage() {
         onClear={clearSelection}
         actions={[
           {
+            label: 'AI 개인화 발송',
+            icon: <Wand2 className="w-3.5 h-3.5 mr-1" />,
+            onClick: () => setPersonalizeOpen(true),
+          },
+          {
             label: '그룹에 추가',
             icon: <FolderPlus className="w-3.5 h-3.5 mr-1" />,
             onClick: () => setAddToGroupOpen(true),
@@ -481,6 +488,18 @@ export default function ContactsPage() {
         variant="destructive"
         onConfirm={handleBulkDelete}
         loading={deleteContacts.isPending}
+      />
+      <PersonalizedSendDialog
+        open={personalizeOpen}
+        onOpenChange={setPersonalizeOpen}
+        contacts={(() => {
+          // common 뷰면 expanded 된 contact_id 들에 매칭, 일반이면 selectedIds 그대로.
+          const ids =
+            scope === 'common' ? expandedCommonContactIds : [...selectedIds]
+          return contacts
+            .filter((c) => ids.includes(c.id) && !c.is_unsubscribed && !c.is_bounced)
+            .map((c) => ({ id: c.id, name: c.name, email: c.email }))
+        })()}
       />
     </div>
   )

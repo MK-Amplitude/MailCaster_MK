@@ -257,6 +257,20 @@ export function useSendCampaign() {
       if (!finalBody.trim()) {
         throw new Error('발송할 본문이 비어있습니다. 템플릿 내용을 확인하세요.')
       }
+
+      // 서명이 body_html 에 이미 들어 있지 않으면 끝에 append.
+      // 편집 모드에서 서명만 바꿨는데 위저드가 body 를 갱신하지 못한 케이스 방어.
+      if (campaign.signature_id) {
+        const { data: sig } = await supabase
+          .from('signatures')
+          .select('html')
+          .eq('id', campaign.signature_id)
+          .maybeSingle()
+        const sigHtml = (sig?.html as string | undefined) ?? ''
+        if (sigHtml && !finalBody.includes(sigHtml)) {
+          finalBody = `${finalBody}<br/><br/>${sigHtml}`
+        }
+      }
       console.log('[sendCampaign] finalBody', { length: finalBody.length, source: 'body_html' })
 
       // 2-2) 첨부 파일 로드
