@@ -60,7 +60,7 @@ interface SendMailInput {
  * 줄바꿈으로 해석될 수 있어 함께 제거.
  */
 function stripCRLF(s: string): string {
-  // eslint-disable-next-line no-control-regex
+   
   return s.replace(/[\r\n\0\u2028\u2029]/g, '')
 }
 
@@ -191,7 +191,7 @@ function encodeRFC2231(value: string): string {
  */
 function asciiFallbackName(s: string): string {
   return s
-    // eslint-disable-next-line no-control-regex
+     
     .replace(/[^\x20-\x7E]/g, '_')
     .replace(/["\\]/g, '_')
 }

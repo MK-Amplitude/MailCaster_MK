@@ -110,7 +110,7 @@ export function useDeleteTemplate() {
         // campaign_blocks 조회 자체가 실패 — 네트워크/권한 등. 진짜 delete 시도는 해본다.
         console.warn('[deleteTemplate] usage check failed, proceeding anyway', usageErr)
       } else if (usages && usages.length > 0) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         
         const names = usages
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           .map((u: any) => u.campaigns?.name)

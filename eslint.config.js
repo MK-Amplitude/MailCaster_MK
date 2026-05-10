@@ -79,10 +79,12 @@ export default tseslint.config(
   },
 
   // -----------------------------------------------------------
-  // vite.config / eslint.config 등 Node 환경 파일
+  // vite.config / tailwind.config / eslint.config 등 Node 환경 파일
+  // .ts 설정 파일은 typescript-eslint 의 recommended 까지 적용해야 파서가 붙음.
   // -----------------------------------------------------------
   {
     files: ['*.config.{js,ts}', 'vite.config.ts', 'eslint.config.js'],
+    extends: [js.configs.recommended, ...tseslint.configs.recommended],
     languageOptions: {
       globals: {
         ...globals.node,

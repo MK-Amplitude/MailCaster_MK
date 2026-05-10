@@ -267,6 +267,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   )
 }
 
+// AuthProvider 와 같은 파일에서 useAuth 훅을 export — 컨텍스트 정의가 한 곳.
+// eslint-disable-next-line react-refresh/only-export-components
 export function useAuth() {
   const ctx = useContext(AuthContext)
   if (!ctx) throw new Error('useAuth must be used within AuthProvider')

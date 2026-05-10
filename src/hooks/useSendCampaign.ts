@@ -30,7 +30,7 @@ async function retryWithBackoff<T>(
 ): Promise<T> {
   const { maxAttempts = 3, baseMs = 1000, maxMs = 10_000, label = 'api' } = opts
   let attempt = 0
-  // eslint-disable-next-line no-constant-condition
+   
   while (true) {
     try {
       return await fn()
@@ -266,7 +266,7 @@ export function useSendCampaign() {
         .eq('campaign_id', campaignId)
         .order('sort_order', { ascending: true })
       if (caErr) throw caErr
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       const allAttachmentRows: DriveAttachmentRow[] = (camAtt ?? [])
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .map((r: any) => r.drive_attachments as DriveAttachmentRow)

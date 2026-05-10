@@ -53,4 +53,6 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
 )
 Button.displayName = "Button"
 
+// shadcn/ui 표준 패턴 — variant 함수와 컴포넌트를 같은 파일에서 export.
+// eslint-disable-next-line react-refresh/only-export-components
 export { Button, buttonVariants }

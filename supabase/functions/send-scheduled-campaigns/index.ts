@@ -212,6 +212,7 @@ Deno.serve(async (req) => {
 // deno-lint-ignore no-explicit-any
 async function processCampaign(
   // deno-lint-ignore no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   supabase: any,
   c: Campaign,
   runStartedAt: number,
@@ -684,6 +685,7 @@ async function processCampaign(
 // ------------------------------------------------------------
 async function advanceCheckpoint(
   // deno-lint-ignore no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   supabase: any,
   campaignId: string,
   lastRecipientId: string,
@@ -707,6 +709,7 @@ async function advanceCheckpoint(
 // deno-lint-ignore no-explicit-any
 async function prepareAttachments(
   // deno-lint-ignore no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   supabase: any,
   accessToken: string,
   campaignId: string,
@@ -725,6 +728,7 @@ async function prepareAttachments(
   }
 
   // deno-lint-ignore no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const driveRows: DriveAttachmentRow[] = (rows as any[])
     .map((r) => r.drive_attachments as DriveAttachmentRow)
     .filter(Boolean)
@@ -816,6 +820,7 @@ async function prepareAttachments(
 // ------------------------------------------------------------
 async function recordRecipientAttachments(
   // deno-lint-ignore no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   supabase: any,
   userId: string,
   recipientIds: string[],
@@ -1080,13 +1085,16 @@ interface GmailSendInput {
 }
 
 function stripCRLF(s: string): string {
+  // \ud5e4\ub354 \uc778\uc81d\uc158 \ubc29\uc9c0 \u2014 CR/LF/NUL/U+2028/U+2029 \uc81c\uac70. \uc758\ub3c4\ub41c \ucee8\ud2b8\ub864 \ubb38\uc790.
   // deno-lint-ignore no-control-regex
   return s.replace(/[\r\n\0\u2028\u2029]/g, '')
 }
 
 function encodeHeader(value: string): string {
   const clean = stripCRLF(value)
+  // ASCII-only \uac80\uc0ac \u2014 RFC 2047 \uc778\ucf54\ub529 \ud544\uc694 \uc5ec\ubd80 \ud310\ub2e8. \uc758\ub3c4\ub41c \ucee8\ud2b8\ub864 \ubb38\uc790.
   // deno-lint-ignore no-control-regex
+  // eslint-disable-next-line no-control-regex
   if (/^[\x00-\x7F]*$/.test(clean)) return clean
   const enc = new TextEncoder()
   const MAX_BYTES = 42

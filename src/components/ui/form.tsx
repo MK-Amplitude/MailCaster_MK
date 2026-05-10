@@ -167,7 +167,6 @@ const FormMessage = React.forwardRef<
 FormMessage.displayName = "FormMessage"
 
 export {
-  useFormField,
   Form,
   FormItem,
   FormLabel,
@@ -176,3 +175,6 @@ export {
   FormMessage,
   FormField,
 }
+// shadcn/ui 표준 패턴 — useFormField 훅을 같은 파일에서 export.
+// eslint-disable-next-line react-refresh/only-export-components
+export { useFormField }
