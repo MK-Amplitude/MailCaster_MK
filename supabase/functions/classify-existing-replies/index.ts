@@ -345,16 +345,24 @@ async function classifyReply(
   const systemPrompt = `당신은 한국어 B2B 영업 답장의 톤을 5가지로 분류합니다.
 입력은 답장 본문(인용/서명 제거됨). 출력은 JSON: {"category": "..."}.
 
-분류:
-- interested      : 관심 표현·미팅 의향·후속 컨택 동의·긍정 응답
-- not_interested  : 정중한 거절·관심 없음·이미 충분함·다음 기회
-- question        : 구체적 질문·자료 요청·일정·가격·기능 문의
+분류 (보수적으로 — 애매하면 unclear):
+- interested      : 명시적 미팅·통화·데모 동의 또는 구체적 다음 액션 약속.
+                    예) "다음 주 화요일 미팅 가능합니다", "30분 통화 잡아주세요",
+                         "데모 받고 싶습니다", "방문해주세요". 관심·미팅 의향이
+                         확정 단계에 들어가야만 이 카테고리.
+                    NOT interested: "참고하겠습니다", "검토 후 연락드리겠습니다",
+                         "나중에 필요하면 연락드릴게요", "감사합니다", "확인했습니다",
+                         "관심은 있는데 지금은 어렵습니다" — 이런 미온적/연기성
+                         답변은 절대 interested 가 아님. unclear 또는 not_interested.
+- not_interested  : 정중한 거절·관심 없음·이미 충분함·다음 기회·예산 없음
+- question        : 구체적 질문·자료 요청·가격·기능 문의 (미팅 약속은 아님)
 - out_of_office   : 자동응답·휴가·부재중·자리 비움·자동 회신
-- unclear         : 위에 안 맞거나 톤이 모호
+- unclear         : 위에 안 맞거나 톤이 모호 — 단순 회신·인사·"알겠습니다" 류 포함
 
 규칙:
 1) 반드시 위 5개 중 하나.
-2) JSON 외 다른 출력 금지.`
+2) interested 는 보수적으로 — 약속·동의·구체적 액션이 명확할 때만.
+3) JSON 외 다른 출력 금지.`
   const userPrompt = `답장 본문:\n"""\n${trimmed}\n"""\n\n위 5개 중 하나로 분류:`
 
   const res = await fetch('https://api.openai.com/v1/chat/completions', {

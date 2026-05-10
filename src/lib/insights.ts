@@ -40,6 +40,7 @@ export interface PeopleFilter {
   dueForTouch?: boolean            // cadence 임박 또는 초과
   overdueOnly?: boolean            // cadence 초과만 (더 강한 신호)
   awaitingResponse?: boolean       // 답장 받았는데 내가 답장 안 함 (awaiting_my_response_count > 0)
+  interestedReply?: boolean        // '관심·미팅 의향' 으로 분류된 답장 (interested_reply_count > 0)
 }
 
 export interface CampaignFilter {
@@ -217,7 +218,7 @@ function detectPeopleInsights(rows: ContactEngagementRow[]): Insight[] {
       count: interestedRepliers.length,
       label: '관심·미팅 의향 답장',
       hint: '톤 분석상 관심 표현 — 즉시 미팅 제안 권장',
-      peopleFilter: { hasReply: true },
+      peopleFilter: { interestedReply: true },
     })
   }
 
