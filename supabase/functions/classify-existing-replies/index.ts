@@ -49,11 +49,16 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
+const CRON_SECRET = Deno.env.get('CRON_SECRET') ?? ''
+
 const RequestSchema = z.object({
   org_id: z.string().uuid(),
   campaign_id: z.string().uuid().optional(),
   limit: z.number().int().min(1).max(MAX_LIMIT).optional(),
   include_unclear: z.boolean().optional(),
+  // CRON_SECRET 인증 시 — 모든 이미 분류된 행도 재분류 대상에 포함.
+  // 분류 정책 변경 후 일괄 백필용.
+  force_all: z.boolean().optional(),
 })
 
 type ReplyCategory =
@@ -98,27 +103,35 @@ Deno.serve(async (req) => {
       return json({ error: msg }, 400)
     }
 
-    // 사용자 식별
-    const userClient = createClient(SUPABASE_URL, ANON_KEY, {
-      global: { headers: { Authorization: auth } },
-      auth: { persistSession: false },
-    })
-    const { data: userData, error: userErr } = await userClient.auth.getUser()
-    if (userErr || !userData?.user?.id) return json({ error: '인증 실패' }, 401)
-
     const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
       auth: { persistSession: false },
     })
 
-    // org 멤버십 확인
-    const { data: membership } = await admin
-      .schema('mailcaster')
-      .from('org_members')
-      .select('user_id')
-      .eq('org_id', parsed.org_id)
-      .eq('user_id', userData.user.id)
-      .maybeSingle()
-    if (!membership) return json({ error: '이 조직의 멤버가 아닙니다.' }, 403)
+    // 인증 — 두 경로 지원:
+    //   1) 사용자 JWT (UI 의 '재분류' 버튼)
+    //   2) CRON_SECRET (관리/백필 용 — 분류 정책 변경 후 일괄 재처리)
+    const isCron = !!CRON_SECRET && auth === `Bearer ${CRON_SECRET}`
+    if (!isCron) {
+      const userClient = createClient(SUPABASE_URL, ANON_KEY, {
+        global: { headers: { Authorization: auth } },
+        auth: { persistSession: false },
+      })
+      const { data: userData, error: userErr } = await userClient.auth.getUser()
+      if (userErr || !userData?.user?.id) return json({ error: '인증 실패' }, 401)
+
+      // org 멤버십 확인 (사용자 경로만)
+      const { data: membership } = await admin
+        .schema('mailcaster')
+        .from('org_members')
+        .select('user_id')
+        .eq('org_id', parsed.org_id)
+        .eq('user_id', userData.user.id)
+        .maybeSingle()
+      if (!membership) return json({ error: '이 조직의 멤버가 아닙니다.' }, 403)
+    }
+
+    // force_all 은 CRON 경로에서만 허용 (사용자 UI 에선 무시)
+    const forceAll = isCron && parsed.force_all === true
 
     const limit = parsed.limit ?? 50
     const runStartedAt = Date.now()
@@ -144,8 +157,9 @@ Deno.serve(async (req) => {
     if (qErr) throw qErr
     let rows = (rowsRaw ?? []) as Row[]
 
-    // null 또는 (옵션) 'unclear' 만 처리
+    // null 또는 (옵션) 'unclear' 만 처리. force_all 이면 카테고리 무관 전부.
     rows = rows.filter((r) => {
+      if (forceAll) return true
       if (r.reply_category === null) return true
       if (parsed.include_unclear && r.reply_category === 'unclear') return true
       return false
