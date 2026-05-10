@@ -59,6 +59,12 @@ const BATCH_SIZE = 150
 // 답장 본문 LLM 으로 보낼 때 최대 길이 (긴 thread 의 quoted history 잘라냄).
 const REPLY_BODY_MAX_CHARS = 2000
 
+// Phase 11.1 — replied=true 행 thread 메타 갱신 (내가 답장했는지 등) 재방문 주기.
+// 너무 짧으면 Gmail quota 부담, 너무 길면 "내 답장 대기" 인사이트 갱신 지연.
+const THREAD_RECHECK_COOLDOWN_MS = 6 * 60 * 60 * 1000  // 6시간
+// pass2 batch — 같은 tick 에서 pass1 끝나고 남은 예산으로 처리.
+const PASS2_BATCH_SIZE = 50
+
 type ReplyCategory =
   | 'interested'
   | 'not_interested'
@@ -142,12 +148,14 @@ Deno.serve(async (req) => {
       repliedAtIso: string
       cid: string
       category: ReplyCategory
+      meta: ThreadMeta
     }> = []
     const campaignIdsTouched = new Set<string>()
     let processed = 0
     let tokenErrors = 0
     let gmailErrors = 0
     let classifyErrors = 0
+    let pass2Updated = 0
 
     // ------------------------------------------------------------
     // 3) 사용자 루프 — 각자의 access_token 으로 threads.get
@@ -215,6 +223,7 @@ Deno.serve(async (req) => {
               repliedAtIso: reply.repliedAtIso,
               cid: r.campaign_id,
               category,
+              meta: reply.meta,
             })
             campaignIdsTouched.add(r.campaign_id)
           } else {
@@ -238,7 +247,7 @@ Deno.serve(async (req) => {
     // ------------------------------------------------------------
     const nowIso = new Date().toISOString()
 
-    // 4-1) 답장 확인된 수신자 — 개별 update (replied_at + reply_category 가 행마다 다름)
+    // 4-1) 답장 확인된 수신자 — 개별 update (replied_at + reply_category + thread meta)
     for (const info of repliedInfos) {
       const { error } = await supabase
         .schema('mailcaster')
@@ -248,6 +257,9 @@ Deno.serve(async (req) => {
           replied_at: info.repliedAtIso,
           reply_category: info.category,
           last_reply_check_at: nowIso,
+          last_thread_message_at: info.meta.lastMessageAtIso,
+          last_thread_message_from_me: info.meta.lastMessageFromMe,
+          thread_message_count: info.meta.messageCount,
         })
         .eq('id', info.id)
       if (error) console.warn('[check-replies] markReplied fail', info.id, error.message)
@@ -261,6 +273,91 @@ Deno.serve(async (req) => {
         .update({ last_reply_check_at: nowIso })
         .in('id', noReplyIds)
       if (error) console.warn('[check-replies] rotate fail', error.message)
+    }
+
+    // ------------------------------------------------------------
+    // pass 2 — replied=true 행 thread 메타 갱신 (cooldown 6h)
+    // 영업 가치: "내 답장 대기" 인사이트가 갱신됨.
+    // ------------------------------------------------------------
+    if (Date.now() - runStartedAt < RUN_BUDGET_MS - GMAIL_CALL_BUDGET_MS) {
+      const cooldownIso = new Date(Date.now() - THREAD_RECHECK_COOLDOWN_MS).toISOString()
+      const { data: pass2Raw } = await supabase
+        .schema('mailcaster')
+        .from('recipients')
+        .select('id, campaign_id, gmail_thread_id, sent_at, campaigns!inner(user_id)')
+        .eq('replied', true)
+        .not('gmail_thread_id', 'is', null)
+        .or(`last_reply_check_at.is.null,last_reply_check_at.lt.${cooldownIso}`)
+        .order('last_reply_check_at', { ascending: true, nullsFirst: true })
+        .limit(PASS2_BATCH_SIZE)
+      const pass2Rows = (pass2Raw ?? []) as Row[]
+
+      // user_id 별 access_token 캐시 — pass1 에서 이미 만들어진 토큰을 재활용 안 하지만
+      // pass2 batch 가 작아 user 별 1번 refresh 가 비싸지 않음.
+      const pass2ByUser = new Map<string, Row[]>()
+      for (const r of pass2Rows) {
+        const uid = userIdOf(r)
+        if (!uid) continue
+        if (!pass2ByUser.has(uid)) pass2ByUser.set(uid, [])
+        pass2ByUser.get(uid)!.push(r)
+      }
+
+      pass2Loop: for (const [userId, list] of pass2ByUser) {
+        if (Date.now() - runStartedAt > RUN_BUDGET_MS - GMAIL_CALL_BUDGET_MS) break
+        const { data: profile } = await supabase
+          .schema('mailcaster')
+          .from('profiles')
+          .select('email, google_refresh_token')
+          .eq('id', userId)
+          .single()
+        if (!profile?.google_refresh_token || !profile?.email) continue
+        let accessToken: string
+        try {
+          accessToken = await refreshGoogleToken(profile.google_refresh_token as string)
+        } catch {
+          continue
+        }
+        const userEmailLower = (profile.email as string).toLowerCase()
+
+        for (const r of list) {
+          if (Date.now() - runStartedAt > RUN_BUDGET_MS - GMAIL_CALL_BUDGET_MS) break pass2Loop
+          try {
+            const analysis = await fetchThreadAnalysis(accessToken, r, userEmailLower)
+            if (!analysis) {
+              // thread 삭제됨 — last_reply_check_at 만 갱신해 큐 회전
+              await supabase
+                .schema('mailcaster')
+                .from('recipients')
+                .update({ last_reply_check_at: nowIso })
+                .eq('id', r.id)
+              continue
+            }
+            const { error: uErr } = await supabase
+              .schema('mailcaster')
+              .from('recipients')
+              .update({
+                last_reply_check_at: nowIso,
+                last_thread_message_at: analysis.meta.lastMessageAtIso,
+                last_thread_message_from_me: analysis.meta.lastMessageFromMe,
+                thread_message_count: analysis.meta.messageCount,
+              })
+              .eq('id', r.id)
+            if (!uErr) pass2Updated++
+          } catch (e) {
+            console.warn(
+              '[check-replies pass2] gmail error rid=',
+              r.id,
+              e instanceof Error ? e.message : e
+            )
+            // 일시 오류여도 last_reply_check_at 갱신해 큐 회전
+            await supabase
+              .schema('mailcaster')
+              .from('recipients')
+              .update({ last_reply_check_at: nowIso })
+              .eq('id', r.id)
+          }
+        }
+      }
     }
 
     // 4-3) 신규 답장이 발견된 campaign 의 reply_count 재계산
@@ -291,6 +388,7 @@ Deno.serve(async (req) => {
       token_errors: tokenErrors,
       gmail_errors: gmailErrors,
       classify_errors: classifyErrors,
+      pass2_updated: pass2Updated,
       users: byUser.size,
       batch_fetched: rows.length,
       elapsed_ms: Date.now() - runStartedAt,
@@ -312,25 +410,35 @@ Deno.serve(async (req) => {
 //
 // 3개 모두 만족하는 가장 이른 메시지의 시각을 replied_at 으로 사용.
 // ============================================================
-async function detectReply(
+interface ThreadMeta {
+  lastMessageAtIso: string
+  lastMessageFromMe: boolean
+  messageCount: number
+}
+
+interface ThreadAnalysis {
+  // 답장이 있으면 (가장 이른 타인 메시지)
+  reply: { repliedAtIso: string; messageId: string } | null
+  // thread 전체 메타 (마지막 메시지 시각/발신자/총 개수)
+  meta: ThreadMeta
+}
+
+async function fetchThreadAnalysis(
   accessToken: string,
   r: Row,
   userEmailLower: string
-): Promise<{ repliedAtIso: string; messageId: string } | null> {
+): Promise<ThreadAnalysis | null> {
   const url =
     `https://gmail.googleapis.com/gmail/v1/users/me/threads/${encodeURIComponent(r.gmail_thread_id)}` +
     `?format=metadata&metadataHeaders=From&metadataHeaders=Date`
-
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
   if (!res.ok) {
-    // 404 → 스레드 삭제되었을 수 있음. 답장 없음으로 처리하고 rotate.
     if (res.status === 404) return null
     const body = await res.text().catch(() => '')
     throw new Error(`Gmail threads.get ${res.status}: ${body.slice(0, 200)}`)
   }
-
   const thread: {
     messages?: Array<{
       id: string
@@ -338,37 +446,59 @@ async function detectReply(
       payload?: { headers?: Array<{ name: string; value: string }> }
     }>
   } = await res.json()
-
   const messages = thread.messages ?? []
-  if (messages.length <= 1) return null
+  if (messages.length === 0) return null
 
+  // 가장 늦은 메시지 — 마지막 활동 시각 + 발신자
+  let lastMs = 0
+  let lastFromMe = false
+  let earliestOther: { ms: number; messageId: string } | null = null
   const sentAtMs = r.sent_at ? Date.parse(r.sent_at) : 0
 
-  // messages 는 시간순. 가장 이른 "타인 메시지" 를 answer 로 사용.
-  //
-  // 의도된 제외 (명시): 발송자 본인이 보낸 모든 메시지는 "답장" 이 아님.
-  //   - 보낸 본인 메시지 (원본 + 후속 follow-up)
-  //   - 테스트 목적의 self-send (자기 자신에게 메일 보낸 뒤 "답장" 클릭한 경우)
-  //     이 또한 from == userEmail 이므로 감지 대상이 아님.
-  //     → 자가 발송 캠페인은 답장 감지가 불가능함을 운영 문서에 기재.
-  //
-  // 주의: alias (myoungkyu.ho+test@amplitude.com) 는 다른 문자열이므로
-  // "다른 사람 답장" 으로 잡힐 수 있음 — 드물지만 edge case.
-  let earliest: { ms: number; messageId: string } | null = null
   for (const m of messages) {
     const ts = Number(m.internalDate ?? 0)
-    if (!ts || ts <= sentAtMs) continue
-
-    const from = extractFromHeader(m.payload?.headers)
-    if (!from) continue
-    if (from.toLowerCase() === userEmailLower) continue
-
-    if (earliest === null || ts < earliest.ms) earliest = { ms: ts, messageId: m.id }
+    if (!ts) continue
+    const from = (extractFromHeader(m.payload?.headers) ?? '').toLowerCase()
+    const fromMe = from === userEmailLower
+    // 가장 늦은 메시지 추적
+    if (ts > lastMs) {
+      lastMs = ts
+      lastFromMe = fromMe
+    }
+    // 답장 후보: 발송 이후 + 타인 발 + 가장 이른 메시지
+    if (!fromMe && ts > sentAtMs) {
+      if (earliestOther === null || ts < earliestOther.ms) {
+        earliestOther = { ms: ts, messageId: m.id }
+      }
+    }
   }
-  if (earliest === null) return null
+
   return {
-    repliedAtIso: new Date(earliest.ms).toISOString(),
-    messageId: earliest.messageId,
+    reply: earliestOther
+      ? {
+          repliedAtIso: new Date(earliestOther.ms).toISOString(),
+          messageId: earliestOther.messageId,
+        }
+      : null,
+    meta: {
+      lastMessageAtIso: lastMs > 0 ? new Date(lastMs).toISOString() : new Date().toISOString(),
+      lastMessageFromMe: lastFromMe,
+      messageCount: messages.length,
+    },
+  }
+}
+
+async function detectReply(
+  accessToken: string,
+  r: Row,
+  userEmailLower: string
+): Promise<{ repliedAtIso: string; messageId: string; meta: ThreadMeta } | null> {
+  const analysis = await fetchThreadAnalysis(accessToken, r, userEmailLower)
+  if (!analysis || !analysis.reply) return null
+  return {
+    repliedAtIso: analysis.reply.repliedAtIso,
+    messageId: analysis.reply.messageId,
+    meta: analysis.meta,
   }
 }
 

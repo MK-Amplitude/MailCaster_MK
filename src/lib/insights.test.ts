@@ -46,6 +46,7 @@ function row(over: Partial<ContactEngagementRow>): ContactEngagementRow {
     total_opens: 0,
     reply_count: 0,
     interested_reply_count: 0,
+    awaiting_my_response_count: 0,
     last_sent_at: null,
     last_opened_at: null,
     last_replied_at: null,

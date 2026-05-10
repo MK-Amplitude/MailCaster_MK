@@ -48,6 +48,8 @@ export interface ContactEngagementRow {
   reply_count: number
   /** migration 029 — '관심' 카테고리로 분류된 답장 수 */
   interested_reply_count: number
+  /** migration 032 — 답장 받았지만 내가 답장 안 한 thread 수 (last_message_from_me=false) */
+  awaiting_my_response_count?: number
   last_sent_at: string | null
   last_opened_at: string | null
   last_replied_at: string | null

@@ -220,6 +220,21 @@ function detectPeopleInsights(rows: ContactEngagementRow[]): Insight[] {
     })
   }
 
+  // 6.5) [CRITICAL] 내가 답장 안 한 응답 — 까먹은 고객
+  // 고객이 답장했는데 내가 응답 안 한 thread. 영업의 가장 큰 누수.
+  const awaitingMyResponse = active.filter((r) => (r.awaiting_my_response_count ?? 0) > 0)
+  if (awaitingMyResponse.length >= 1) {
+    insights.push({
+      id: 'awaiting-my-response',
+      target: 'people',
+      severity: 'critical',
+      count: awaitingMyResponse.length,
+      label: '내가 답장 못 한 응답',
+      hint: '고객이 답장했는데 내 답장이 마지막이 아닌 thread — 즉시 회신',
+      peopleFilter: { hasReply: true },
+    })
+  }
+
   // 7) [POSITIVE] 답장이 온 영업대상 — 팔로업 우선
   const repliedProspects = prospects.filter((r) => r.reply_count > 0)
   if (repliedProspects.length >= 1) {

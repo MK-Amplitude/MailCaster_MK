@@ -30,6 +30,7 @@ import { ContactDetailSheet } from '@/components/contacts/ContactDetailSheet'
 import { ContactFormDialog } from '@/components/contacts/ContactFormDialog'
 import { Send, Search, Eye, Reply, Mail, Clock, Wand2 } from 'lucide-react'
 import { PersonalizedSendDialog } from '@/components/campaigns/PersonalizedSendDialog'
+import { replyCategoryOption } from '@/types/replyCategory'
 import { matchesSearch } from '@/lib/search'
 import { cn } from '@/lib/utils'
 import {
@@ -637,10 +638,53 @@ function PersonRow({
         </span>
       </TableCell>
       <TableCell className="hidden xl:table-cell text-sm">
-        <span className="inline-flex items-center gap-1">
-          <Reply className="w-3 h-3 text-muted-foreground" />
-          {r.reply_count}
-        </span>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="inline-flex items-center gap-1">
+            <Reply className="w-3 h-3 text-muted-foreground" />
+            {r.reply_count}
+          </span>
+          {/* 마지막 답장의 분류 + 내 답장 대기 여부를 row 에서 바로 보이게 */}
+          {(() => {
+            // last_campaign JSONB 안에 reply_category 가 들어있음 (migration 029).
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const lc = (r as any).last_campaign as
+              | { reply_category?: string | null }
+              | null
+            const cat = (lc?.reply_category ?? null) as
+              | 'interested'
+              | 'not_interested'
+              | 'question'
+              | 'out_of_office'
+              | 'unclear'
+              | null
+            const catOpt = cat ? replyCategoryOption(cat) : null
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const awaiting = ((r as any).awaiting_my_response_count ?? 0) > 0
+            return (
+              <>
+                {catOpt && (
+                  <span
+                    className={cn(
+                      'inline-flex items-center text-[10px] px-1.5 py-0 h-4 rounded border',
+                      catOpt.className
+                    )}
+                    title={`마지막 답장 톤: ${catOpt.hint}`}
+                  >
+                    {catOpt.label}
+                  </span>
+                )}
+                {awaiting && (
+                  <span
+                    className="inline-flex items-center text-[10px] px-1.5 py-0 h-4 rounded border bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300 border-rose-200 dark:border-rose-800"
+                    title="고객이 답장했는데 내가 아직 답장 안 함"
+                  >
+                    내 답장 대기
+                  </span>
+                )}
+              </>
+            )
+          })()}
+        </div>
       </TableCell>
       <TableCell onClick={(e) => e.stopPropagation()}>
         <Button

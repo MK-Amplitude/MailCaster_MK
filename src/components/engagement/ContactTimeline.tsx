@@ -250,6 +250,15 @@ function EmailRow({
               {categoryOpt.label}
             </span>
           )}
+          {/* 내 답장 대기 — 고객이 답장했는데 내 답장이 마지막이 아닐 때 강조 */}
+          {h.replied && h.last_thread_message_from_me === false && (
+            <span
+              className="inline-flex items-center text-[10px] px-1.5 py-0 h-4 rounded border bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300 border-rose-200 dark:border-rose-800"
+              title="고객이 답장했는데 내가 아직 답장 안 함 — 회신 필요"
+            >
+              내 답장 대기
+            </span>
+          )}
           {h.bounced && <ResultBadge icon={AlertOctagon} active label="반송" tone="critical" />}
         </div>
       </div>

@@ -20,6 +20,10 @@ export interface SendHistoryRow {
   gmail_thread_id: string | null
   /** 답장 자동 분류 (migration 028). 답장 없거나 미분류면 null. */
   reply_category: ReplyCategory | null
+  /** migration 032 — thread 의 마지막 메시지가 내가 보낸 건지 */
+  last_thread_message_from_me: boolean | null
+  /** thread 의 메시지 총 개수 */
+  thread_message_count: number | null
 }
 
 const QK = 'contact-send-history'
@@ -32,7 +36,7 @@ export function useContactSendHistory(contactId: string | null | undefined) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const { data, error } = await (supabase.from('recipients') as any)
         .select(
-          'id, campaign_id, sent_at, opened, open_count, replied, replied_at, bounced, gmail_thread_id, reply_category, campaigns:campaign_id(name, subject)'
+          'id, campaign_id, sent_at, opened, open_count, replied, replied_at, bounced, gmail_thread_id, reply_category, last_thread_message_from_me, thread_message_count, campaigns:campaign_id(name, subject)'
         )
         .eq('contact_id', contactId!)
         .eq('status', 'sent')
@@ -53,6 +57,8 @@ export function useContactSendHistory(contactId: string | null | undefined) {
         bounced: r.bounced,
         gmail_thread_id: r.gmail_thread_id ?? null,
         reply_category: (r.reply_category ?? null) as ReplyCategory | null,
+        last_thread_message_from_me: r.last_thread_message_from_me ?? null,
+        thread_message_count: r.thread_message_count ?? null,
       }))
     },
     enabled: !!contactId,

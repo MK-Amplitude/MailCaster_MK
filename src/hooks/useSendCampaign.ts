@@ -213,6 +213,14 @@ export function useSendCampaign() {
         throw new Error('발송할 수신자가 없습니다.')
       }
 
+      // 개인화 발송 — recipient 마다 자체 body_html_override 가 있으면 캠페인 레벨
+      // body_html 은 비어있어도 OK. 모든 행에 override 가 있으면 빈 본문 체크 skip.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const allHaveOverride = recipients.every((r: any) => {
+        const v = r?.body_html_override
+        return typeof v === 'string' && v.trim().length > 0
+      })
+
       // 2-1) 본문 확정 — campaign.body_html 을 진실의 원천(source of truth)으로 사용.
       //   위저드가 저장 시점에 effectiveBody(= bodyOverride ?? composedHtml) 를 그대로 기록하므로
       //   여기서 재조합하면 Step 3 인라인 편집 결과가 silently 사라진다 (WYSIWYG 위반).
@@ -254,13 +262,14 @@ export function useSendCampaign() {
         }
       }
 
-      if (!finalBody.trim()) {
+      if (!finalBody.trim() && !allHaveOverride) {
         throw new Error('발송할 본문이 비어있습니다. 템플릿 내용을 확인하세요.')
       }
 
       // 서명이 body_html 에 이미 들어 있지 않으면 끝에 append.
       // 편집 모드에서 서명만 바꿨는데 위저드가 body 를 갱신하지 못한 케이스 방어.
-      if (campaign.signature_id) {
+      // (개인화 발송 — 캠페인 body 가 비어있고 recipient override 만 있을 땐 skip)
+      if (campaign.signature_id && finalBody.trim()) {
         const { data: sig } = await supabase
           .from('signatures')
           .select('html')

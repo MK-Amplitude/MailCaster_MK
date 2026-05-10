@@ -842,13 +842,16 @@ export default function CampaignDetailPage() {
                                   </span>
                                 )}
                                 {showReplied && (() => {
-                                  // generated types 가 아직 reply_category / gmail_thread_id 를 포함 안 해서 cast.
+                                  // generated types 가 아직 reply_category / gmail_thread_id /
+                                  // last_thread_message_from_me 를 포함 안 해서 cast.
                                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
                                   const rExt = r as any as {
                                     reply_category?: ReplyCategory | null
                                     gmail_thread_id?: string | null
+                                    last_thread_message_from_me?: boolean | null
                                   }
                                   const catOpt = replyCategoryOption(rExt.reply_category ?? null)
+                                  const awaitingMe = rExt.last_thread_message_from_me === false
                                   const replyHref = rExt.gmail_thread_id
                                     ? `https://mail.google.com/mail/u/0/#all/${rExt.gmail_thread_id}`
                                     : null
@@ -882,6 +885,14 @@ export default function CampaignDetailPage() {
                                           title={catOpt.hint}
                                         >
                                           {catOpt.label}
+                                        </span>
+                                      )}
+                                      {awaitingMe && (
+                                        <span
+                                          className="inline-flex items-center text-[10px] px-1 py-0 h-4 rounded border bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300 border-rose-200 dark:border-rose-800"
+                                          title="고객이 답장했는데 내가 아직 답장 안 함"
+                                        >
+                                          내 답장 대기
                                         </span>
                                       )}
                                     </span>
