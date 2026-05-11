@@ -270,7 +270,11 @@ export function ContactFormDialog({ open, onOpenChange, contact, prefill }: Cont
             />
           </div>
 
-          <DialogFooter>
+          {/*
+            모바일에서 dialog 내부 스크롤이 길어져도 저장 버튼이 항상 보이도록 sticky.
+            -mx + bg-background + pt 로 컨테이너 좌우 끝까지 덮고 위쪽 그림자 효과 없이 자연스럽게.
+          */}
+          <DialogFooter className="sticky bottom-0 -mx-4 sm:-mx-6 px-4 sm:px-6 pt-3 pb-1 bg-background border-t border-border/50">
             <Button
               type="button"
               variant="outline"
