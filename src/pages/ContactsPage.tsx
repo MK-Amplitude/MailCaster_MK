@@ -106,13 +106,20 @@ export default function ContactsPage() {
     )
   }, [allContacts, search])
 
-  // 공통 뷰 — 상태/검색 필터를 클라이언트에서 적용 (common 뷰에는 status 필드만 존재)
+  // 공통 뷰 — 상태/검색 필터를 클라이언트에서 적용 (common 뷰에는 status 필드만 존재).
+  // 반송은 'bounced' 로 명시 조회할 때만 노출 — 그 외는 모두 숨겨 검색·그룹 빌더에서 제외.
   const filteredCommon = useMemo(() => {
     let list = commonContacts
-    if (status === 'unsubscribed') list = list.filter((c) => c.is_unsubscribed)
-    else if (status === 'bounced') list = list.filter((c) => c.is_bounced)
-    else if (status === 'normal') list = list.filter((c) => !c.is_unsubscribed && !c.is_bounced)
-    // 'needs_verification' 은 common 뷰에 없음 — 개별 뷰에서만 지원
+    if (status === 'unsubscribed') {
+      list = list.filter((c) => c.is_unsubscribed && !c.is_bounced)
+    } else if (status === 'bounced') {
+      list = list.filter((c) => c.is_bounced)
+    } else if (status === 'normal') {
+      list = list.filter((c) => !c.is_unsubscribed && !c.is_bounced)
+    } else {
+      // 'all' (기본) / 'needs_verification' — 반송만 숨김
+      list = list.filter((c) => !c.is_bounced)
+    }
     const q = search.trim()
     if (!q) return list
     return list.filter(
@@ -375,10 +382,10 @@ export default function ContactsPage() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">전체</SelectItem>
+              <SelectItem value="all">전체 (반송 제외)</SelectItem>
               <SelectItem value="normal">정상만</SelectItem>
               <SelectItem value="unsubscribed">수신거부</SelectItem>
-              <SelectItem value="bounced">바운스</SelectItem>
+              <SelectItem value="bounced">📭 반송 (비활성)</SelectItem>
               {scope !== 'common' && (
                 <SelectItem value="needs_verification">⚠️ 회사 확인 필요</SelectItem>
               )}

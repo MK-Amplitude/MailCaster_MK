@@ -63,12 +63,16 @@ export function useContacts(filters?: ContactQueryOptions) {
 
       // 상태 필터만 서버에서 처리. 텍스트 검색은 클라이언트에서(초성 지원).
       // archived: 보관함만 보기. 그 외 모든 상태는 archived_at IS NULL 만 노출 (기본 = 활성).
+      //
+      // 정책: 반송(is_bounced=true) 은 "비활성" 으로 취급 — 'bounced' 로 명시 조회할 때만 노출.
+      //   그 외(전체/정상/수신거부/회사 확인 필요) 에서는 모두 숨겨서 검색·그룹 추가 대상에서 제외.
+      //   삭제는 아니므로 사용자가 status='바운스' 를 직접 선택하면 확인 가능.
       if (filters?.status === 'archived') {
         query = query.not('archived_at', 'is', null)
       } else {
         query = query.is('archived_at', null)
         if (filters?.status === 'unsubscribed') {
-          query = query.eq('is_unsubscribed', true)
+          query = query.eq('is_unsubscribed', true).eq('is_bounced', false)
         } else if (filters?.status === 'bounced') {
           query = query.eq('is_bounced', true)
         } else if (filters?.status === 'normal') {
@@ -76,6 +80,10 @@ export function useContacts(filters?: ContactQueryOptions) {
         } else if (filters?.status === 'needs_verification') {
           // 회사명 확인이 필요한 상태들 (pending=재시도 대기, failed=에러, not_found=모델이 모름)
           query = query.in('company_lookup_status', ['pending', 'failed', 'not_found'])
+          query = query.eq('is_bounced', false)
+        } else {
+          // 'all' (기본) — 반송만 숨기고 나머지는 모두 노출
+          query = query.eq('is_bounced', false)
         }
       }
 
@@ -412,19 +420,42 @@ export function useAddContactsToGroup() {
 
   return useMutation({
     mutationFn: async ({ contactIds, groupId }: { contactIds: string[]; groupId: string }) => {
-      const rows = contactIds.map((contact_id) => ({ contact_id, group_id: groupId }))
+      if (contactIds.length === 0) return { added: 0, skippedBounced: 0 }
+      // 반송 연락처는 그룹에 추가하지 않음 — 검색/그룹 빌더의 기본 정책과 일치.
+      // (UI 기본 뷰에선 이미 가려져 있지만, 외부 경로/벌크 액션 방어용으로 한 번 더 필터.)
+      const { data: rowsRaw } = await supabase
+        .from('contacts')
+        .select('id, is_bounced')
+        .in('id', contactIds)
+      const bounced = new Set(
+        (rowsRaw ?? []).filter((r) => r.is_bounced === true).map((r) => r.id)
+      )
+      const filtered = contactIds.filter((id) => !bounced.has(id))
+      if (filtered.length === 0) {
+        return { added: 0, skippedBounced: bounced.size }
+      }
+      const rows = filtered.map((contact_id) => ({ contact_id, group_id: groupId }))
       const { error } = await supabase.from('contact_groups').upsert(rows, {
         onConflict: 'contact_id,group_id',
         ignoreDuplicates: true,
       })
       if (error) throw error
+      return { added: filtered.length, skippedBounced: bounced.size }
     },
-    onSuccess: (_data, { groupId }) => {
+    onSuccess: ({ added, skippedBounced }, { groupId }) => {
       qc.invalidateQueries({ queryKey: [QUERY_KEY] })
       qc.invalidateQueries({ queryKey: [COMMON_QUERY_KEY] })
       qc.invalidateQueries({ queryKey: ['groups'] })
       qc.invalidateQueries({ queryKey: ['group-members', groupId] })
-      toast.success('그룹에 추가되었습니다.')
+      if (added === 0 && skippedBounced > 0) {
+        toast.error(`반송 연락처 ${skippedBounced}명은 그룹에 추가하지 않았습니다.`)
+      } else if (skippedBounced > 0) {
+        toast.success(
+          `${added}명 추가 — 반송 연락처 ${skippedBounced}명은 제외했습니다.`
+        )
+      } else {
+        toast.success('그룹에 추가되었습니다.')
+      }
     },
   })
 }
