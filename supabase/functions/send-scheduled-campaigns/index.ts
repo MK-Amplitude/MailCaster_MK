@@ -263,15 +263,22 @@ async function processCampaign(
     return { sent: 0, failed: 0 }
   }
 
-  // 2) 수신자 로드 (pending 만)
+  // 2) 수신자 로드 — pending + 고립된 'sending' (orphan recovery).
   //    개인화 발송(personalized-send) 으로 미리 작성된 per-recipient subject/body
   //    오버라이드도 함께 가져온다 — useSendCampaign.ts 클라이언트 경로와 동작 일치.
+  //
+  //    Orphan 'sending' 의 정의: status='sending' AND gmail_message_id IS NULL.
+  //    이전 tick 에서 발송 직전 pre-mark 후 함수 워커가 timeout/크래시로 종료되면
+  //    상태가 영원히 'sending' 으로 고립됨. 캠페인 레벨 CAS 락이 있으므로 같은
+  //    캠페인에 동시 처리는 없고, gmail_message_id 가 NULL 이면 실제 발송도 안 된 상태라
+  //    안전하게 재시도 가능.
   const { data: recipients, error: rErr } = await supabase
     .schema('mailcaster')
     .from('recipients')
     .select('id, email, name, variables, subject_override, body_html_override')
     .eq('campaign_id', c.id)
-    .eq('status', 'pending')
+    .in('status', ['pending', 'sending'])
+    .is('gmail_message_id', null)
     .order('created_at', { ascending: true })
   if (rErr) throw rErr
   if (!recipients || recipients.length === 0) {
@@ -707,16 +714,19 @@ async function processCampaign(
     return { sent, failed, paused: true }
   }
 
-  // 남은 pending 이 0 이어야 "완료" — 재진입 없이 한 run 에 끝났거나, 이번 run 에서 마지막 배치까지 끝난 경우
-  const { count: remainingPending } = await supabase
+  // 남은 미완료 (pending 또는 orphan sending) 이 0 이어야 "완료".
+  // orphan 'sending' (gmail_message_id IS NULL) 은 발송 안 된 상태라 미완료로 간주 →
+  // 다음 tick 에서 SELECT 재처리.
+  const { count: remainingIncomplete } = await supabase
     .schema('mailcaster')
     .from('recipients')
     .select('id', { count: 'exact', head: true })
     .eq('campaign_id', c.id)
-    .eq('status', 'pending')
+    .in('status', ['pending', 'sending'])
+    .is('gmail_message_id', null)
 
-  if ((remainingPending ?? 0) > 0) {
-    // 이 경로는 예산 경계 로직 바깥에서 발생할 가능성이 낮지만 안전장치
+  if ((remainingIncomplete ?? 0) > 0) {
+    // 미처리 행이 남아 있으면 paused 처리 — 다음 cron 이 재개.
     return { sent, failed, paused: true }
   }
 
