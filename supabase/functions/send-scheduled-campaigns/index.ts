@@ -35,6 +35,32 @@ const CRON_SECRET = Deno.env.get('CRON_SECRET') ?? ''
 const GOOGLE_CLIENT_ID = Deno.env.get('GOOGLE_CLIENT_ID')!
 const GOOGLE_CLIENT_SECRET = Deno.env.get('GOOGLE_CLIENT_SECRET')!
 
+// Outreach 동기화 — 발송 성공 후 fire-and-forget. CRON_SECRET 로 outreach-sync-mailing 호출.
+// 실패해도 발송 흐름에 영향 없음 — recipient.outreach_sync_error 에 사유 기록됨.
+async function fireOutreachSync(recipientIds: string[]) {
+  if (recipientIds.length === 0 || !CRON_SECRET) return
+  try {
+    const BATCH = 500
+    for (let i = 0; i < recipientIds.length; i += BATCH) {
+      const slice = recipientIds.slice(i, i + BATCH)
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/outreach-sync-mailing`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${CRON_SECRET}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ recipient_ids: slice }),
+      })
+      if (!res.ok) {
+        const body = await res.text()
+        console.warn('[send-scheduled] outreach-sync failed:', res.status, body.slice(0, 200))
+      }
+    }
+  } catch (e) {
+    console.warn('[send-scheduled] outreach-sync exception:', e)
+  }
+}
+
 // 한 번 실행 시 처리할 최대 캠페인 수 — 55초 타임아웃 대비 보수적으로
 const MAX_CAMPAIGNS_PER_RUN = 10
 
@@ -543,6 +569,8 @@ async function processCampaign(
         prepared,
         deliveryMode,
       )
+      // Outreach 동기화 (BULK) — 전원 fire-and-forget
+      await fireOutreachSync(validRecipients.map((r) => r.id))
       return { sent: validRecipients.length, failed: invalidRecipients.length }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -579,6 +607,7 @@ async function processCampaign(
   let sent = 0
   let failed = 0
   let paused = false
+  const successfullySentIds: string[] = []
   const delayMs = Math.max(0, (c.send_delay_seconds ?? 3) * 1000)
 
   // W6) baseline — "재개 시점의 누적 sent/failed" 를 1회만 조회.
@@ -669,6 +698,7 @@ async function processCampaign(
       // 개별 수신자 첨부 이력 기록
       await recordRecipientAttachments(supabase, c.user_id, [r.id], prepared, deliveryMode)
       sent++
+      successfullySentIds.push(r.id)
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       console.error(`[send-scheduled] recipient ${r.email} failed:`, msg)
@@ -752,6 +782,9 @@ async function processCampaign(
     .from('campaigns')
     .update({ status: finalStatus, sent_count: sentTotal, failed_count: failedTotal })
     .eq('id', c.id)
+
+  // Outreach 동기화 (INDIVIDUAL) — 이 run 에서 성공한 행만. 이전 run 의 성공분은 이미 동기화됨.
+  await fireOutreachSync(successfullySentIds)
 
   return { sent, failed }
 }
