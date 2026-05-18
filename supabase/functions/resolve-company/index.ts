@@ -26,6 +26,9 @@ interface CompanyResult {
   name_ko: string | null
   name_en: string | null
   parent_group: string | null
+  // 입력 raw_name 에 부서명이 섞여 들어온 경우 (예: "삼성전자 마케팅팀") 분리.
+  // raw_name 에 부서가 없으면 null.
+  extracted_department: string | null
   confidence: number
   reasoning?: string
 }
@@ -78,10 +81,17 @@ Deno.serve(async (req) => {
 
     if (hasUsefulCache) {
       cacheHit = true
+      // 캐시에 raw_response 가 있으면 extracted_department 도 복원 (이전 호출 결과 유지).
+      const cachedRaw = (cached.raw_response ?? {}) as Record<string, unknown>
+      const cachedExtractedDept =
+        typeof cachedRaw.extracted_department === 'string'
+          ? (cachedRaw.extracted_department as string)
+          : null
       result = {
         name_ko: cached.name_ko,
         name_en: cached.name_en,
         parent_group: cached.parent_group ?? null,
+        extracted_department: cachedExtractedDept,
         confidence: Number(cached.confidence) || 0,
       }
     } else {
@@ -113,16 +123,46 @@ Deno.serve(async (req) => {
     if (contact_id) {
       const status =
         result.name_ko || result.name_en ? 'resolved' : 'not_found'
+
+      // 부서 채우기 — 사용자가 직접 입력한 부서가 있으면 덮어쓰지 않음.
+      // 기존 department 가 NULL/공백일 때만 AI 가 분리한 값으로 채움.
+      // company / company_raw 도 동일 정책: raw_name 에서 부서를 떼어낸 본문이 있으면
+      // company_raw 를 정리된 회사명으로 (사용자가 보는 입력 필드) 갱신해 일관성 유지.
+      const updates: Record<string, unknown> = {
+        company_ko: result.name_ko,
+        company_en: result.name_en,
+        parent_group: result.parent_group,
+        company_lookup_status: status,
+        company_lookup_at: new Date().toISOString(),
+      }
+
+      if (result.extracted_department) {
+        const { data: existing } = await supabase
+          .schema('mailcaster')
+          .from('contacts')
+          .select('department, company, company_raw')
+          .eq('id', contact_id)
+          .maybeSingle()
+
+        // 기존 department 가 비어있으면 분리된 부서로 채움
+        if (existing && (!existing.department || !existing.department.trim())) {
+          updates.department = result.extracted_department
+        }
+
+        // company / company_raw 도 회사명만 남기도록 정리 (사용자 입력 필드 일관성).
+        // 단, 사용자가 이미 깔끔한 값으로 수정한 경우 (raw_name 과 다른 경우) 보존.
+        // raw_name 에서 부서를 제거한 회사명 부분을 추출 — query 의 시작 부분과 일치하면 정리.
+        const trimmedCompany = stripDepartmentFromRaw(query, result.extracted_department)
+        if (trimmedCompany && existing?.company === query) {
+          updates.company = trimmedCompany
+          updates.company_raw = trimmedCompany
+        }
+      }
+
       const { error: upErr } = await supabase
         .schema('mailcaster')
         .from('contacts')
-        .update({
-          company_ko: result.name_ko,
-          company_en: result.name_en,
-          parent_group: result.parent_group,
-          company_lookup_status: status,
-          company_lookup_at: new Date().toISOString(),
-        })
+        .update(updates)
         .eq('id', contact_id)
       if (upErr) console.error('[resolve-company] contact update failed:', upErr)
     }
@@ -182,10 +222,11 @@ async function callOpenAI(
   emailDomain: string | null
 ): Promise<CompanyResult> {
   const systemPrompt = `당신은 한국 기업 정보 어시스턴트입니다.
-사용자가 입력한 회사명/약어/브랜드명과 (옵션) 이메일 도메인을 받아, 다음 4가지를 JSON 으로 반환합니다:
+사용자가 입력한 회사명/약어/브랜드명과 (옵션) 이메일 도메인을 받아, 다음 5가지를 JSON 으로 반환합니다:
   - name_ko: 한글 정식 명칭
   - name_en: 영문 정식 명칭
   - parent_group: 한국 대기업 그룹사 한글명 (자회사인 경우만, 독립 기업은 null)
+  - extracted_department: 입력에 부서명이 섞여 있으면 분리 (없으면 null)
   - confidence: 0.0~1.0
 
 규칙:
@@ -215,7 +256,16 @@ async function callOpenAI(
    - 글로벌 본사 (Google, Microsoft 등) → parent_group=null (한국 그룹사 아니므로)
 5) 도메인 힌트가 "없음" 이면 이름만으로 판단. (개인 메일 도메인은 서버에서 이미 제거됨.)
 6) name_ko 는 가능한 한 항상 채우세요. name_en 도. 확신이 낮으면 confidence=0.3~0.6 로.
-7) 반드시 JSON 으로만 답변. 추가 설명 금지.`
+7) extracted_department — 입력에 회사명 + 부서가 함께 들어있는 경우 분리:
+   - 예: raw="삼성전자 마케팅팀" → name_ko="삼성전자", extracted_department="마케팅팀"
+   - 예: raw="LG화학 연구소 신소재팀" → name_ko="LG화학", extracted_department="연구소 신소재팀"
+   - 예: raw="CJ ENM 콘텐츠전략국 글로벌사업팀" → name_ko="CJ ENM", extracted_department="콘텐츠전략국 글로벌사업팀"
+   - 부서 식별 단서: "팀/실/본부/국/센터/사업부/연구소/연구원/Lab/Office/Division/Group/Department" 등.
+   - 회사명만 있으면 extracted_department=null.
+   - 회사+직책 ("삼성전자 팀장") 인 경우: 직책은 부서가 아님 → extracted_department=null
+     (직책은 별도 필드라 회사명 정규화 책임 아님)
+   - 그룹사명 자체 ("롯데", "삼성") 는 부서가 아님.
+8) 반드시 JSON 으로만 답변. 추가 설명 금지.`
 
   const domainLine = emailDomain
     ? `이메일 도메인 힌트: "${emailDomain}"`
@@ -225,7 +275,7 @@ async function callOpenAI(
 ${domainLine}
 
 다음 형식으로 답변:
-{"name_ko": string|null, "name_en": string|null, "parent_group": string|null, "confidence": 0.0~1.0}`
+{"name_ko": string|null, "name_en": string|null, "parent_group": string|null, "extracted_department": string|null, "confidence": 0.0~1.0}`
 
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -257,9 +307,41 @@ ${domainLine}
       name_ko: parsed.name_ko ?? null,
       name_en: parsed.name_en ?? null,
       parent_group: parsed.parent_group ?? null,
+      extracted_department: cleanDept(parsed.extracted_department),
       confidence: Math.max(0, Math.min(1, Number(parsed.confidence) || 0)),
     }
   } catch {
-    return { name_ko: null, name_en: null, parent_group: null, confidence: 0 }
+    return {
+      name_ko: null,
+      name_en: null,
+      parent_group: null,
+      extracted_department: null,
+      confidence: 0,
+    }
   }
+}
+
+function cleanDept(v: unknown): string | null {
+  if (typeof v !== 'string') return null
+  const t = v.trim()
+  if (!t || t.length > 100) return null
+  return t
+}
+
+// raw_name 에서 분리된 부서를 떼어내고 회사명 부분만 반환.
+// 단순 정책: raw 끝부분이 dept 와 일치하면 잘라냄. 매칭 안 되면 null (보존).
+function stripDepartmentFromRaw(raw: string, dept: string): string | null {
+  const r = raw.trim()
+  const d = dept.trim()
+  if (!r || !d) return null
+  // 끝부분이 dept 와 일치하는지 (공백/특수문자 무시하고)
+  const lower = r.toLowerCase()
+  const dLower = d.toLowerCase()
+  if (lower.endsWith(dLower)) {
+    const head = r.slice(0, r.length - d.length).trim()
+    // 회사명이 너무 짧아지면 (1자 이하) 의심 → null 반환해 보존
+    if (head.length < 2) return null
+    return head
+  }
+  return null
 }
