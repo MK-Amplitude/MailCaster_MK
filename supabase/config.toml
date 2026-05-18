@@ -20,6 +20,10 @@ verify_jwt = false
 # 사용자 JWT 와 CRON_SECRET 두 경로 모두 함수 내부에서 자체 검증.
 verify_jwt = false
 
+[functions.sync-google-contacts]
+# 사용자 JWT (Settings 의 '지금 동기화') 와 CRON_SECRET 두 경로 자체 검증.
+verify_jwt = false
+
 [functions.track-open]
 # 이메일 클라이언트의 단순 GET 픽셀 요청이므로 jwt 검증 불가.
 verify_jwt = false

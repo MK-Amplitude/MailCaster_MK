@@ -39,8 +39,16 @@ import {
   Undo2,
   Building2,
   History,
+  RefreshCcw,
+  Contact as ContactIcon,
 } from 'lucide-react'
+import { Switch } from '@/components/ui/switch'
 import { useAuditLog } from '@/hooks/useAuditLog'
+import {
+  useGoogleContactsSyncStatus,
+  useSyncGoogleContacts,
+  useUpdateGoogleContactsAutoSync,
+} from '@/hooks/useGoogleContactsSync'
 import { format, formatDistanceToNow } from 'date-fns'
 import { ko } from 'date-fns/locale'
 import { toast } from 'sonner'
@@ -338,6 +346,9 @@ export default function SettingsPage() {
                 </CardContent>
               </Card>
 
+              {/* 4.6 외부 연동 — Google Contacts (리멤버 → 구글 주소록 → MailCaster) */}
+              <GoogleContactsSyncSection />
+
               {/* 5. 계정 */}
               <Card>
                 <CardHeader className="pb-3">
@@ -499,6 +510,81 @@ function AuditLogSection() {
         )
       })}
     </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Google Contacts 동기화 — 리멤버 → 구글 주소록 → MailCaster 자동 흐름의 마지막 단계.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function GoogleContactsSyncSection() {
+  const { data: status } = useGoogleContactsSyncStatus()
+  const sync = useSyncGoogleContacts()
+  const updateAuto = useUpdateGoogleContactsAutoSync()
+
+  const lastSync = status?.last_sync_at
+  const lastSyncLabel = lastSync
+    ? formatDistanceToNow(new Date(lastSync), { addSuffix: true, locale: ko })
+    : null
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2">
+          <ContactIcon className="w-4 h-4" />
+          연락처 동기화 — Google / 리멤버
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          리멤버 앱에서 <strong>"구글 주소록 자동 저장"</strong> 을 켜두시면,
+          여기서 동기화 버튼을 눌러 새로 인식된 명함을 MailCaster 연락처로 가져올 수 있습니다.
+          이미 등록된 이메일은 <strong>덮어쓰지 않습니다</strong> (기존 정보 보존).
+        </p>
+
+        <div className="flex items-center justify-between gap-3 pt-1">
+          <div className="min-w-0">
+            <p className="text-sm font-medium">지금 동기화</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {lastSyncLabel
+                ? `마지막 동기화: ${lastSyncLabel}`
+                : '아직 한 번도 동기화하지 않았습니다.'}
+            </p>
+          </div>
+          <Button
+            size="sm"
+            onClick={() => sync.mutate({})}
+            disabled={sync.isPending}
+          >
+            <RefreshCcw
+              className={`w-3.5 h-3.5 mr-1.5 ${sync.isPending ? 'animate-spin' : ''}`}
+            />
+            {sync.isPending ? '동기화 중...' : '지금 동기화'}
+          </Button>
+        </div>
+
+        <Separator />
+
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm font-medium">자동 동기화</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              켜두면 매 시간 자동으로 새 연락처를 가져옵니다.
+            </p>
+          </div>
+          <Switch
+            checked={status?.auto_sync ?? false}
+            onCheckedChange={(v) => updateAuto.mutate(v)}
+            disabled={updateAuto.isPending}
+          />
+        </div>
+
+        <p className="text-[11px] text-muted-foreground pt-1">
+          처음 사용 시 권한 부여 화면이 나타나면 "연락처 보기" 를 허용해주세요.
+          권한이 없으면 로그아웃 후 재로그인 시 권한 부여 화면이 자동으로 표시됩니다.
+        </p>
+      </CardContent>
+    </Card>
   )
 }
 
