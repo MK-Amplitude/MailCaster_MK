@@ -92,6 +92,8 @@ interface Row {
   campaign_id: string
   gmail_thread_id: string
   sent_at: string | null
+  email: string
+  contact_id: string | null
   campaigns: { user_id: string } | { user_id: string }[] | null
 }
 
@@ -117,10 +119,11 @@ Deno.serve(async (req) => {
     const { data: rowsRaw, error: qErr } = await supabase
       .schema('mailcaster')
       .from('recipients')
-      .select('id, campaign_id, gmail_thread_id, sent_at, campaigns!inner(user_id)')
+      .select('id, campaign_id, gmail_thread_id, sent_at, email, contact_id, campaigns!inner(user_id)')
       .eq('status', 'sent')
       .not('gmail_thread_id', 'is', null)
       .eq('replied', false)
+      .eq('bounced', false)
       .order('last_reply_check_at', { ascending: true, nullsFirst: true })
       .limit(BATCH_SIZE)
 
@@ -149,6 +152,14 @@ Deno.serve(async (req) => {
       cid: string
       category: ReplyCategory
       meta: ThreadMeta
+    }> = []
+    // 반송된 수신자 — recipient 와 contact 양쪽 갱신.
+    const bouncedInfos: Array<{
+      id: string
+      bouncedAtIso: string
+      cid: string
+      reason: string
+      recipientEmail: string
     }> = []
     const campaignIdsTouched = new Set<string>()
     let processed = 0
@@ -198,9 +209,27 @@ Deno.serve(async (req) => {
         if (Date.now() - runStartedAt > RUN_BUDGET_MS - GMAIL_CALL_BUDGET_MS) break userLoop
 
         try {
-          const reply = await detectReply(accessToken, r, userEmail)
+          const result = await detectReplyOrBounce(accessToken, r, userEmail)
           processed++
-          if (reply) {
+          if (result?.kind === 'bounce') {
+            // 반송 — bounce body 에서 reason 추출 (실패해도 최소 from 정보 기록)
+            let reason = `Bounced from ${result.from}`
+            try {
+              const body = await fetchReplyBody(accessToken, result.messageId)
+              const firstLine = extractBounceReason(body)
+              if (firstLine) reason = firstLine
+            } catch {
+              // body 못 가져와도 진행 — from 정보만으로 기록
+            }
+            bouncedInfos.push({
+              id: r.id,
+              bouncedAtIso: result.bouncedAtIso,
+              cid: r.campaign_id,
+              reason: reason.slice(0, 500),
+              recipientEmail: r.email,
+            })
+            campaignIdsTouched.add(r.campaign_id)
+          } else if (result?.kind === 'reply') {
             // 답장 본문 분류 — 실패해도 'unclear' 로 기록하고 진행 (감지 자체는 보존).
             // 분류 예산 잔량이 부족하면 skip ('unclear' 저장) — 다음 cron tick 에선
             // replied=true 가 되어 분류 큐에서 제외되니, 사실상 한 번에 처리.
@@ -208,7 +237,7 @@ Deno.serve(async (req) => {
             const remainingMs = RUN_BUDGET_MS - (Date.now() - runStartedAt)
             if (remainingMs > CLASSIFY_BUDGET_MS) {
               try {
-                category = await classifyReply(accessToken, reply.messageId)
+                category = await classifyReply(accessToken, result.messageId)
               } catch (e) {
                 classifyErrors++
                 console.warn(
@@ -220,10 +249,10 @@ Deno.serve(async (req) => {
             }
             repliedInfos.push({
               id: r.id,
-              repliedAtIso: reply.repliedAtIso,
+              repliedAtIso: result.repliedAtIso,
               cid: r.campaign_id,
               category,
-              meta: reply.meta,
+              meta: result.meta,
             })
             campaignIdsTouched.add(r.campaign_id)
           } else {
@@ -273,6 +302,59 @@ Deno.serve(async (req) => {
         .update({ last_reply_check_at: nowIso })
         .in('id', noReplyIds)
       if (error) console.warn('[check-replies] rotate fail', error.message)
+    }
+
+    // 4-3) 반송 처리 — recipient 와 contact 동시 갱신.
+    //  - recipient.bounced=true + bounced_at + bounce_reason + status='bounced'
+    //  - contact.is_bounced=true + bounce_count++ + last_bounced_at (email 기준 같은 org 모두)
+    //  - 같은 사람 여러 캠페인에서 반송되면 bounce_count 누적
+    for (const b of bouncedInfos) {
+      const { error: rErr } = await supabase
+        .schema('mailcaster')
+        .from('recipients')
+        .update({
+          bounced: true,
+          bounced_at: b.bouncedAtIso,
+          bounce_reason: b.reason,
+          last_reply_check_at: nowIso,
+        })
+        .eq('id', b.id)
+      if (rErr) {
+        console.warn('[check-replies] markBounced recipient fail', b.id, rErr.message)
+        continue
+      }
+
+      // contact 업데이트 — 같은 org 의 같은 email 모두 (멤버별 사본 일관성)
+      // org 식별: recipients → campaigns → org_id 가 같은 contacts
+      const { data: campaignRow } = await supabase
+        .schema('mailcaster')
+        .from('campaigns')
+        .select('org_id')
+        .eq('id', b.cid)
+        .maybeSingle()
+      const orgId = campaignRow?.org_id as string | undefined
+      if (!orgId) continue
+
+      // 기존 bounce_count 가져와서 +1
+      const { data: cRows } = await supabase
+        .schema('mailcaster')
+        .from('contacts')
+        .select('id, bounce_count')
+        .eq('org_id', orgId)
+        .ilike('email', b.recipientEmail)
+      if (!cRows || cRows.length === 0) continue
+      for (const c of cRows) {
+        const newCount = (Number(c.bounce_count) || 0) + 1
+        await supabase
+          .schema('mailcaster')
+          .from('contacts')
+          .update({
+            is_bounced: true,
+            bounce_count: newCount,
+            last_bounced_at: b.bouncedAtIso,
+          })
+          .eq('id', c.id)
+      }
     }
 
     // ------------------------------------------------------------
@@ -419,8 +501,25 @@ interface ThreadMeta {
 interface ThreadAnalysis {
   // 답장이 있으면 (가장 이른 타인 메시지)
   reply: { repliedAtIso: string; messageId: string } | null
+  // 반송이 감지되면 (mailer-daemon 등이 가장 이른 메시지로 옴) — reply 보다 우선 처리.
+  bounce: { bouncedAtIso: string; messageId: string; from: string } | null
   // thread 전체 메타 (마지막 메시지 시각/발신자/총 개수)
   meta: ThreadMeta
+}
+
+// 발송 후 thread 에 들어온 메시지의 From 헤더가 이 패턴이면 반송으로 판정.
+// 정상 답장에는 절대 안 들어오는 표준 메일 시스템 주소들.
+const BOUNCE_FROM_PATTERNS = [
+  /mailer-daemon@/i,
+  /postmaster@/i,
+  /<mailer-daemon@/i,
+  /^mailer-daemon\b/i,
+  /noreply.*bounce/i,
+]
+
+function isBounceFrom(from: string): boolean {
+  if (!from) return false
+  return BOUNCE_FROM_PATTERNS.some((p) => p.test(from))
 }
 
 async function fetchThreadAnalysis(
@@ -452,23 +551,33 @@ async function fetchThreadAnalysis(
   // 가장 늦은 메시지 — 마지막 활동 시각 + 발신자
   let lastMs = 0
   let lastFromMe = false
-  let earliestOther: { ms: number; messageId: string } | null = null
+  let earliestOther: { ms: number; messageId: string; from: string } | null = null
+  let earliestBounce: { ms: number; messageId: string; from: string } | null = null
   const sentAtMs = r.sent_at ? Date.parse(r.sent_at) : 0
 
   for (const m of messages) {
     const ts = Number(m.internalDate ?? 0)
     if (!ts) continue
-    const from = (extractFromHeader(m.payload?.headers) ?? '').toLowerCase()
+    const fromRaw = extractFromHeader(m.payload?.headers) ?? ''
+    const from = fromRaw.toLowerCase()
     const fromMe = from === userEmailLower
     // 가장 늦은 메시지 추적
     if (ts > lastMs) {
       lastMs = ts
       lastFromMe = fromMe
     }
-    // 답장 후보: 발송 이후 + 타인 발 + 가장 이른 메시지
+    // 발송 이후 + 타인 발 메시지만 후보
     if (!fromMe && ts > sentAtMs) {
-      if (earliestOther === null || ts < earliestOther.ms) {
-        earliestOther = { ms: ts, messageId: m.id }
+      if (isBounceFrom(fromRaw)) {
+        // 반송 메시지 — 가장 이른 것 채택. reply 후보에선 제외.
+        if (earliestBounce === null || ts < earliestBounce.ms) {
+          earliestBounce = { ms: ts, messageId: m.id, from: fromRaw }
+        }
+      } else {
+        // 정상 답장 후보
+        if (earliestOther === null || ts < earliestOther.ms) {
+          earliestOther = { ms: ts, messageId: m.id, from: fromRaw }
+        }
       }
     }
   }
@@ -480,6 +589,13 @@ async function fetchThreadAnalysis(
           messageId: earliestOther.messageId,
         }
       : null,
+    bounce: earliestBounce
+      ? {
+          bouncedAtIso: new Date(earliestBounce.ms).toISOString(),
+          messageId: earliestBounce.messageId,
+          from: earliestBounce.from,
+        }
+      : null,
     meta: {
       lastMessageAtIso: lastMs > 0 ? new Date(lastMs).toISOString() : new Date().toISOString(),
       lastMessageFromMe: lastFromMe,
@@ -488,18 +604,47 @@ async function fetchThreadAnalysis(
   }
 }
 
-async function detectReply(
+// 답장 또는 반송 감지 — 둘 다 없으면 null. 둘 다 있으면 반송 우선 (먼저 보낸 메일이 반송된 경우).
+async function detectReplyOrBounce(
   accessToken: string,
   r: Row,
   userEmailLower: string
-): Promise<{ repliedAtIso: string; messageId: string; meta: ThreadMeta } | null> {
+): Promise<
+  | {
+      kind: 'reply'
+      repliedAtIso: string
+      messageId: string
+      meta: ThreadMeta
+    }
+  | {
+      kind: 'bounce'
+      bouncedAtIso: string
+      messageId: string
+      from: string
+      meta: ThreadMeta
+    }
+  | null
+> {
   const analysis = await fetchThreadAnalysis(accessToken, r, userEmailLower)
-  if (!analysis || !analysis.reply) return null
-  return {
-    repliedAtIso: analysis.reply.repliedAtIso,
-    messageId: analysis.reply.messageId,
-    meta: analysis.meta,
+  if (!analysis) return null
+  if (analysis.bounce) {
+    return {
+      kind: 'bounce',
+      bouncedAtIso: analysis.bounce.bouncedAtIso,
+      messageId: analysis.bounce.messageId,
+      from: analysis.bounce.from,
+      meta: analysis.meta,
+    }
   }
+  if (analysis.reply) {
+    return {
+      kind: 'reply',
+      repliedAtIso: analysis.reply.repliedAtIso,
+      messageId: analysis.reply.messageId,
+      meta: analysis.meta,
+    }
+  }
+  return null
 }
 
 // ============================================================
@@ -653,6 +798,31 @@ function stripHtml(html: string): string {
 }
 
 // 인용(>로 시작) + Gmail 의 "On … wrote:" 헤더 + 시그니처 구분자(--) 이후 제거.
+// 반송 본문에서 가장 의미있는 한 줄 추출. mailer-daemon 메시지의 보일러플레이트를
+// 건너뛰고 SMTP 코드 (550/553/554/5.x.x) 가 포함된 라인을 우선 픽업.
+function extractBounceReason(text: string): string | null {
+  if (!text) return null
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+  // 1차: 표준 SMTP 응답 코드 라인
+  const smtpRe = /(?:5\d\.\d\.\d|5\d\d\b).+/
+  for (const l of lines) {
+    if (smtpRe.test(l) && l.length <= 240) return l
+  }
+  // 2차: "Address not found" / "user unknown" / "mailbox" / "delivery failed" 같은 키워드
+  const keywords =
+    /(?:address not found|user unknown|no such user|mailbox (?:does not exist|not found|unavailable|full)|delivery (?:has )?failed|message could not be delivered|recipient address rejected|undeliverable)/i
+  for (const l of lines) {
+    if (keywords.test(l) && l.length <= 240) return l
+  }
+  // 3차: 영문 "The response from the remote server was:" 다음 줄
+  for (let i = 0; i < lines.length; i++) {
+    if (/response from the remote server/i.test(lines[i]) && lines[i + 1]) {
+      return lines[i + 1].slice(0, 240)
+    }
+  }
+  return null
+}
+
 // 휴리스틱이라 100% 정확하진 않지만 LLM 입력의 노이즈를 크게 줄여줌.
 function stripQuotedAndSignature(text: string): string {
   // 1) "On {date}, {name} wrote:" / "{date} ... 작성:" 같은 답장 헤더 이후를 자르기
