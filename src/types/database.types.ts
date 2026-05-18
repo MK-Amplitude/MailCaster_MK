@@ -1157,6 +1157,11 @@ export interface Database {
         Args: { p_org_id?: string; p_threshold_days?: number }
         Returns: number
       }
+      // RPC — bulk 보관/복원 (042) — 조직 멤버라면 owner 와 무관
+      bulk_set_archived: {
+        Args: { p_org_id: string; p_contact_ids: string[]; p_archive: boolean }
+        Returns: number
+      }
     }
     Enums: Record<string, never>
     CompositeTypes: Record<string, never>
