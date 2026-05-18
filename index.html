@@ -9,6 +9,16 @@
     -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 
+    <!--
+      index.html 은 절대 캐시되면 안 됨 — 캐시되면 새 배포 후 옛 chunk hash 를
+      참조해 "Failed to fetch dynamically imported module" 에러 발생.
+      Vite 가 chunk 파일은 hash 로 immutable 캐시하지만 index.html 자체는
+      매 요청마다 fresh 해야 한다.
+    -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+
     <!-- 주 아이콘 (모든 모던 브라우저가 SVG 파비콘 지원) -->
     <link rel="icon" type="image/svg+xml" href="/mailcaster.svg" />
 
