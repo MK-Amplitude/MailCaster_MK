@@ -272,16 +272,64 @@ async function processCampaign(
   //    상태가 영원히 'sending' 으로 고립됨. 캠페인 레벨 CAS 락이 있으므로 같은
   //    캠페인에 동시 처리는 없고, gmail_message_id 가 NULL 이면 실제 발송도 안 된 상태라
   //    안전하게 재시도 가능.
-  const { data: recipients, error: rErr } = await supabase
+  const { data: rawRecipients, error: rErr } = await supabase
     .schema('mailcaster')
     .from('recipients')
-    .select('id, email, name, variables, subject_override, body_html_override')
+    .select(
+      'id, email, name, variables, subject_override, body_html_override, contact:contacts(is_bounced, is_unsubscribed)',
+    )
     .eq('campaign_id', c.id)
     .in('status', ['pending', 'sending'])
     .is('gmail_message_id', null)
     .order('created_at', { ascending: true })
   if (rErr) throw rErr
-  if (!recipients || recipients.length === 0) {
+
+  // 안전망 — 캠페인 생성 시점에 정상이었던 contact 가 그 후 bounce/unsubscribe 됐다면
+  // 발송 직전 차단. CampaignWizardPage 가 wizard 시점에 필터하지만, 시간이 지나
+  // check-replies 가 bounce 를 감지한 경우 등에 대비.
+  type RecipientWithJoin = {
+    id: string
+    email: string
+    name: string | null
+    variables: Record<string, unknown> | null
+    subject_override: string | null
+    body_html_override: string | null
+    contact?:
+      | { is_bounced: boolean | null; is_unsubscribed: boolean | null }
+      | { is_bounced: boolean | null; is_unsubscribed: boolean | null }[]
+      | null
+  }
+  const skipped: Array<{ id: string; reason: string }> = []
+  const recipients: Recipient[] = []
+  for (const raw of (rawRecipients ?? []) as RecipientWithJoin[]) {
+    const ct = Array.isArray(raw.contact) ? raw.contact[0] : raw.contact
+    if (ct?.is_bounced) {
+      skipped.push({ id: raw.id, reason: '연락처가 반송 상태로 표시되어 발송 차단' })
+      continue
+    }
+    if (ct?.is_unsubscribed) {
+      skipped.push({ id: raw.id, reason: '연락처가 수신거부 상태로 발송 차단' })
+      continue
+    }
+    recipients.push({
+      id: raw.id,
+      email: raw.email,
+      name: raw.name,
+      variables: raw.variables,
+      subject_override: raw.subject_override,
+      body_html_override: raw.body_html_override,
+    })
+  }
+  // 차단된 행은 즉시 failed 처리 — 카운터에 잡히도록.
+  for (const s of skipped) {
+    await supabase
+      .schema('mailcaster')
+      .from('recipients')
+      .update({ status: 'failed', error_message: s.reason })
+      .eq('id', s.id)
+  }
+
+  if (recipients.length === 0) {
     await supabase
       .schema('mailcaster')
       .from('campaigns')

@@ -15,6 +15,9 @@ interface SyncResult {
   deleted_skipped: number
   total_fetched?: number
   scope_missing?: boolean
+  api_disabled?: boolean
+  detail?: string
+  message?: string
   sync_token_updated?: boolean
   errors?: Array<{ message: string }>
 }
@@ -94,10 +97,20 @@ export function useSyncGoogleContacts() {
       qc.invalidateQueries({ queryKey: ['contacts-common'] })
       qc.invalidateQueries({ queryKey: ['google-contacts-sync-status'] })
 
+      if (r.api_disabled) {
+        toast.error(
+          'Google Cloud 콘솔에서 People API 가 비활성화되어 있습니다. 관리자에게 활성화 요청 후 재시도하세요.',
+          { duration: 12000 },
+        )
+        // 콘솔 로그로 GCP 활성화 URL 표시 (관리자가 바로 클릭 가능)
+        if (r.detail) console.warn('[google-contacts-sync] api disabled detail:', r.detail)
+        return
+      }
       if (r.scope_missing) {
         toast.warning(
           'Google Contacts 권한이 없습니다. 로그아웃 후 다시 로그인하면 권한 부여 화면이 나타납니다.',
         )
+        if (r.detail) console.warn('[google-contacts-sync] scope missing detail:', r.detail)
         return
       }
       const parts: string[] = []

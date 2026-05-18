@@ -23,6 +23,7 @@ import {
   useContactsCommon,
   useDeleteContacts,
   useToggleUnsubscribe,
+  useClearBounce,
   useBulkUpdateCustomerType,
   useBulkArchiveContacts,
   useArchiveInactiveContacts,
@@ -36,7 +37,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { UserPlus, Upload, Users, Search, UserX, Trash2, FolderPlus, Tag, Wand2, ScanLine, Loader2, Archive, ArchiveRestore } from 'lucide-react'
+import { UserPlus, Upload, Users, Search, UserX, Trash2, FolderPlus, Tag, Wand2, ScanLine, Loader2, Archive, ArchiveRestore, RotateCcw } from 'lucide-react'
 import { PersonalizedSendDialog } from '@/components/campaigns/PersonalizedSendDialog'
 import { useOcrBusinessCard, type OcrFields } from '@/hooks/useOcrBusinessCard'
 import { toast } from 'sonner'
@@ -136,6 +137,7 @@ export default function ContactsPage() {
   const displayCount = scope === 'common' ? filteredCommon.length : contacts.length
   const deleteContacts = useDeleteContacts()
   const toggleUnsub = useToggleUnsubscribe()
+  const clearBounce = useClearBounce()
   const bulkUpdateType = useBulkUpdateCustomerType()
   const bulkArchive = useBulkArchiveContacts()
   const archiveInactive = useArchiveInactiveContacts()
@@ -294,6 +296,14 @@ export default function ContactsPage() {
   }
 
   const isArchivedView = status === 'archived'
+  const isBouncedView = status === 'bounced'
+
+  const handleBulkClearBounce = async () => {
+    const ids = scope === 'common' ? expandedCommonContactIds : [...selectedIds]
+    if (ids.length === 0) return
+    await clearBounce.mutateAsync(ids)
+    clearSelection()
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -529,6 +539,15 @@ export default function ContactsPage() {
             icon: <UserX className="w-3.5 h-3.5 mr-1" />,
             onClick: handleBulkUnsubscribe,
           },
+          ...(isBouncedView
+            ? [
+                {
+                  label: '반송 해제',
+                  icon: <RotateCcw className="w-3.5 h-3.5 mr-1" />,
+                  onClick: handleBulkClearBounce,
+                },
+              ]
+            : []),
           isArchivedView
             ? {
                 label: '복원',

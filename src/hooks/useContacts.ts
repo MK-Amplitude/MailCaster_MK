@@ -363,6 +363,29 @@ export function useToggleUnsubscribe() {
   })
 }
 
+// 반송 해제 — 일시적 반송이라 다시 시도하고 싶을 때.
+// bounce_count / last_bounced_at 는 이력으로 보존, is_bounced 플래그만 false 로.
+export function useClearBounce() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (contactIds: string[]) => {
+      if (contactIds.length === 0) return 0
+      const { error } = await supabase
+        .from('contacts')
+        .update({ is_bounced: false })
+        .in('id', contactIds)
+      if (error) throw error
+      return contactIds.length
+    },
+    onSuccess: (count) => {
+      qc.invalidateQueries({ queryKey: [QUERY_KEY] })
+      qc.invalidateQueries({ queryKey: [COMMON_QUERY_KEY] })
+      toast.success(`${count}명의 반송 상태를 해제했습니다.`)
+    },
+    onError: () => toast.error('반송 해제에 실패했습니다.'),
+  })
+}
+
 export function useBulkArchiveContacts() {
   const qc = useQueryClient()
   const { currentOrg } = useAuth()

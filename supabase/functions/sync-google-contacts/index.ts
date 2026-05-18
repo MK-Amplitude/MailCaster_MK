@@ -125,6 +125,8 @@ Deno.serve(async (req) => {
     let pageToken: string | undefined = undefined
     let nextSyncToken: string | null = null
     let scopeMissing = false
+    let apiDisabled = false
+    let lastErrorDetail: string | null = null
 
     do {
       const params = new URLSearchParams({
@@ -139,9 +141,28 @@ Deno.serve(async (req) => {
         `https://people.googleapis.com/v1/people/me/connections?${params.toString()}`,
         { headers: { Authorization: `Bearer ${accessToken}` } },
       )
-      if (res.status === 403) {
-        // scope 누락 — 사용자가 재로그인 안 했음.
-        scopeMissing = true
+      if (res.status === 401 || res.status === 403) {
+        // 정확한 원인 분리 — Google 응답 body 의 error.message / reason / status 로 판정.
+        let errBody: { error?: { message?: string; status?: string; details?: unknown[] } } = {}
+        try {
+          errBody = await res.json()
+        } catch {
+          errBody = {}
+        }
+        const msg = errBody.error?.message ?? ''
+        const status = errBody.error?.status ?? ''
+        lastErrorDetail = `${res.status} ${status}: ${msg.slice(0, 240)}`
+        console.warn('[sync-google-contacts] auth/forbidden:', lastErrorDetail)
+        // People API 미활성화 — GCP 콘솔에서 enable 필요
+        if (
+          /SERVICE_DISABLED|has not been used|disabled/i.test(msg) ||
+          status === 'PERMISSION_DENIED' && /API/i.test(msg)
+        ) {
+          apiDisabled = true
+        } else {
+          // 그 외 401/403 은 scope 누락 또는 토큰 무효
+          scopeMissing = true
+        }
         break
       }
       if (res.status === 410) {
@@ -161,12 +182,24 @@ Deno.serve(async (req) => {
       if (data.nextSyncToken) nextSyncToken = data.nextSyncToken
     } while (pageToken)
 
+    if (apiDisabled) {
+      return json({
+        api_disabled: true,
+        inserted: 0,
+        duplicates: 0,
+        deleted_skipped: 0,
+        detail: lastErrorDetail,
+        message: 'Google Cloud 콘솔에서 People API 를 활성화해주세요.',
+      })
+    }
+
     if (scopeMissing) {
       return json({
         scope_missing: true,
         inserted: 0,
         duplicates: 0,
         deleted_skipped: 0,
+        detail: lastErrorDetail,
         message: 'Google Contacts 권한이 없습니다. 재로그인 필요.',
       })
     }
