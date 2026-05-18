@@ -30,9 +30,10 @@ export interface ImportErrorDetail {
 
 export interface ImportResult {
   total: number
-  inserted: number
-  updated: number
-  skipped: number
+  inserted: number       // 신규 추가
+  updated: number        // 사용 안 함 — 보존 정책상 항상 0 (호환 위해 유지)
+  duplicates: number     // 이미 존재 — 기존 데이터 보존, 덮어쓰지 않음
+  skipped: number        // 이메일 없음 / 형식 오류 등 invalid
   errors: ImportErrorDetail[]
 }
 
@@ -93,6 +94,7 @@ export function useContactImport() {
       total: rows.length,
       inserted: 0,
       updated: 0,
+      duplicates: 0,
       skipped: 0,
       errors: [],
     }
@@ -137,27 +139,35 @@ export function useContactImport() {
       const batch = validRows.slice(i, i + BATCH_SIZE)
       const upsertData = batch.map((b) => rowToUpsert(b.row))
 
+      // 보존 정책: ignoreDuplicates=true → ON CONFLICT DO NOTHING.
+      // 이메일이 이미 존재하는 행은 기존 데이터를 덮어쓰지 않고 그대로 둠.
+      // .select() 는 새로 INSERT 된 행만 반환 — duplicates 수는 batch 길이 차로 계산.
       const { data, error } = await supabase
         .from('contacts')
-        .upsert(upsertData, { onConflict: 'user_id,email' })
+        .upsert(upsertData, { onConflict: 'user_id,email', ignoreDuplicates: true })
         .select('id, email, company_raw')
 
+      // 기존 행을 찾기 위해 batch 이메일들을 사전 lookup — duplicates 에 어떤 행이
+      // 그룹에 추가되어야 하는지 알기 위해 필요. (groupId 가 있을 때만.)
+      // 신규/기존 구분: data 에 있는 email = 신규. 그 외 = 기존.
+
       if (error) {
-        // 배치 전체 실패 — 행별로 재시도해서 어느 행이 문제인지 식별
+        // 배치 전체 실패 — 행별로 재시도
         for (const b of batch) {
           const singleData = rowToUpsert(b.row)
           const { data: one, error: oneErr } = await supabase
             .from('contacts')
-            .upsert([singleData], { onConflict: 'user_id,email' })
+            .upsert([singleData], { onConflict: 'user_id,email', ignoreDuplicates: true })
             .select('id, email, company_raw')
-            .single()
-          if (oneErr || !one) {
+            .maybeSingle()
+          if (oneErr) {
             result.errors.push({
               row: b.displayRow,
               email: singleData.email ?? '',
-              message: oneErr?.message ?? '알 수 없는 오류',
+              message: oneErr.message,
             })
-          } else {
+          } else if (one) {
+            // 신규 — INSERT 됨
             result.inserted++
             if (groupId) {
               await supabase
@@ -170,19 +180,62 @@ export function useContactImport() {
             if (one.company_raw) {
               resolveQueue.push({ id: one.id, rawName: one.company_raw, email: one.email })
             }
+          } else {
+            // 기존 행 — INSERT 안 됨. 기존 데이터 보존.
+            // groupId 가 있으면 기존 contact_id 를 찾아 그룹에만 추가.
+            result.duplicates++
+            if (groupId) {
+              const { data: existing } = await supabase
+                .from('contacts')
+                .select('id')
+                .eq('user_id', user.id)
+                .eq('email', singleData.email!)
+                .maybeSingle()
+              if (existing) {
+                await supabase
+                  .from('contact_groups')
+                  .upsert(
+                    [{ contact_id: existing.id, group_id: groupId }],
+                    { onConflict: 'contact_id,group_id', ignoreDuplicates: true }
+                  )
+              }
+            }
           }
         }
-      } else if (data) {
-        result.inserted += data.length
+      } else {
+        const inserted = data ?? []
+        result.inserted += inserted.length
+        result.duplicates += batch.length - inserted.length
 
-        if (groupId && data.length > 0) {
+        if (groupId && inserted.length > 0) {
           await supabase.from('contact_groups').upsert(
-            data.map((c) => ({ contact_id: c.id, group_id: groupId })),
+            inserted.map((c) => ({ contact_id: c.id, group_id: groupId })),
             { onConflict: 'contact_id,group_id', ignoreDuplicates: true }
           )
         }
 
-        for (const c of data) {
+        // 기존(중복) 행도 그룹에 추가 — 사용자가 "특정 그룹으로 import" 한 의도 존중.
+        if (groupId && inserted.length < batch.length) {
+          const insertedEmails = new Set(inserted.map((c) => c.email))
+          const duplicateEmails = upsertData
+            .map((d) => d.email!)
+            .filter((e) => !insertedEmails.has(e))
+          if (duplicateEmails.length > 0) {
+            const { data: existingRows } = await supabase
+              .from('contacts')
+              .select('id, email')
+              .eq('user_id', user.id)
+              .in('email', duplicateEmails)
+            if (existingRows && existingRows.length > 0) {
+              await supabase.from('contact_groups').upsert(
+                existingRows.map((c) => ({ contact_id: c.id, group_id: groupId })),
+                { onConflict: 'contact_id,group_id', ignoreDuplicates: true }
+              )
+            }
+          }
+        }
+
+        for (const c of inserted) {
           if (c.company_raw) {
             resolveQueue.push({ id: c.id, rawName: c.company_raw, email: c.email })
           }
@@ -196,7 +249,11 @@ export function useContactImport() {
     qc.invalidateQueries({ queryKey: ['contacts'] })
     qc.invalidateQueries({ queryKey: ['contacts-common'] })
     qc.invalidateQueries({ queryKey: ['groups'] })
-    toast.success(`가져오기 완료: ${result.inserted}개 처리, ${result.skipped}개 건너뜀`)
+    toast.success(
+      `가져오기 완료: 신규 ${result.inserted}명${
+        result.duplicates > 0 ? `, 이미 존재 ${result.duplicates}명 (덮어쓰지 않음)` : ''
+      }${result.skipped > 0 ? `, 건너뜀 ${result.skipped}건` : ''}`
+    )
 
     // 비동기 백그라운드 — 사용자를 블록하지 않음
     if (resolveQueue.length > 0) {

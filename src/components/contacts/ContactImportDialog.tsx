@@ -196,6 +196,10 @@ export function ContactImportDialog({ open, onOpenChange }: ContactImportDialogP
             <p className="text-sm text-muted-foreground">
               총 {rows.length}행이 파싱되었습니다. 각 필드에 해당하는 컬럼을 선택하세요.
             </p>
+            <div className="rounded-md border border-blue-200 dark:border-blue-900/40 bg-blue-50/60 dark:bg-blue-950/20 px-3 py-2 text-xs text-blue-900 dark:text-blue-200">
+              이미 존재하는 이메일은 <strong>기존 정보가 유지</strong>되고, 새 데이터로
+              덮어쓰지 않습니다. 그룹 지정이 있으면 기존 연락처도 해당 그룹에는 추가됩니다.
+            </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {Object.entries(FIELD_LABELS).map(([field, label]) => (
                 <div key={field} className="space-y-1">
@@ -243,8 +247,17 @@ export function ContactImportDialog({ open, onOpenChange }: ContactImportDialogP
             </div>
             <div className="bg-muted rounded-lg p-4 space-y-1.5 text-sm">
               <p>전체: {result.total}행</p>
-              <p className="text-green-600">처리 완료: {result.inserted}건</p>
-              <p className="text-muted-foreground">건너뜀(이메일 없음/오류): {result.skipped}건</p>
+              <p className="text-green-600">신규 추가: {result.inserted}명</p>
+              {result.duplicates > 0 && (
+                <p className="text-amber-700 dark:text-amber-400">
+                  이미 존재(덮어쓰지 않음): {result.duplicates}명
+                </p>
+              )}
+              {result.skipped > 0 && (
+                <p className="text-muted-foreground">
+                  건너뜀(이메일 없음/오류): {result.skipped}건
+                </p>
+              )}
             </div>
             {result.errors.length > 0 && (
               <div className="rounded-lg border border-orange-200 dark:border-orange-900/40 bg-orange-50/50 dark:bg-orange-950/20">

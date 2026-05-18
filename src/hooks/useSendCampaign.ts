@@ -20,6 +20,30 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+// Outreach 동기화 — 발송 성공 후 fire-and-forget. 실패해도 발송 흐름에 영향 없음.
+// edge function 이 사용자의 outreach_refresh_token 존재 여부 확인 후 알아서 skip.
+function fireOutreachSyncSilent(recipientIds: string[]) {
+  if (recipientIds.length === 0) return
+  ;(async () => {
+    try {
+      const { data: sessionData } = await supabase.auth.getSession()
+      const accessToken = sessionData.session?.access_token
+      if (!accessToken) return
+      // 500 단위 배치 — edge function 의 max recipient_ids 제한과 일치.
+      const BATCH = 500
+      for (let i = 0; i < recipientIds.length; i += BATCH) {
+        const slice = recipientIds.slice(i, i + BATCH)
+        await supabase.functions.invoke('outreach-sync-mailing', {
+          body: { recipient_ids: slice },
+          headers: { Authorization: `Bearer ${accessToken}` },
+        })
+      }
+    } catch (e) {
+      console.warn('[outreach-sync] silent failure:', e)
+    }
+  })()
+}
+
 /**
  * Google API 일시적 오류(429 rate limit, 5xx) exponential backoff 재시도.
  * 401(토큰 만료)/404(파일 없음)/403(권한 없음)/400(요청 오류) 은 재시도 대상 아님.
@@ -627,6 +651,9 @@ export function useSendCampaign() {
           qc.invalidateQueries({ queryKey: ['campaigns', 'detail', campaignId] })
           qc.invalidateQueries({ queryKey: ['attachment_stats'] })
 
+          // Outreach 동기화 (BULK) — 전원 fire-and-forget
+          fireOutreachSyncSilent(recipients.map((r) => (r as Recipient).id))
+
           return { sent, failed: 0, total: recipients.length, deliveryMode }
         } catch (e) {
           // 실패 시 전원 failed 로 일괄 기록 + 캠페인 'failed' 로 전환
@@ -657,6 +684,7 @@ export function useSendCampaign() {
       // INDIVIDUAL 모드 (기본) — 수신자별 루프
       // ============================================================
       // C2 + C3: try/catch/finally — abort 시 campaign 상태 rollback + stuck recipient 정리
+      const successfullySentIds: string[] = []
       try {
         for (let i = 0; i < recipients.length; i++) {
           const r = recipients[i] as Recipient
@@ -771,6 +799,7 @@ export function useSendCampaign() {
             }
 
             sent++
+            successfullySentIds.push(r.id)
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e)
             const friendly = mapGoogleError(e)
@@ -803,6 +832,9 @@ export function useSendCampaign() {
           .from('campaigns')
           .update({ status: finalStatus, sent_count: sent, failed_count: failed })
           .eq('id', campaignId)
+
+        // Outreach 동기화 (INDIVIDUAL) — 성공한 행만 fire-and-forget
+        fireOutreachSyncSilent(successfullySentIds)
 
         qc.invalidateQueries({ queryKey: ['attachment_stats'] })
 
