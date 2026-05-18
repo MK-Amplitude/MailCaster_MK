@@ -365,16 +365,23 @@ export function useToggleUnsubscribe() {
 
 export function useBulkArchiveContacts() {
   const qc = useQueryClient()
+  const { currentOrg } = useAuth()
 
-  return useMutation({
-    mutationFn: async ({ contactIds, archive }: { contactIds: string[]; archive: boolean }) => {
+  return useMutation<number, Error, { contactIds: string[]; archive: boolean }>({
+    mutationFn: async ({ contactIds, archive }) => {
       if (contactIds.length === 0) return 0
-      const { error } = await supabase
-        .from('contacts')
-        .update({ archived_at: archive ? new Date().toISOString() : null })
-        .in('id', contactIds)
+      if (!currentOrg) throw new Error('조직 정보가 없습니다.')
+      // RLS 의 update 정책은 owner 본인만 허용하지만, archive_inactive_contacts()
+      // 는 SECURITY DEFINER 라 조직 전체 행을 archive 함. 두 정책이 어긋나면
+      // 보관함의 다른 owner 행이 복원 안 되는 stuck. SECURITY DEFINER RPC 로
+      // 권한 모델 일치 (조직 멤버라면 owner 와 무관).
+      const { data, error } = await supabase.rpc('bulk_set_archived', {
+        p_org_id: currentOrg.id,
+        p_contact_ids: contactIds,
+        p_archive: archive,
+      })
       if (error) throw error
-      return contactIds.length
+      return (data as unknown as number) ?? 0
     },
     onSuccess: (count, { archive }) => {
       qc.invalidateQueries({ queryKey: [QUERY_KEY] })
@@ -384,6 +391,9 @@ export function useBulkArchiveContacts() {
           ? `${count}명의 연락처를 보관함으로 이동했습니다.`
           : `${count}명의 연락처를 복원했습니다.`
       )
+    },
+    onError: (e) => {
+      toast.error(e instanceof Error ? e.message : '작업에 실패했습니다.')
     },
   })
 }
