@@ -46,12 +46,6 @@ import { ko } from 'date-fns/locale'
 import { toast } from 'sonner'
 import { formatDate } from '@/lib/utils'
 import { OrganizationSettings } from '@/components/settings/OrganizationSettings'
-import {
-  useOutreachStatus,
-  useOutreachDisconnect,
-  getOutreachAuthUrl,
-} from '@/hooks/useOutreach'
-import { Link2, Link2Off, ExternalLink } from 'lucide-react'
 
 // UI state 의 타입. 폼은 모두 string 으로 다루고, 저장 시점에 number 로 변환.
 interface FormState {
@@ -344,9 +338,6 @@ export default function SettingsPage() {
                 </CardContent>
               </Card>
 
-              {/* 4.5 외부 연동 — Outreach */}
-              <OutreachSection />
-
               {/* 5. 계정 */}
               <Card>
                 <CardHeader className="pb-3">
@@ -511,78 +502,3 @@ function AuditLogSection() {
   )
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 외부 연동 — Outreach
-// ─────────────────────────────────────────────────────────────────────────────
-
-function OutreachSection() {
-  const { data: status, isLoading } = useOutreachStatus()
-  const disconnect = useOutreachDisconnect()
-
-  const handleConnect = () => {
-    // redirect_uri 는 GitHub Pages basename 포함. window.location.origin + basename + 'outreach/callback'.
-    const redirectUri = `${window.location.origin}${import.meta.env.BASE_URL}outreach/callback`.replace(
-      /\/+$/,
-      '',
-    )
-    const state = crypto.randomUUID()
-    const authUrl = getOutreachAuthUrl(redirectUri, state)
-    if (!authUrl) {
-      toast.error(
-        'Outreach 연동이 서버에 설정되지 않았습니다. 관리자에게 VITE_OUTREACH_CLIENT_ID 설정을 요청하세요.',
-      )
-      return
-    }
-    // 같은 창에서 이동 — popup 차단 회피.
-    window.location.href = authUrl
-  }
-
-  return (
-    <Card>
-      <CardHeader className="pb-3">
-        <CardTitle className="text-base flex items-center gap-2">
-          <Link2 className="w-4 h-4" />
-          외부 연동 — Outreach
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <p className="text-xs text-muted-foreground leading-relaxed">
-          연결하면 앞으로 발송하는 모든 메일이 Outreach 의 해당 prospect activity 에 자동
-          기록됩니다. 동일 email 의 prospect 가 없으면 새로 생성됩니다.
-        </p>
-
-        {isLoading ? (
-          <Skeleton className="h-9 w-full" />
-        ) : status?.connected ? (
-          <div className="space-y-2.5">
-            <div className="flex items-center gap-2 text-sm">
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300 text-xs">
-                <Link2 className="w-3 h-3" />
-                연결됨
-              </span>
-              {status.connected_at && (
-                <span className="text-xs text-muted-foreground">
-                  {format(new Date(status.connected_at), 'yyyy.MM.dd HH:mm')}
-                </span>
-              )}
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => disconnect.mutate()}
-              disabled={disconnect.isPending}
-            >
-              <Link2Off className="w-3.5 h-3.5 mr-1.5" />
-              연결 해제
-            </Button>
-          </div>
-        ) : (
-          <Button size="sm" onClick={handleConnect}>
-            <ExternalLink className="w-3.5 h-3.5 mr-1.5" />
-            Outreach 연결하기
-          </Button>
-        )}
-      </CardContent>
-    </Card>
-  )
-}

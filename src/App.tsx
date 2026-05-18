@@ -28,7 +28,6 @@ const CampaignDetailPage = lazy(() => import('@/pages/CampaignDetailPage'))
 const AttachmentsPage = lazy(() => import('@/pages/AttachmentsPage'))
 const UnsubscribesPage = lazy(() => import('@/pages/UnsubscribesPage'))
 const SettingsPage = lazy(() => import('@/pages/SettingsPage'))
-const OutreachCallbackPage = lazy(() => import('@/pages/OutreachCallbackPage'))
 
 // React Query 기본값.
 //   - refetchOnWindowFocus: false
@@ -97,7 +96,6 @@ export default function App() {
                   <Route path="attachments" element={<AttachmentsPage />} />
                   <Route path="unsubscribes" element={<UnsubscribesPage />} />
                   <Route path="settings" element={<SettingsPage />} />
-                  <Route path="outreach/callback" element={<OutreachCallbackPage />} />
                 </Route>
                 <Route path="*" element={<NotFoundPage />} />
               </Routes>
