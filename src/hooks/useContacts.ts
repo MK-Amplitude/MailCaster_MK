@@ -365,24 +365,27 @@ export function useToggleUnsubscribe() {
 
 // 반송 해제 — 일시적 반송이라 다시 시도하고 싶을 때.
 // bounce_count / last_bounced_at 는 이력으로 보존, is_bounced 플래그만 false 로.
+// RPC 사용 — bulk_set_archived 와 권한 모델 일치 (조직 멤버 = owner 무관).
 export function useClearBounce() {
   const qc = useQueryClient()
-  return useMutation({
-    mutationFn: async (contactIds: string[]) => {
+  const { currentOrg } = useAuth()
+  return useMutation<number, Error, string[]>({
+    mutationFn: async (contactIds) => {
       if (contactIds.length === 0) return 0
-      const { error } = await supabase
-        .from('contacts')
-        .update({ is_bounced: false })
-        .in('id', contactIds)
+      if (!currentOrg) throw new Error('조직 정보가 없습니다.')
+      const { data, error } = await supabase.rpc('bulk_clear_bounce', {
+        p_org_id: currentOrg.id,
+        p_contact_ids: contactIds,
+      })
       if (error) throw error
-      return contactIds.length
+      return (data as unknown as number) ?? 0
     },
     onSuccess: (count) => {
       qc.invalidateQueries({ queryKey: [QUERY_KEY] })
       qc.invalidateQueries({ queryKey: [COMMON_QUERY_KEY] })
       toast.success(`${count}명의 반송 상태를 해제했습니다.`)
     },
-    onError: () => toast.error('반송 해제에 실패했습니다.'),
+    onError: (e) => toast.error(e instanceof Error ? e.message : '반송 해제 실패'),
   })
 }
 
@@ -520,40 +523,68 @@ export function useRemoveContactFromGroup() {
 
 // Phase 9: 다수 연락처의 customer_type 을 일괄 변경.
 // 벌크 액션 바에서 호출 — 본인 오너이거나 admin 인 row 만 RLS 가 통과시킴.
+// RPC 사용 — bulk_set_archived 와 권한 모델 일치 (조직 멤버 = owner 무관).
+// 이전: 직접 UPDATE → RLS 로 본인 소유만 갱신, 다른 owner 행은 silently skip.
 export function useBulkUpdateCustomerType() {
   const qc = useQueryClient()
-  return useMutation({
-    mutationFn: async ({
-      contactIds,
-      customerType,
-    }: {
-      contactIds: string[]
-      customerType: CustomerType
-    }) => {
+  const { currentOrg } = useAuth()
+  return useMutation<
+    number,
+    Error,
+    { contactIds: string[]; customerType: CustomerType }
+  >({
+    mutationFn: async ({ contactIds, customerType }) => {
       if (contactIds.length === 0) return 0
-      const { data, error } = await supabase
-        .from('contacts')
-        .update({ customer_type: customerType })
-        .in('id', contactIds)
-        .select('id')
+      if (!currentOrg) throw new Error('조직 정보가 없습니다.')
+      const { data, error } = await supabase.rpc('bulk_update_customer_type', {
+        p_org_id: currentOrg.id,
+        p_contact_ids: contactIds,
+        p_customer_type: customerType,
+      })
       if (error) throw error
-      return (data ?? []).length
+      return (data as unknown as number) ?? 0
     },
-    onSuccess: (updatedCount, { contactIds }) => {
+    onSuccess: (updatedCount) => {
       qc.invalidateQueries({ queryKey: [QUERY_KEY] })
       qc.invalidateQueries({ queryKey: [COMMON_QUERY_KEY] })
-      // RLS 로 인해 일부만 갱신될 수 있음 — 수치 차이를 알려줘 사용자가 인지하도록.
-      if (updatedCount < contactIds.length) {
-        toast.success(
-          `${updatedCount}명 변경 완료 (권한 없는 ${contactIds.length - updatedCount}명은 건너뜀)`
-        )
-      } else {
-        toast.success(`${updatedCount}명의 분류가 변경되었습니다.`)
-      }
+      toast.success(`${updatedCount}명의 분류가 변경되었습니다.`)
     },
-    onError: (e: Error) => {
+    onError: (e) => {
       console.error('[bulkUpdateCustomerType] failed:', e)
       toast.error(e.message || '분류 변경 실패')
     },
+  })
+}
+
+// 일괄 수신거부 / 해제 — RPC. 단일은 useToggleUnsubscribe 그대로 사용.
+export function useBulkToggleUnsubscribe() {
+  const qc = useQueryClient()
+  const { currentOrg } = useAuth()
+  return useMutation<
+    number,
+    Error,
+    { contactIds: string[]; unsubscribe: boolean }
+  >({
+    mutationFn: async ({ contactIds, unsubscribe }) => {
+      if (contactIds.length === 0) return 0
+      if (!currentOrg) throw new Error('조직 정보가 없습니다.')
+      const { data, error } = await supabase.rpc('bulk_set_unsubscribed', {
+        p_org_id: currentOrg.id,
+        p_contact_ids: contactIds,
+        p_unsubscribe: unsubscribe,
+      })
+      if (error) throw error
+      return (data as unknown as number) ?? 0
+    },
+    onSuccess: (count, { unsubscribe }) => {
+      qc.invalidateQueries({ queryKey: [QUERY_KEY] })
+      qc.invalidateQueries({ queryKey: [COMMON_QUERY_KEY] })
+      toast.success(
+        unsubscribe
+          ? `${count}명을 수신거부 처리했습니다.`
+          : `${count}명의 수신거부를 해제했습니다.`,
+      )
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : '작업 실패'),
   })
 }

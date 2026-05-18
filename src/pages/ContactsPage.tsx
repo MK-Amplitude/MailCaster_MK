@@ -24,6 +24,7 @@ import {
   useDeleteContacts,
   useToggleUnsubscribe,
   useClearBounce,
+  useBulkToggleUnsubscribe,
   useBulkUpdateCustomerType,
   useBulkArchiveContacts,
   useArchiveInactiveContacts,
@@ -138,6 +139,7 @@ export default function ContactsPage() {
   const deleteContacts = useDeleteContacts()
   const toggleUnsub = useToggleUnsubscribe()
   const clearBounce = useClearBounce()
+  const bulkUnsub = useBulkToggleUnsubscribe()
   const bulkUpdateType = useBulkUpdateCustomerType()
   const bulkArchive = useBulkArchiveContacts()
   const archiveInactive = useArchiveInactiveContacts()
@@ -227,21 +229,11 @@ export default function ContactsPage() {
     setBulkDeleteOpen(false)
   }
 
-  const handleBulkUnsubscribe = () => {
-    if (scope === 'common') {
-      // 공통에서 수신거부는 "해당 이메일을 가진 모든 사본" 을 대상으로
-      expandedCommonContactIds.forEach((id) => {
-        toggleUnsub.mutate({ id, unsubscribe: true })
-      })
-    } else {
-      const ids = [...selectedIds]
-      ids.forEach((id) => {
-        const c = contacts.find((x) => x.id === id)
-        if (c && !c.is_unsubscribed) {
-          toggleUnsub.mutate({ id, unsubscribe: true })
-        }
-      })
-    }
+  const handleBulkUnsubscribe = async () => {
+    // RPC 단일 호출로 일괄 처리 — RLS 우회 + 다른 owner 행도 처리 (조직 멤버 권한).
+    const ids = scope === 'common' ? expandedCommonContactIds : [...selectedIds]
+    if (ids.length === 0) return
+    await bulkUnsub.mutateAsync({ contactIds: ids, unsubscribe: true })
     clearSelection()
   }
 

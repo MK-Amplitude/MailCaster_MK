@@ -1162,6 +1162,21 @@ export interface Database {
         Args: { p_org_id: string; p_contact_ids: string[]; p_archive: boolean }
         Returns: number
       }
+      // RPC — bulk 반송 해제 (043)
+      bulk_clear_bounce: {
+        Args: { p_org_id: string; p_contact_ids: string[] }
+        Returns: number
+      }
+      // RPC — bulk 수신거부 / 해제 (043)
+      bulk_set_unsubscribed: {
+        Args: { p_org_id: string; p_contact_ids: string[]; p_unsubscribe: boolean }
+        Returns: number
+      }
+      // RPC — bulk 고객 분류 변경 (043)
+      bulk_update_customer_type: {
+        Args: { p_org_id: string; p_contact_ids: string[]; p_customer_type: string }
+        Returns: number
+      }
     }
     Enums: Record<string, never>
     CompositeTypes: Record<string, never>
