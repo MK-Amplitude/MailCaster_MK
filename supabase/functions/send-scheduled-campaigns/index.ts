@@ -1371,14 +1371,32 @@ function buildMime(input: Omit<GmailSendInput, 'accessToken'>): string {
 async function sendGmail(input: GmailSendInput): Promise<{ id: string; threadId: string }> {
   const mime = buildMime(input)
   const raw = b64urlMime(mime)
-  const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${input.accessToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ raw }),
-  })
+  // 명시적 25초 타임아웃 — Gmail 이 hang 하면 RUN_BUDGET_MS(50초) 안에 다른
+  // recipient 처리를 못 하고 함수가 통째로 죽음. 부분 진행 보존을 위해 단일 호출
+  // 상한을 둠. Supabase Edge 의 hard timeout(60초) 보다 짧게.
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 25_000)
+  let res: Response
+  try {
+    res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${input.accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ raw }),
+      signal: controller.signal,
+    })
+  } catch (e) {
+    if ((e as Error).name === 'AbortError') {
+      const err = new Error('Gmail API 호출 타임아웃 (25초 초과)') as Error & { status?: number }
+      err.status = 504
+      throw err
+    }
+    throw e
+  } finally {
+    clearTimeout(timer)
+  }
   if (!res.ok) {
     const body = await res.text()
     let message = `Gmail API ${res.status}`
