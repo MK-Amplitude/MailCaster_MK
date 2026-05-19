@@ -338,14 +338,31 @@ export async function sendGmail(input: SendMailInput): Promise<GmailSendResult> 
   const mime = await buildMime(input)
   const raw = b64url(mime)
 
-  const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${input.accessToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ raw }),
-  })
+  // 명시적 25초 타임아웃 — fetch 의 default 는 무한대. Gmail 이 hang 하면
+  // 사용자가 발송 버튼 누른 채 영원히 기다리게 됨. 25초 후 abort + 재시도 가능.
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 25_000)
+  let res: Response
+  try {
+    res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${input.accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ raw }),
+      signal: controller.signal,
+    })
+  } catch (e) {
+    if ((e as Error).name === 'AbortError') {
+      const err = new Error('Gmail API 호출 타임아웃 (25초 초과)') as Error & { status?: number }
+      err.status = 504
+      throw err
+    }
+    throw e
+  } finally {
+    clearTimeout(timer)
+  }
 
   if (!res.ok) {
     const body = await res.text()
