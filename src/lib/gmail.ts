@@ -70,6 +70,35 @@ function encodeOneWord(s: string): string {
   return `=?UTF-8?B?${b64}?=`
 }
 
+/**
+ * 주소 헤더 (From/Reply-To/Cc/Bcc) 의 display name 부분만 RFC 2047 인코딩.
+ *
+ * 입력 패턴:
+ *   "name@host"           → 그대로 (이름 없음)
+ *   "Display <name@host>" → "=?UTF-8?B?...?= <name@host>" (한글 등 비-ASCII 만 인코딩, ASCII 는 그대로)
+ *   "name@host" 중 < > 가 없는 raw 주소도 그대로
+ *
+ * 비-ASCII display name 을 raw UTF-8 로 헤더에 넣으면 받는 메일 클라이언트가
+ * "ï̃ëªê·œ" 같은 mojibake 로 표시 (UTF-8 바이트를 Latin-1 로 해석한 결과).
+ * 받는 쪽이 어떤 client (Gmail / Outlook / Apple Mail) 에 있든 안전하게 표시되게
+ * encoded-word 로 변환.
+ */
+function encodeAddressHeader(addr: string): string {
+  const m = addr.match(/^\s*(.+?)\s*<([^>]+)>\s*$/)
+  if (!m) return addr // raw email — name 없음
+  const name = m[1].trim()
+  const email = m[2].trim()
+  if (!name) return `<${email}>`
+  // RFC 5322 — 따옴표 있는 경우 벗기고 인코딩 (Gmail UI 가 따옴표 두는 경우 존재).
+  const naked = name.replace(/^"(.*)"$/, '$1')
+  // ASCII-only 이고 특수문자가 quoting 필요 없는 경우 그대로.
+  if (/^[\x20-\x7E]+$/.test(naked) && !/[<>"@,;:\\]/.test(naked)) {
+    return `${naked} <${email}>`
+  }
+  // 비-ASCII 또는 특수문자 — encoded-word 로.
+  return `${encodeHeader(naked)} <${email}>`
+}
+
 function encodeHeader(value: string): string {
   // RFC 2047 — 비-ASCII 헤더는 UTF-8 Base64 인코딩.
   // 단일 encoded-word 는 75자 제한이 있으므로 원본을 UTF-8 바이트 기준 chunk 로 잘라
@@ -224,20 +253,22 @@ function contentTypeName(filename: string): string {
 
 /**
  * 주소 목록을 헤더 한 줄용 comma-separated 문자열로 변환.
- * 각 주소는 stripCRLF 로 인젝션 방지 후 trim; 빈 값은 제거.
+ * 각 주소는 stripCRLF 로 인젝션 방지 후 display name 부분 RFC 2047 인코딩.
  */
 function joinAddressList(list: string[] | undefined): string | undefined {
   if (!list || list.length === 0) return undefined
-  const cleaned = list.map((a) => stripCRLF(a).trim()).filter(Boolean)
+  const cleaned = list
+    .map((a) => encodeAddressHeader(stripCRLF(a).trim()))
+    .filter(Boolean)
   return cleaned.length > 0 ? cleaned.join(', ') : undefined
 }
 
 async function buildMime(input: Omit<SendMailInput, 'accessToken'>): Promise<string> {
   const { from, to, toName, subject, html, replyTo, attachments, cc, bcc } = input
   // 모든 헤더 입력값은 CR/LF 인젝션 방지를 위해 선제 new sanitize.
-  const cleanFrom = stripCRLF(from)
+  const cleanFrom = encodeAddressHeader(stripCRLF(from))
   const cleanTo = stripCRLF(to)
-  const cleanReplyTo = replyTo ? stripCRLF(replyTo) : undefined
+  const cleanReplyTo = replyTo ? encodeAddressHeader(stripCRLF(replyTo)) : undefined
   const ccLine = joinAddressList(cc)
   const bccLine = joinAddressList(bcc)
   const toHeader = toName ? `${encodeHeader(toName)} <${cleanTo}>` : cleanTo
