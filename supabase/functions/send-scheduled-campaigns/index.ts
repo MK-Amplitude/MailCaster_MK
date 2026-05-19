@@ -1261,8 +1261,27 @@ function b64urlMime(mime: string): string {
 
 function joinAddressList(list: string[] | undefined): string | undefined {
   if (!list || list.length === 0) return undefined
-  const cleaned = list.map((a) => stripCRLF(a).trim()).filter(Boolean)
+  const cleaned = list
+    .map((a) => encodeAddressHeader(stripCRLF(a).trim()))
+    .filter(Boolean)
   return cleaned.length > 0 ? cleaned.join(', ') : undefined
+}
+
+/**
+ * 주소 헤더 (From/Cc/Bcc 등) 의 display name 만 RFC 2047 인코딩.
+ * 받는 클라이언트가 한글 등 비-ASCII 이름을 mojibake 로 표시하지 않도록.
+ */
+function encodeAddressHeader(addr: string): string {
+  const m = addr.match(/^\s*(.+?)\s*<([^>]+)>\s*$/)
+  if (!m) return addr
+  const name = m[1].trim().replace(/^"(.*)"$/, '$1')
+  const email = m[2].trim()
+  if (!name) return `<${email}>`
+  // deno-lint-ignore no-control-regex
+  if (/^[\x20-\x7E]+$/.test(name) && !/[<>"@,;:\\]/.test(name)) {
+    return `${name} <${email}>`
+  }
+  return `${encodeHeader(name)} <${email}>`
 }
 
 // RFC 5987 / 2231 — 비-ASCII filename 파라미터
@@ -1295,7 +1314,7 @@ function contentTypeName(filename: string): string {
 
 function buildMime(input: Omit<GmailSendInput, 'accessToken'>): string {
   const { from, to, toName, subject, html, cc, bcc, attachments } = input
-  const cleanFrom = stripCRLF(from)
+  const cleanFrom = encodeAddressHeader(stripCRLF(from))
   const cleanTo = stripCRLF(to)
   const ccLine = joinAddressList(cc)
   const bccLine = joinAddressList(bcc)
