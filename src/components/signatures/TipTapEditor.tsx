@@ -191,17 +191,22 @@ function TipTapEditor({ value, onChange, placeholder, className }: TipTapEditorP
   if (!editor) return null
 
   return (
-    <div className={cn('border rounded-lg overflow-hidden tiptap-editor flex flex-col', className)}>
+    <div
+      className={cn(
+        'border rounded-lg tiptap-editor flex flex-col',
+        className,
+      )}
+    >
       <EditorToolbar editor={editor} />
       {/*
-        에디터 영역 — 사용자가 우하단 핸들로 세로 크기 조정 가능 (CSS resize: vertical).
-        - 기본 240px, 최소 160px / 최대 viewport 의 80%.
-        - 큰 이미지 삽입 시 사용자가 프레임을 키워서 한눈에 볼 수 있음.
-        - 이미지가 가로로 넘치면 area 가 가로 스크롤 — 사용자가 정한 사이즈 그대로 표시.
+        에디터 영역 — 사용자가 우하단 핸들로 가로/세로 크기 조정 가능 (CSS resize: both).
+        - 세로: 기본 240px, 최소 160px / 최대 80vh
+        - 가로: 부모 (Dialog) 폭 한도까지 자유 — min-w 320px / max-w 1400px
+        - 이미지가 더 커도 가로 스크롤로 표시 (자르지 않음)
       */}
       <EditorContent
         editor={editor}
-        className="min-h-[160px] max-h-[80vh] h-60 resize-y overflow-auto text-sm tiptap-resizable-area"
+        className="min-h-[160px] max-h-[80vh] h-60 min-w-[320px] max-w-[1400px] resize text-sm tiptap-resizable-area"
       />
     </div>
   )
