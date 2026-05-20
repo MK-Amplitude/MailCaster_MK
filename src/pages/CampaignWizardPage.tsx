@@ -28,6 +28,7 @@ import TipTapEditor from '@/components/signatures/TipTapEditor'
 import { AttachmentSection } from '@/components/attachments/AttachmentSection'
 import { RecipientBasket } from '@/components/campaigns/RecipientBasket'
 import { CcBccPicker } from '@/components/campaigns/CcBccPicker'
+import { FinalRecipientReview } from '@/components/campaigns/FinalRecipientReview'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/hooks/useAuth'
 import { useGroups } from '@/hooks/useGroups'
@@ -1631,6 +1632,11 @@ export default function CampaignWizardPage() {
                 scheduledAt={scheduledAt}
                 setScheduledAt={setScheduledAt}
                 recipientEmails={previewContacts.map((c) => c.email)}
+                previewContacts={previewContacts}
+                excludedContactIds={excludedContactIds}
+                setExcludedContactIds={setExcludedContactIds}
+                selectedContactIds={selectedContactIds}
+                setSelectedContactIds={setSelectedContactIds}
               />
             </>
           )}
@@ -2379,6 +2385,13 @@ function Step3({
   scheduledAt,
   setScheduledAt,
   recipientEmails,
+  // 편집 모드 — 최종 수신자 검토 (이름/이메일/회사/직책 + 추가/제거).
+  // 새 캠페인 작성 흐름에서는 Step1 에서 이미 다루므로 미전달 (undefined).
+  previewContacts,
+  excludedContactIds,
+  setExcludedContactIds,
+  selectedContactIds,
+  setSelectedContactIds,
 }: {
   name: string
   totalCount: number
@@ -2412,6 +2425,11 @@ function Step3({
   setScheduledAt: (v: string | null) => void
   /** 발송 전 도메인 MX 검증용 — 수신자 이메일 목록 */
   recipientEmails: string[]
+  previewContacts?: PreviewContact[]
+  excludedContactIds?: string[]
+  setExcludedContactIds?: (ids: string[]) => void
+  selectedContactIds?: string[]
+  setSelectedContactIds?: (ids: string[]) => void
 }) {
   const totalAttachmentSize = attachments.reduce((sum, a) => sum + (a.file_size ?? 0), 0)
   // useSendCampaign 의 실제 fallback 기준(SAFE_THRESHOLD)과 일치시킴
@@ -2692,6 +2710,29 @@ function Step3({
           <p className="text-sm text-muted-foreground">미리보기할 수신자가 없습니다.</p>
         )}
       </div>
+
+      {/* 편집 모드 — 최종 수신자 검토 (이름/이메일/회사/직책 + 추가/제거).
+          신규 작성 흐름에서는 Step1 에서 이미 다루므로 표시 안 함. */}
+      {previewContacts !== undefined &&
+        excludedContactIds !== undefined &&
+        setExcludedContactIds !== undefined &&
+        selectedContactIds !== undefined &&
+        setSelectedContactIds !== undefined && (
+          <FinalRecipientReview
+            previewContacts={previewContacts.map((c) => ({
+              id: c.id,
+              email: c.email,
+              name: c.name,
+              company: c.company,
+              job_title: c.job_title,
+              department: c.department,
+            }))}
+            excludedContactIds={excludedContactIds}
+            setExcludedContactIds={setExcludedContactIds}
+            selectedContactIds={selectedContactIds}
+            setSelectedContactIds={setSelectedContactIds}
+          />
+        )}
     </div>
   )
 }
