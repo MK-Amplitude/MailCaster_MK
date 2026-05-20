@@ -979,18 +979,36 @@ export default function CampaignWizardPage() {
 
   const previewRendered = useMemo(() => {
     const first = previewContacts[0]
-    if (!first) return null
+    // 수신자가 없어도 미리보기 가능하도록 fallback contact 사용 (편집 중 신규 캠페인 케이스).
+    const fallbackContact: PreviewContact = {
+      id: '',
+      email: 'sample@example.com',
+      name: '홍길동',
+      company: '주식회사 예시',
+      department: '마케팅팀',
+      job_title: '팀장',
+    }
+    const base = first ?? fallbackContact
+    // 변수 치환에 빈 문자열이 들어가면 메일에 어색한 공백/구문이 보임.
+    // 첫 수신자 데이터 사용하되, NULL/빈 값은 자연스러운 샘플로 치환.
     const vars: Record<string, string> = {
-      name: first.name ?? '',
-      email: first.email,
-      company: first.company ?? '',
-      department: first.department ?? '',
-      job_title: first.job_title ?? '',
+      name: base.name?.trim() || '홍길동',
+      email: base.email || 'sample@example.com',
+      company: base.company?.trim() || '주식회사 예시',
+      department: base.department?.trim() || '마케팅팀',
+      job_title: base.job_title?.trim() || '팀장',
     }
     return {
       subject: renderTemplate(subject, vars),
       html: renderTemplate(effectiveBody, vars),
-      contact: first,
+      contact: base,
+      // 샘플 fallback 이 적용된 필드 — UI 가 "예시값 사용 중" 표시 가능
+      usedSamples: {
+        name: !base.name?.trim(),
+        company: !base.company?.trim(),
+        department: !base.department?.trim(),
+        job_title: !base.job_title?.trim(),
+      },
     }
   }, [subject, effectiveBody, previewContacts])
 
@@ -1507,7 +1525,13 @@ export default function CampaignWizardPage() {
             </Badge>
           )}
         </div>
-        <StepIndicator step={step} />
+        {!isEditMode && <StepIndicator step={step} />}
+        {isEditMode && (
+          <p className="text-xs text-muted-foreground mt-2">
+            한 페이지에서 모두 편집할 수 있고, 아래쪽 미리보기는 변수 ({'{{name}}'}, {'{{company}}'} 등)
+            를 첫 수신자 정보 (없으면 샘플) 로 치환해 실시간 표시됩니다.
+          </p>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto">
@@ -1519,7 +1543,99 @@ export default function CampaignWizardPage() {
               <Skeleton className="h-24 w-full" />
             </div>
           )}
-          {!reuseLoading && step === 1 && (
+          {/* 편집 모드 — 전체 섹션을 한 페이지에 표시 (한 단계에서 모두 편집 + 실시간 미리보기).
+              새 캠페인 작성은 step-by-step 흐름 유지. */}
+          {!reuseLoading && isEditMode && (
+            <>
+              <Step1
+                name={name}
+                setName={setName}
+                groups={groups}
+                selectedGroupIds={selectedGroupIds}
+                setSelectedGroupIds={setSelectedGroupIds}
+                selectedContactIds={selectedContactIds}
+                setSelectedContactIds={setSelectedContactIds}
+                previewContacts={previewContacts}
+                loadingPreview={loadingPreview}
+                fixedRecipients={fixedRecipients}
+                excludedContactIds={excludedContactIds}
+                setExcludedContactIds={setExcludedContactIds}
+                excludedMeta={excludedMeta}
+              />
+              <Step2
+                templates={templates}
+                signatures={signatures}
+                signatureId={signatureId}
+                setSignatureId={setSignatureId}
+                subject={subject}
+                setSubject={setSubject}
+                blocks={blocks}
+                templateById={templateById}
+                onAddBlock={addBlock}
+                onRemoveBlock={removeBlock}
+                onMoveBlock={moveBlock}
+                insertSubject={insertVariableIntoSubject}
+                usedVariables={usedVariables}
+                composedHtml={effectiveBody}
+                attachments={attachments}
+                setAttachments={setAttachments}
+                groups={groups}
+                ccEmails={ccEmails}
+                setCcEmails={setCcEmails}
+                ccGroupIds={ccGroupIds}
+                setCcGroupIds={setCcGroupIds}
+                ccContactIds={ccContactIds}
+                setCcContactIds={setCcContactIds}
+                resolvedCcEmails={resolvedCcEmails}
+                loadingCcBasket={loadingCcBasket}
+                bccEmails={bccEmails}
+                setBccEmails={setBccEmails}
+                bccGroupIds={bccGroupIds}
+                setBccGroupIds={setBccGroupIds}
+                bccContactIds={bccContactIds}
+                setBccContactIds={setBccContactIds}
+                resolvedBccEmails={resolvedBccEmails}
+                loadingBccBasket={loadingBccBasket}
+                recipientEmails={previewContacts.map((c) => c.email)}
+                sendMode={sendMode}
+                setSendMode={setSendMode}
+                recipientCount={previewContacts.length}
+                bodyOverridden={bodyOverride !== null}
+                onResetBody={() => setBodyOverride(null)}
+              />
+              <Step3
+                name={name}
+                totalCount={previewContacts.length}
+                preview={previewRendered}
+                delaySeconds={delaySeconds}
+                setDelaySeconds={setDelaySeconds}
+                usedVariables={usedVariables}
+                blockCount={blocks.length}
+                attachments={attachments}
+                subject={subject}
+                setSubject={setSubject}
+                effectiveBody={effectiveBody}
+                bodyOverridden={bodyOverride !== null}
+                onBodyChange={(html) => {
+                  setBodyOverride(html)
+                  bodyOverrideOriginRef.current = 'manual'
+                }}
+                onResetBody={() => {
+                  setBodyOverride(null)
+                  bodyOverrideOriginRef.current = null
+                }}
+                insertSubject={insertVariableIntoSubject}
+                cc={resolvedCcEmails}
+                bcc={resolvedBccEmails}
+                sendMode={sendMode}
+                scheduledAt={scheduledAt}
+                setScheduledAt={setScheduledAt}
+                recipientEmails={previewContacts.map((c) => c.email)}
+              />
+            </>
+          )}
+
+          {!reuseLoading && !isEditMode && step === 1 && (
             <Step1
               name={name}
               setName={setName}
@@ -1537,7 +1653,7 @@ export default function CampaignWizardPage() {
             />
           )}
 
-          {!reuseLoading && step === 2 && (
+          {!reuseLoading && !isEditMode && step === 2 && (
             <Step2
               templates={templates}
               signatures={signatures}
@@ -1581,7 +1697,7 @@ export default function CampaignWizardPage() {
             />
           )}
 
-          {!reuseLoading && step === 3 && (
+          {!reuseLoading && !isEditMode && step === 3 && (
             <Step3
               name={name}
               totalCount={previewContacts.length}
@@ -1619,16 +1735,16 @@ export default function CampaignWizardPage() {
         <Button
           variant="outline"
           onClick={() => {
-            if (step === 1) navigate('/campaigns')
+            if (isEditMode || step === 1) navigate('/campaigns')
             else setStep((s) => (s - 1) as Step)
           }}
           disabled={submitting}
         >
           <ArrowLeft className="w-4 h-4 mr-1" />
-          {step === 1 ? '취소' : '이전'}
+          {isEditMode || step === 1 ? '취소' : '이전'}
         </Button>
 
-        {step < 3 ? (
+        {!isEditMode && step < 3 ? (
           <Button
             onClick={() => setStep((s) => (s + 1) as Step)}
             disabled={
@@ -2266,7 +2382,12 @@ function Step3({
 }: {
   name: string
   totalCount: number
-  preview: { subject: string; html: string; contact: PreviewContact } | null
+  preview: {
+    subject: string
+    html: string
+    contact: PreviewContact
+    usedSamples?: { name: boolean; company: boolean; department: boolean; job_title: boolean }
+  } | null
   delaySeconds: number
   setDelaySeconds: (v: number) => void
   usedVariables: string[]
@@ -2529,6 +2650,24 @@ function Step3({
                     렌더링: {preview.subject}
                   </div>
                 )}
+                {/* 샘플 변수 사용 안내 — 첫 수신자 데이터가 비어있는 필드에는 자연스러운
+                    예시값(홍길동/주식회사 예시/마케팅팀/팀장) 으로 치환됨을 명시. */}
+                {preview.usedSamples &&
+                  Object.values(preview.usedSamples).some(Boolean) && (
+                    <div className="text-[11px] text-amber-700 dark:text-amber-400 flex items-center gap-1">
+                      <span>💡</span>
+                      <span>
+                        샘플 값 적용: {[
+                          preview.usedSamples.name && '이름=홍길동',
+                          preview.usedSamples.company && '회사=주식회사 예시',
+                          preview.usedSamples.department && '부서=마케팅팀',
+                          preview.usedSamples.job_title && '직책=팀장',
+                        ]
+                          .filter(Boolean)
+                          .join(', ')}
+                      </span>
+                    </div>
+                  )}
               </div>
               {editingBody ? (
                 <div className="p-3 space-y-2 bg-muted/10">
