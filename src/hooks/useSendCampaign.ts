@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from './useAuth'
 import { sendGmail, encodeAttachmentsForReuse, type MailAttachment } from '@/lib/gmail'
+import { extractAndInlineImages } from '@/lib/inlineImages'
 import { getFreshGoogleToken, forceRefreshGoogleToken } from '@/lib/googleToken'
 import { downloadFile, getFileMeta, shareAsPublicLink } from '@/lib/drive'
 import { extractVariables, renderTemplate } from '@/lib/mailMerge'
@@ -282,6 +283,18 @@ export function useSendCampaign() {
       }
       console.log('[sendCampaign] finalBody', { length: finalBody.length, source: 'body_html' })
 
+      // 2-1.5) Inline 이미지 추출 — 본문의 <img src="..."> 를 fetch 해서 base64 로
+      //         메일에 박는다. 결과: html 에 cid:xxx 형식의 src + inlineImages 배열.
+      //         발송된 메일은 자기완결적 — Storage 가 사라져도 영구 표시 가능.
+      //         외부 이미지 차단도 우회.
+      const { html: bodyWithCids, images: inlineImages } = await extractAndInlineImages(
+        finalBody,
+      )
+      finalBody = bodyWithCids
+      if (inlineImages.length > 0) {
+        console.log('[sendCampaign] inline images:', inlineImages.length)
+      }
+
       // 2-2) 첨부 파일 로드
       const { data: camAtt, error: caErr } = await supabase
         .from('campaign_attachments')
@@ -541,6 +554,7 @@ export function useSendCampaign() {
                   subject: rawSubject,
                   html,
                   attachments: mailAttachments.length > 0 ? mailAttachments : undefined,
+                  inlineImages: inlineImages.length > 0 ? inlineImages : undefined,
                   cc: campaignCc.length > 0 ? campaignCc : undefined,
                   bcc: campaignBcc.length > 0 ? campaignBcc : undefined,
                 })
@@ -557,6 +571,7 @@ export function useSendCampaign() {
                     subject: rawSubject,
                     html,
                     attachments: mailAttachments.length > 0 ? mailAttachments : undefined,
+                    inlineImages: inlineImages.length > 0 ? inlineImages : undefined,
                     cc: campaignCc.length > 0 ? campaignCc : undefined,
                     bcc: campaignBcc.length > 0 ? campaignBcc : undefined,
                   })
@@ -703,6 +718,7 @@ export function useSendCampaign() {
                     subject,
                     html,
                     attachments: mailAttachments.length > 0 ? mailAttachments : undefined,
+                    inlineImages: inlineImages.length > 0 ? inlineImages : undefined,
                     cc: campaignCc.length > 0 ? campaignCc : undefined,
                     bcc: campaignBcc.length > 0 ? campaignBcc : undefined,
                   })
@@ -720,6 +736,7 @@ export function useSendCampaign() {
                       subject,
                       html,
                       attachments: mailAttachments.length > 0 ? mailAttachments : undefined,
+                      inlineImages: inlineImages.length > 0 ? inlineImages : undefined,
                       cc: campaignCc.length > 0 ? campaignCc : undefined,
                       bcc: campaignBcc.length > 0 ? campaignBcc : undefined,
                     })
