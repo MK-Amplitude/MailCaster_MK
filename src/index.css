@@ -125,6 +125,35 @@
   @apply min-h-[200px] p-3 focus:outline-none;
 }
 
+/* 에디터 영역의 가로 스크롤 — 사용자가 이미지를 컨테이너 폭보다 크게 키워도
+ * 자르지 않고 가로 스크롤 표시. 사용자가 정확히 의도한 사이즈가 보존됨. */
+.tiptap-resizable-area {
+  overflow: auto;
+}
+
+/* Resize 핸들 시각 표시 — 기본 브라우저 핸들은 너무 작아 사용자가 못 알아챔.
+ * 우하단에 진한 점선/대각선 패턴으로 명확히 보이도록. */
+.tiptap-resizable-area::-webkit-resizer {
+  /* Safari/Chrome — 진한 대각선 그라디언트 */
+  background:
+    linear-gradient(
+      135deg,
+      transparent 0%,
+      transparent 50%,
+      hsl(var(--border)) 50%,
+      hsl(var(--border)) 55%,
+      transparent 55%,
+      transparent 65%,
+      hsl(var(--border)) 65%,
+      hsl(var(--border)) 70%,
+      transparent 70%,
+      transparent 80%,
+      hsl(var(--border)) 80%,
+      hsl(var(--border)) 85%,
+      transparent 85%
+    );
+}
+
 .tiptap-editor .ProseMirror p.is-editor-empty:first-child::before {
   @apply text-muted-foreground pointer-events-none float-left h-0;
   content: attr(data-placeholder);
@@ -243,17 +272,18 @@
 .tiptap-editor .ProseMirror .resizable-image {
   position: relative;
   display: inline-block;
-  max-width: 100%;
   line-height: 0;
+  /* max-width 캡 제거 — 사용자가 명시한 width 가 그대로 적용되어야 함.
+   * 이미지가 컨테이너 폭보다 크면 .tiptap-resizable-area 의 overflow-x:auto 가
+   * 가로 스크롤로 처리. 사용자가 의도한 사이즈 100% 보존. */
 }
 
 .tiptap-editor .ProseMirror .resizable-image img {
   display: block;
-  max-width: 100%;
-  height: auto;
   border-radius: 0.375rem;
   user-select: none;
-  /* inline style(width/height) 는 이 규칙들보다 specificity 가 높아 자동으로 우선 */
+  /* inline style(width/height) 가 source of truth. max-width 클램프 없음 —
+   * 사용자가 드래그로 정한 사이즈가 비율 깨짐 없이 그대로 표시. */
 }
 
 .tiptap-editor .ProseMirror .resizable-image-selected {
