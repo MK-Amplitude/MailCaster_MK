@@ -384,6 +384,18 @@ async function processCampaign(
     throw new Error('발송할 본문이 비어있습니다')
   }
 
+  // 3.5) Inline 이미지 추출 — 본문의 <img src="..."> 를 fetch 해서 base64 로 메일에
+  //      박는다. 결과: html 의 src 가 cid:xxx 로 치환됨 + inlineImages 배열.
+  //      메일 자체가 자기완결적 — Storage URL 이 사라져도 발송된 메일은 영구 표시.
+  //      외부 이미지 차단도 우회.
+  const { html: bodyWithCids, images: inlineImages } = await extractAndInlineImages(
+    finalBody,
+  )
+  finalBody = bodyWithCids
+  if (inlineImages.length > 0) {
+    console.log(`[send-scheduled] campaign ${c.id} inline images: ${inlineImages.length}`)
+  }
+
   // 4) 사용자 프로필 + refresh_token 로 access_token 갱신
   const { data: profile, error: pErr } = await supabase
     .schema('mailcaster')
@@ -560,6 +572,7 @@ async function processCampaign(
         cc: campaignCc.length > 0 ? campaignCc : undefined,
         bcc: campaignBcc.length > 0 ? campaignBcc : undefined,
         attachments: mailAttachments,
+        inlineImages: inlineImages.length > 0 ? inlineImages : undefined,
       })
       const sentAt = new Date().toISOString()
       await supabase
@@ -702,6 +715,7 @@ async function processCampaign(
         cc: campaignCc.length > 0 ? campaignCc : undefined,
         bcc: campaignBcc.length > 0 ? campaignBcc : undefined,
         attachments: mailAttachments,
+        inlineImages: inlineImages.length > 0 ? inlineImages : undefined,
       })
       await supabase
         .schema('mailcaster')
@@ -1209,6 +1223,129 @@ interface GmailSendInput {
   cc?: string[]
   bcc?: string[]
   attachments?: MailAttachment[]
+  inlineImages?: InlineImage[]
+}
+
+interface InlineImage {
+  cid: string
+  filename: string
+  mimeType: string
+  base64: string // unwrapped
+}
+
+// 본문의 <img src="..."> 를 base64 inline 으로 embed.
+// 클라이언트 (src/lib/inlineImages.ts) 와 동일한 정책 — data URL / https URL 모두 fetch.
+const INLINE_FETCH_TIMEOUT_MS = 10_000
+const INLINE_MAX_IMAGE_BYTES = 8 * 1024 * 1024
+const INLINE_MAX_TOTAL_BYTES = 20 * 1024 * 1024
+
+async function extractAndInlineImages(
+  html: string,
+): Promise<{ html: string; images: InlineImage[] }> {
+  if (!/<img\b[^>]*\bsrc=/i.test(html)) {
+    return { html, images: [] }
+  }
+  const imgRe = /<img\b([^>]*?)\bsrc=(["'])([^"']+)\2([^>]*)>/gi
+  const sources = new Set<string>()
+  let m: RegExpExecArray | null
+  while ((m = imgRe.exec(html)) !== null) {
+    sources.add(m[3])
+  }
+  const srcList = [...sources]
+  const results = await Promise.allSettled(srcList.map((s) => fetchInline(s)))
+  const srcToCid = new Map<string, string>()
+  const images: InlineImage[] = []
+  let totalBytes = 0
+  let index = 1
+  for (let i = 0; i < srcList.length; i++) {
+    const r = results[i]
+    if (r.status !== 'fulfilled' || !r.value) continue
+    const img = r.value
+    if (img.rawBytes > INLINE_MAX_IMAGE_BYTES) continue
+    if (totalBytes + img.rawBytes > INLINE_MAX_TOTAL_BYTES) continue
+    totalBytes += img.rawBytes
+    const cid = `mc-img-${index++}-${crypto.randomUUID().slice(0, 8)}`
+    srcToCid.set(srcList[i], cid)
+    images.push({
+      cid,
+      filename: img.filename,
+      mimeType: img.mimeType,
+      base64: img.base64,
+    })
+  }
+  const transformed = html.replace(imgRe, (full, before, _q, src, after) => {
+    const cid = srcToCid.get(src)
+    if (!cid) return full
+    return `<img${before}src="cid:${cid}"${after}>`
+  })
+  return { html: transformed, images }
+}
+
+async function fetchInline(src: string): Promise<{
+  filename: string
+  mimeType: string
+  base64: string
+  rawBytes: number
+} | null> {
+  const dataMatch = src.match(/^data:([^;]+);base64,(.+)$/)
+  if (dataMatch) {
+    const mimeType = dataMatch[1]
+    const base64 = dataMatch[2]
+    const rawBytes = Math.ceil((base64.length * 3) / 4)
+    return { filename: `inline.${extFromMime(mimeType)}`, mimeType, base64, rawBytes }
+  }
+  if (!/^https?:\/\//.test(src)) return null
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), INLINE_FETCH_TIMEOUT_MS)
+  try {
+    const res = await fetch(src, { signal: controller.signal })
+    if (!res.ok) return null
+    const ct = res.headers.get('content-type') ?? 'application/octet-stream'
+    if (!ct.startsWith('image/')) return null
+    const buf = await res.arrayBuffer()
+    if (buf.byteLength === 0) return null
+    const bytes = new Uint8Array(buf)
+    let bin = ''
+    const CHUNK = 0x8000
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK))
+    }
+    const base64 = btoa(bin)
+    const filename = filenameFromUrl(src) ?? `inline.${extFromMime(ct)}`
+    return { filename, mimeType: ct, base64, rawBytes: buf.byteLength }
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+function extFromMime(mime: string): string {
+  switch (mime) {
+    case 'image/jpeg':
+      return 'jpg'
+    case 'image/png':
+      return 'png'
+    case 'image/gif':
+      return 'gif'
+    case 'image/webp':
+      return 'webp'
+    case 'image/svg+xml':
+      return 'svg'
+    default:
+      return 'bin'
+  }
+}
+
+function filenameFromUrl(url: string): string | null {
+  try {
+    const u = new URL(url)
+    const last = u.pathname.split('/').pop()
+    if (!last) return null
+    return decodeURIComponent(last)
+  } catch {
+    return null
+  }
 }
 
 function stripCRLF(s: string): string {
@@ -1313,7 +1450,7 @@ function contentTypeName(filename: string): string {
 }
 
 function buildMime(input: Omit<GmailSendInput, 'accessToken'>): string {
-  const { from, to, toName, subject, html, cc, bcc, attachments } = input
+  const { from, to, toName, subject, html, cc, bcc, attachments, inlineImages } = input
   const cleanFrom = encodeAddressHeader(stripCRLF(from))
   const cleanTo = stripCRLF(to)
   const ccLine = joinAddressList(cc)
@@ -1326,8 +1463,11 @@ function buildMime(input: Omit<GmailSendInput, 'accessToken'>): string {
   if (bccLine) baseHeaders.push(`Bcc: ${bccLine}`)
   baseHeaders.push(`Subject: ${encodeHeader(subject)}`, 'MIME-Version: 1.0')
 
-  // 첨부 없으면 기존 구조 (text/html 단일)
-  if (!attachments || attachments.length === 0) {
+  const hasInline = inlineImages && inlineImages.length > 0
+  const hasAttachments = attachments && attachments.length > 0
+
+  // 둘 다 없으면 단일 text/html
+  if (!hasInline && !hasAttachments) {
     const headers = [
       ...baseHeaders,
       'Content-Type: text/html; charset=UTF-8',
@@ -1336,35 +1476,85 @@ function buildMime(input: Omit<GmailSendInput, 'accessToken'>): string {
     return headers.join('\r\n') + '\r\n\r\n' + bodyBase64
   }
 
-  // multipart/mixed
-  const boundary = `MC_${crypto.randomUUID().replace(/-/g, '')}`
+  const newBoundary = () => `MC_${crypto.randomUUID().replace(/-/g, '')}`
+
+  // 일반 첨부 없고 inline 만 있으면 top-level 이 multipart/related.
+  if (!hasAttachments) {
+    const topBoundary = newBoundary()
+    const headers = [
+      ...baseHeaders,
+      `Content-Type: multipart/related; boundary="${topBoundary}"`,
+    ]
+    const lines: string[] = [
+      `--${topBoundary}`,
+      'Content-Type: text/html; charset=UTF-8',
+      'Content-Transfer-Encoding: base64',
+      '',
+      bodyBase64,
+    ]
+    for (const img of inlineImages!) {
+      lines.push(
+        `--${topBoundary}`,
+        `Content-Type: ${img.mimeType}; ${contentTypeName(img.filename)}`,
+        'Content-Transfer-Encoding: base64',
+        `Content-Disposition: inline; ${dispositionFilename(img.filename)}`,
+        `Content-ID: <${img.cid}>`,
+        '',
+        wrapBase64(img.base64),
+      )
+    }
+    lines.push(`--${topBoundary}--`, '')
+    return headers.join('\r\n') + '\r\n\r\n' + lines.join('\r\n')
+  }
+
+  // 일반 첨부 있는 경우 — 본문/inline 묶음을 multipart/related 로, 그리고 multipart/mixed 로 감쌈.
+  const topBoundary = newBoundary()
   const headers = [
     ...baseHeaders,
-    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    `Content-Type: multipart/mixed; boundary="${topBoundary}"`,
   ]
-
-  const parts: string[] = []
-  // body part
-  parts.push(
-    `--${boundary}`,
-    'Content-Type: text/html; charset=UTF-8',
-    'Content-Transfer-Encoding: base64',
-    '',
-    bodyBase64
-  )
-  // attachment parts
-  for (const att of attachments) {
+  const parts: string[] = [`--${topBoundary}`]
+  if (hasInline) {
+    const innerBoundary = newBoundary()
+    parts.push(`Content-Type: multipart/related; boundary="${innerBoundary}"`, '')
     parts.push(
-      `--${boundary}`,
+      `--${innerBoundary}`,
+      'Content-Type: text/html; charset=UTF-8',
+      'Content-Transfer-Encoding: base64',
+      '',
+      bodyBase64,
+    )
+    for (const img of inlineImages!) {
+      parts.push(
+        `--${innerBoundary}`,
+        `Content-Type: ${img.mimeType}; ${contentTypeName(img.filename)}`,
+        'Content-Transfer-Encoding: base64',
+        `Content-Disposition: inline; ${dispositionFilename(img.filename)}`,
+        `Content-ID: <${img.cid}>`,
+        '',
+        wrapBase64(img.base64),
+      )
+    }
+    parts.push(`--${innerBoundary}--`)
+  } else {
+    parts.push(
+      'Content-Type: text/html; charset=UTF-8',
+      'Content-Transfer-Encoding: base64',
+      '',
+      bodyBase64,
+    )
+  }
+  for (const att of attachments!) {
+    parts.push(
+      `--${topBoundary}`,
       `Content-Type: ${att.mimeType || 'application/octet-stream'}; ${contentTypeName(att.filename)}`,
       'Content-Transfer-Encoding: base64',
       `Content-Disposition: attachment; ${dispositionFilename(att.filename)}`,
       '',
-      wrapBase64(att.base64)
+      wrapBase64(att.base64),
     )
   }
-  parts.push(`--${boundary}--`, '')
-
+  parts.push(`--${topBoundary}--`, '')
   return headers.join('\r\n') + '\r\n\r\n' + parts.join('\r\n')
 }
 

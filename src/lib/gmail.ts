@@ -41,6 +41,16 @@ interface SendMailInput {
   replyTo?: string
   attachments?: MailAttachment[]
   /**
+   * 본문에 cid: 로 참조되는 inline 이미지들 — multipart/related 의 inline 파트로 들어감.
+   * html 의 <img src="cid:xxx"> 와 매칭. 수신자는 외부 fetch 없이 메일 자체에서 표시.
+   */
+  inlineImages?: Array<{
+    cid: string
+    filename: string
+    mimeType: string
+    base64: string // unwrapped
+  }>
+  /**
    * Cc 헤더에 노출되는 주소들. 빈 배열/undefined 면 헤더 생략.
    * 수신자에게 보이므로 "모두에게 보이는 참조" 를 원할 때 사용.
    */
@@ -264,7 +274,7 @@ function joinAddressList(list: string[] | undefined): string | undefined {
 }
 
 async function buildMime(input: Omit<SendMailInput, 'accessToken'>): Promise<string> {
-  const { from, to, toName, subject, html, replyTo, attachments, cc, bcc } = input
+  const { from, to, toName, subject, html, replyTo, attachments, cc, bcc, inlineImages } = input
   // 모든 헤더 입력값은 CR/LF 인젝션 방지를 위해 선제 new sanitize.
   const cleanFrom = encodeAddressHeader(stripCRLF(from))
   const cleanTo = stripCRLF(to)
@@ -282,8 +292,11 @@ async function buildMime(input: Omit<SendMailInput, 'accessToken'>): Promise<str
   if (cleanReplyTo) baseHeaders.push(`Reply-To: ${cleanReplyTo}`)
   baseHeaders.push(`Subject: ${encodeHeader(subject)}`, 'MIME-Version: 1.0')
 
-  // 첨부 없으면 기존 구조 유지
-  if (!attachments || attachments.length === 0) {
+  const hasInline = inlineImages && inlineImages.length > 0
+  const hasAttachments = attachments && attachments.length > 0
+
+  // 첨부 / inline 둘 다 없으면 단일 text/html
+  if (!hasInline && !hasAttachments) {
     const headers = [
       ...baseHeaders,
       'Content-Type: text/html; charset=UTF-8',
@@ -292,40 +305,92 @@ async function buildMime(input: Omit<SendMailInput, 'accessToken'>): Promise<str
     return headers.join('\r\n') + '\r\n\r\n' + bodyBase64
   }
 
-  // multipart/mixed — crypto.randomUUID() 로 충돌 가능성 사실상 0
-  // ("-" 제거로 MIME boundary 허용 문자만 사용)
-  const boundary = `MC_${crypto.randomUUID().replace(/-/g, '')}`
+  // multipart/related 또는 multipart/mixed 빌더 — boundary 충돌 0
+  const newBoundary = () => `MC_${crypto.randomUUID().replace(/-/g, '')}`
+
+  // 본문 + inline 이미지 묶음 (multipart/related). inline 없으면 단순 text/html 파트.
+  const buildBodyPart = (): string => {
+    if (!hasInline) {
+      return [
+        'Content-Type: text/html; charset=UTF-8',
+        'Content-Transfer-Encoding: base64',
+        '',
+        bodyBase64,
+      ].join('\r\n')
+    }
+    const innerBoundary = newBoundary()
+    const lines: string[] = [
+      `Content-Type: multipart/related; boundary="${innerBoundary}"`,
+      '',
+      `--${innerBoundary}`,
+      'Content-Type: text/html; charset=UTF-8',
+      'Content-Transfer-Encoding: base64',
+      '',
+      bodyBase64,
+    ]
+    for (const img of inlineImages!) {
+      lines.push(
+        `--${innerBoundary}`,
+        `Content-Type: ${img.mimeType}; ${contentTypeName(img.filename)}`,
+        'Content-Transfer-Encoding: base64',
+        `Content-Disposition: inline; ${dispositionFilename(img.filename)}`,
+        `Content-ID: <${img.cid}>`,
+        '',
+        wrapBase64(img.base64),
+      )
+    }
+    lines.push(`--${innerBoundary}--`)
+    return lines.join('\r\n')
+  }
+
+  // 일반 첨부 없으면 multipart/related 가 곧 top-level.
+  if (!hasAttachments) {
+    const topBoundary = newBoundary()
+    const headers = [
+      ...baseHeaders,
+      `Content-Type: multipart/related; boundary="${topBoundary}"`,
+    ]
+    const lines: string[] = [
+      `--${topBoundary}`,
+      'Content-Type: text/html; charset=UTF-8',
+      'Content-Transfer-Encoding: base64',
+      '',
+      bodyBase64,
+    ]
+    for (const img of inlineImages!) {
+      lines.push(
+        `--${topBoundary}`,
+        `Content-Type: ${img.mimeType}; ${contentTypeName(img.filename)}`,
+        'Content-Transfer-Encoding: base64',
+        `Content-Disposition: inline; ${dispositionFilename(img.filename)}`,
+        `Content-ID: <${img.cid}>`,
+        '',
+        wrapBase64(img.base64),
+      )
+    }
+    lines.push(`--${topBoundary}--`, '')
+    return headers.join('\r\n') + '\r\n\r\n' + lines.join('\r\n')
+  }
+
+  // 일반 첨부도 있으면 multipart/mixed 로 감싸고, 첫 파트는 (multipart/related | text/html), 나머지는 attachment.
+  const topBoundary = newBoundary()
   const headers = [
     ...baseHeaders,
-    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    `Content-Type: multipart/mixed; boundary="${topBoundary}"`,
   ]
-
-  const parts: string[] = []
-
-  // body part
-  parts.push(
-    `--${boundary}`,
-    'Content-Type: text/html; charset=UTF-8',
-    'Content-Transfer-Encoding: base64',
-    '',
-    bodyBase64
-  )
-
-  // attachment parts — Blob 은 FileReader, Uint8Array 는 기존 경로
-  for (const att of attachments) {
+  const parts: string[] = [`--${topBoundary}`, buildBodyPart()]
+  for (const att of attachments!) {
     const attB64 = wrapBase64(await attachmentToBase64(att))
     parts.push(
-      `--${boundary}`,
+      `--${topBoundary}`,
       `Content-Type: ${att.mimeType || 'application/octet-stream'}; ${contentTypeName(att.filename)}`,
       'Content-Transfer-Encoding: base64',
       `Content-Disposition: attachment; ${dispositionFilename(att.filename)}`,
       '',
-      attB64
+      attB64,
     )
   }
-
-  parts.push(`--${boundary}--`, '')
-
+  parts.push(`--${topBoundary}--`, '')
   return headers.join('\r\n') + '\r\n\r\n' + parts.join('\r\n')
 }
 
