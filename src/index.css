@@ -125,10 +125,36 @@
   @apply min-h-[200px] p-3 focus:outline-none;
 }
 
-/* 에디터 영역의 가로 스크롤 — 사용자가 이미지를 컨테이너 폭보다 크게 키워도
- * 자르지 않고 가로 스크롤 표시. 사용자가 정확히 의도한 사이즈가 보존됨. */
+/* 에디터 영역 — 가로/세로 양방향 스크롤 가능 + 명시적 scrollbar.
+ * `overflow: scroll` 사용 (auto 대신) — 일부 환경에서 auto 가 wide content 를
+ * 감지 못 해 scrollbar 가 안 보이던 문제 해결. */
 .tiptap-resizable-area {
-  overflow: auto;
+  overflow: scroll;
+  /* Firefox — scrollbar 항상 표시 */
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--border)) transparent;
+}
+
+/* ProseMirror 본문 자체는 block 으로 parent width 유지 (텍스트는 정상 wrap).
+ * 단, inline-block 인 wide image (>parent width) 는 자동으로 overflow 영역에
+ * 잡혀 EditorContent 의 overflow:scroll 이 가로 스크롤바를 표시.
+ * Tailwind preflight 가 .ProseMirror img 에 max-width:100% 를 강제하므로
+ * .resizable-image img 에서 !important 로 무력화함 (위쪽 규칙). */
+
+/* WebKit scrollbar 가 hidden 처리되지 않도록 강제 */
+.tiptap-resizable-area::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.tiptap-resizable-area::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 5px;
+}
+.tiptap-resizable-area::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground));
+}
+.tiptap-resizable-area::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 /* Resize 핸들 시각 표시 — 기본 브라우저 핸들은 너무 작아 사용자가 못 알아챔.
@@ -274,16 +300,17 @@
   display: inline-block;
   line-height: 0;
   /* max-width 캡 제거 — 사용자가 명시한 width 가 그대로 적용되어야 함.
-   * 이미지가 컨테이너 폭보다 크면 .tiptap-resizable-area 의 overflow-x:auto 가
-   * 가로 스크롤로 처리. 사용자가 의도한 사이즈 100% 보존. */
+   * 부모 (.ProseMirror img) 의 max-w-full 을 명시적으로 무력화. */
+  max-width: none !important;
 }
 
 .tiptap-editor .ProseMirror .resizable-image img {
   display: block;
   border-radius: 0.375rem;
   user-select: none;
-  /* inline style(width/height) 가 source of truth. max-width 클램프 없음 —
-   * 사용자가 드래그로 정한 사이즈가 비율 깨짐 없이 그대로 표시. */
+  /* 부모 .ProseMirror img 의 max-w-full 을 명시적으로 무력화.
+   * inline style(width/height) 가 비율 깨짐 없이 source of truth. */
+  max-width: none !important;
 }
 
 .tiptap-editor .ProseMirror .resizable-image-selected {
