@@ -1,5 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useEditor, EditorContent, type Editor } from '@tiptap/react'
+import { TextSelection } from '@tiptap/pm/state'
+import type { EditorView } from '@tiptap/pm/view'
 import StarterKit from '@tiptap/starter-kit'
 import Underline from '@tiptap/extension-underline'
 import Link from '@tiptap/extension-link'
@@ -40,8 +42,13 @@ import {
   Undo,
   Redo,
   Palette,
+  Upload,
+  Loader2,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { uploadInlineImage } from '@/lib/imageUpload'
+import { useAuth } from '@/hooks/useAuth'
+import { toast } from 'sonner'
 
 export interface TipTapEditorProps {
   value: string
@@ -89,6 +96,13 @@ const COLOR_PALETTE: string[] = [
  *   - HTML 탭과 비주얼 탭 간 전환 시 왕복 변환이 깔끔하도록 StarterKit 기본값 유지.
  */
 function TipTapEditor({ value, onChange, placeholder, className }: TipTapEditorProps) {
+  const { user } = useAuth()
+  // userId 를 ref 로 — paste/drop handler 클로저가 stale 사용자 안 잡도록.
+  const userIdRef = useRef<string | undefined>(user?.id)
+  useEffect(() => {
+    userIdRef.current = user?.id
+  }, [user?.id])
+
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
@@ -127,6 +141,43 @@ function TipTapEditor({ value, onChange, placeholder, className }: TipTapEditorP
     onUpdate: ({ editor }) => {
       onChange(editor.getHTML())
     },
+    editorProps: {
+      // 클립보드 paste 의 이미지 (스크린샷 등) 를 가로채 업로드.
+      handlePaste: (view, event) => {
+        const items = event.clipboardData?.items
+        if (!items) return false
+        const files: File[] = []
+        for (const it of items) {
+          if (it.kind === 'file' && it.type.startsWith('image/')) {
+            const f = it.getAsFile()
+            if (f) files.push(f)
+          }
+        }
+        if (files.length === 0) return false
+        event.preventDefault()
+        void uploadAndInsert(files, view, userIdRef.current)
+        return true
+      },
+      // 파일 드래그&드롭으로 이미지 삽입.
+      handleDrop: (view, event) => {
+        const files = Array.from(event.dataTransfer?.files ?? []).filter((f) =>
+          f.type.startsWith('image/'),
+        )
+        if (files.length === 0) return false
+        event.preventDefault()
+        // 드롭 위치에 커서 옮긴 후 삽입.
+        const coords = { left: event.clientX, top: event.clientY }
+        const pos = view.posAtCoords(coords)
+        if (pos) {
+          const tr = view.state.tr.setSelection(
+            TextSelection.near(view.state.doc.resolve(pos.pos)),
+          )
+          view.dispatch(tr)
+        }
+        void uploadAndInsert(files, view, userIdRef.current)
+        return true
+      },
+    },
   })
 
   // 외부 value prop 이 변할 때 에디터 내용 동기화 (HTML 탭 편집, 수정 모드 진입 등)
@@ -153,14 +204,81 @@ function TipTapEditor({ value, onChange, placeholder, className }: TipTapEditorP
 export default TipTapEditor
 
 // ------------------------------------------------------------
+// 클립보드/드롭/툴바 공통 — 파일들을 업로드해서 에디터에 이미지 삽입.
+// ------------------------------------------------------------
+async function uploadAndInsert(
+  files: File[],
+  view: EditorView,
+  userId: string | undefined,
+) {
+  if (!userId) {
+    toast.error('로그인이 필요합니다.')
+    return
+  }
+  for (const f of files) {
+    try {
+      const r = await uploadInlineImage(f, userId)
+      // ProseMirror tr 로 직접 삽입 — view 의 selection 위치에 image node 추가.
+      const node = view.state.schema.nodes.image?.create({
+        src: r.url,
+        alt: '',
+        // 자연 크기가 있으면 적용 — 600px 넘으면 600 으로 맞춰 본문에 잘 들어가게.
+        width: r.width ? Math.min(r.width, 600) : null,
+        height: r.width && r.height
+          ? r.width > 600
+            ? Math.round((600 / r.width) * r.height)
+            : r.height
+          : null,
+      })
+      if (!node) continue
+      view.dispatch(view.state.tr.replaceSelectionWith(node))
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '이미지 업로드 실패')
+    }
+  }
+}
+
+// ------------------------------------------------------------
 // 툴바 — 에디터 인스턴스를 받아 각 명령을 바인딩한다.
 // 버튼 활성 상태는 editor.isActive(...) 로 매 렌더 계산 — 커서 이동 시 갱신.
 // ------------------------------------------------------------
 function EditorToolbar({ editor }: { editor: Editor }) {
+  const { user } = useAuth()
   const [linkOpen, setLinkOpen] = useState(false)
   const [linkUrl, setLinkUrl] = useState('')
   const [imageOpen, setImageOpen] = useState(false)
   const [imageUrl, setImageUrl] = useState('')
+  const [uploading, setUploading] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? [])
+    // input 재선택 가능하도록 초기화
+    e.target.value = ''
+    if (files.length === 0 || !user?.id) return
+    setUploading(true)
+    try {
+      for (const f of files) {
+        const r = await uploadInlineImage(f, user.id)
+        // setImage 의 attrs 타입에 width/height 가 노출 안 돼 있지만,
+        // ResizableImage 가 attribute 로 받아서 직렬화함. unknown 으로 한 번에 캐스트.
+        const attrs: Record<string, unknown> = { src: r.url }
+        if (r.width) attrs.width = Math.min(r.width, 600)
+        if (r.width && r.height) {
+          attrs.height =
+            r.width > 600
+              ? Math.round((600 / r.width) * r.height)
+              : r.height
+        }
+        editor.chain().focus().setImage(attrs as { src: string }).run()
+      }
+      setImageOpen(false)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '이미지 업로드 실패')
+    } finally {
+      setUploading(false)
+    }
+  }
 
   // 링크 팝오버가 열릴 때 기존 링크 URL 을 미리 채운다 — 편집 UX.
   const handleLinkOpenChange = (open: boolean) => {
@@ -510,33 +628,84 @@ function EditorToolbar({ editor }: { editor: Editor }) {
           </Button>
         </PopoverTrigger>
         <PopoverContent className="w-80 p-3" align="start">
-          <div className="space-y-2">
-            <div className="text-xs font-medium text-muted-foreground">이미지 URL</div>
-            <Input
-              autoFocus
-              value={imageUrl}
-              onChange={(e) => setImageUrl(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault()
-                  applyImage()
-                }
-                if (e.key === 'Escape') {
-                  setImageOpen(false)
-                }
-              }}
-              placeholder="https://example.com/image.png"
-              className="h-8 text-sm"
-            />
-            <Button
-              type="button"
-              size="sm"
-              className="h-7 text-xs w-full"
-              onClick={applyImage}
-              disabled={!imageUrl.trim()}
-            >
-              삽입
-            </Button>
+          <div className="space-y-3">
+            {/* 파일 업로드 */}
+            <div className="space-y-1.5">
+              <div className="text-xs font-medium text-muted-foreground">
+                파일에서 업로드
+              </div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                className="hidden"
+                onChange={handleFileSelected}
+              />
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-8 text-xs w-full"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+              >
+                {uploading ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                    업로드 중...
+                  </>
+                ) : (
+                  <>
+                    <Upload className="w-3.5 h-3.5 mr-1.5" />
+                    이미지 선택
+                  </>
+                )}
+              </Button>
+              <p className="text-[11px] text-muted-foreground">
+                또는 <strong>본문에 직접 붙여넣기</strong> / 드래그&드롭. 최대 10MB.
+              </p>
+            </div>
+
+            <div className="relative">
+              <div className="absolute inset-0 flex items-center">
+                <span className="w-full border-t" />
+              </div>
+              <div className="relative flex justify-center text-[10px] uppercase">
+                <span className="bg-popover px-2 text-muted-foreground">또는</span>
+              </div>
+            </div>
+
+            {/* URL 입력 */}
+            <div className="space-y-1.5">
+              <div className="text-xs font-medium text-muted-foreground">
+                이미지 URL
+              </div>
+              <Input
+                value={imageUrl}
+                onChange={(e) => setImageUrl(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    applyImage()
+                  }
+                  if (e.key === 'Escape') {
+                    setImageOpen(false)
+                  }
+                }}
+                placeholder="https://example.com/image.png"
+                className="h-8 text-sm"
+              />
+              <Button
+                type="button"
+                size="sm"
+                className="h-7 text-xs w-full"
+                onClick={applyImage}
+                disabled={!imageUrl.trim()}
+              >
+                URL 로 삽입
+              </Button>
+            </div>
           </div>
         </PopoverContent>
       </Popover>
