@@ -1603,6 +1603,7 @@ export default function CampaignWizardPage() {
                 recipientCount={previewContacts.length}
                 bodyOverridden={bodyOverride !== null}
                 onResetBody={() => setBodyOverride(null)}
+                hideComposedPreview
               />
               <Step3
                 name={name}
@@ -1948,6 +1949,7 @@ function Step2({
   recipientCount,
   bodyOverridden,
   onResetBody,
+  hideComposedPreview,
 }: {
   templates: TemplateOpt[]
   signatures: SignatureOpt[]
@@ -1990,6 +1992,8 @@ function Step2({
   bodyOverridden: boolean
   /** 편집을 버리고 블록 조합 결과로 되돌림 */
   onResetBody: () => void
+  /** 편집 모드처럼 Step3 도 같이 렌더되는 경우, Step3 preview 와 중복되지 않도록 본문 미리보기 카드 숨김. */
+  hideComposedPreview?: boolean
 }) {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [pickerFilter, setPickerFilter] = useState('')
@@ -2233,7 +2237,7 @@ function Step2({
         )}
       </div>
 
-      {blocks.length > 0 && (
+      {blocks.length > 0 && !hideComposedPreview && (
         <div className="space-y-1.5">
           <div className="flex items-center justify-between">
             <Label>합쳐진 본문 미리보기</Label>
@@ -2268,6 +2272,22 @@ function Step2({
               </div>
             </CardContent>
           </Card>
+        </div>
+      )}
+      {bodyOverridden && hideComposedPreview && (
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={onResetBody}
+            >
+              <Undo2 className="w-3.5 h-3.5 mr-1" />
+              본문을 블록으로 되돌리기
+            </Button>
+          </div>
         </div>
       )}
 
