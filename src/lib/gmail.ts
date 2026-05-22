@@ -224,22 +224,18 @@ function encodeRFC2231(value: string): string {
 }
 
 /**
- * 비-ASCII 문자를 underscore 로 치환한 ASCII-safe fallback.
- * RFC 5322 quoted-string 에 들어갈 수 있도록 따옴표/백슬래시/제어문자도 제거한다.
- * `filename*=UTF-8''...` (RFC 5987) 미지원 클라이언트용 fallback 문자열.
- */
-function asciiFallbackName(s: string): string {
-  return s
-     
-    .replace(/[^\x20-\x7E]/g, '_')
-    .replace(/["\\]/g, '_')
-}
-
-/**
- * filename 파라미터 구성.
- * ASCII-only: quoted-string 그대로.
- * 비-ASCII: ASCII fallback(filename=) + RFC 5987 (filename*=) 동시 제공.
- *   → RFC 2047 encoded-word 는 quoted-string 내부에서 금지(§5)이므로 사용하지 않는다.
+ * filename 파라미터 구성 — 한글 등 비-ASCII 파일명을 모든 메일 클라이언트에서
+ * 깨지지 않게 표시하는 hybrid 전략.
+ *
+ * 표준 (RFC 5987 / 2231) 만 사용하면 filename*=UTF-8''... 만 보내면 되지만,
+ * Gmail UI 가 가끔 filename= 의 ASCII fallback 만 노출 — 한글이 underscore 로
+ * 표시되는 문제 발생 (실측됨).
+ *
+ * 호환성을 위해 filename= 에 RFC 2047 encoded-word 도 함께 사용. quoted-string
+ * 내부의 encoded-word 는 RFC 5322 §3.2.5 에 따르면 비표준이지만 Gmail/Outlook/
+ * Apple Mail 등 모든 메이저 클라이언트가 디코딩한다 (de-facto 표준).
+ *
+ * 동시에 filename*= 도 같이 보내서 RFC 표준 따르는 신형 클라이언트는 그쪽 우선.
  */
 function dispositionFilename(filename: string): string {
   const clean = stripCRLF(filename)
@@ -247,18 +243,19 @@ function dispositionFilename(filename: string): string {
   if (asciiSafe) {
     return `filename="${clean}"`
   }
-  return `filename="${asciiFallbackName(clean)}"; filename*=${encodeRFC2231(clean)}`
+  // 비-ASCII: encoded-word + RFC 5987 둘 다.
+  return `filename="${encodeOneWord(clean)}"; filename*=${encodeRFC2231(clean)}`
 }
 
 /**
- * Content-Type 의 name 파라미터 구성. 정책은 filename= 과 동일.
- * RFC 2231 은 name*= 도 지원하므로 비-ASCII 도 UTF-8 로 정확히 전달된다.
+ * Content-Type 의 name 파라미터 — filename 과 동일 전략.
+ * (Content-Type name= 은 deprecated 이지만 일부 구형 클라이언트가 참조하므로 동시 제공.)
  */
 function contentTypeName(filename: string): string {
   const clean = stripCRLF(filename)
   const asciiSafe = /^[\x20-\x7E]*$/.test(clean) && !/["\\]/.test(clean)
   if (asciiSafe) return `name="${clean}"`
-  return `name="${asciiFallbackName(clean)}"; name*=${encodeRFC2231(clean)}`
+  return `name="${encodeOneWord(clean)}"; name*=${encodeRFC2231(clean)}`
 }
 
 /**

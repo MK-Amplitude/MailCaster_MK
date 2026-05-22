@@ -1426,19 +1426,18 @@ function encodeRFC2231(value: string): string {
   return `UTF-8''${encodeURIComponent(value).replace(/['()]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}`
 }
 
-function asciiFallbackName(s: string): string {
-  return s
-    // deno-lint-ignore no-control-regex
-    .replace(/[^\x20-\x7E]/g, '_')
-    .replace(/["\\]/g, '_')
-}
-
+/**
+ * filename / name 파라미터 — 한글 등 비-ASCII 파일명이 Gmail UI 에서 underscore
+ * 로 깨지지 않도록. filename= 에 RFC 2047 encoded-word (=?UTF-8?B?...?=) 사용.
+ * 비표준이지만 Gmail/Outlook/Apple Mail 모두 디코딩하는 de-facto 표준.
+ * filename*= (RFC 5987) 도 함께 — 표준 따르는 신형 클라이언트 우선용.
+ */
 function dispositionFilename(filename: string): string {
   const clean = stripCRLF(filename)
   // deno-lint-ignore no-control-regex
   const asciiSafe = /^[\x20-\x7E]*$/.test(clean) && !/["\\]/.test(clean)
   if (asciiSafe) return `filename="${clean}"`
-  return `filename="${asciiFallbackName(clean)}"; filename*=${encodeRFC2231(clean)}`
+  return `filename="${encodeOneWordForParam(clean)}"; filename*=${encodeRFC2231(clean)}`
 }
 
 function contentTypeName(filename: string): string {
@@ -1446,7 +1445,12 @@ function contentTypeName(filename: string): string {
   // deno-lint-ignore no-control-regex
   const asciiSafe = /^[\x20-\x7E]*$/.test(clean) && !/["\\]/.test(clean)
   if (asciiSafe) return `name="${clean}"`
-  return `name="${asciiFallbackName(clean)}"; name*=${encodeRFC2231(clean)}`
+  return `name="${encodeOneWordForParam(clean)}"; name*=${encodeRFC2231(clean)}`
+}
+
+// 짧은 문자열용 single encoded-word (75자 한도 안에 들어가는 일반 파일명에는 충분).
+function encodeOneWordForParam(s: string): string {
+  return `=?UTF-8?B?${utf8ToBase64(s)}?=`
 }
 
 function buildMime(input: Omit<GmailSendInput, 'accessToken'>): string {
