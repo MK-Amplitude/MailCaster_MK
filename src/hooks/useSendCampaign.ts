@@ -22,6 +22,34 @@ function sleep(ms: number) {
 }
 
 /**
+ * 본문에 서명이 이미 들어있는지 판정 — HTML 미세 차이 무시.
+ *
+ * 단순 HTML.includes() 는 TipTap 이 본문을 정규화 (속성 순서, 공백) 했을 때
+ * false 가 떨어져 서명이 중복 append 되는 버그가 있었음.
+ *
+ * 정책: 서명의 plain text (태그 제거 + 공백 정규화) fragment 가 본문의
+ * plain text 안에 있으면 "이미 있다" 고 판단. 서명에는 보통 이름/이메일/회사명
+ * 등 식별성이 강한 텍스트가 있어 충돌 가능성 낮음.
+ */
+function bodyAlreadyContainsSignature(bodyHtml: string, sigHtml: string): boolean {
+  const strip = (h: string) =>
+    h
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+  const bodyPlain = strip(bodyHtml)
+  const sigPlain = strip(sigHtml)
+  if (!sigPlain) return true
+  // 서명이 너무 짧으면 (40자 미만) 정확히 포함되어야만 매칭 — 우연 충돌 회피.
+  if (sigPlain.length < 40) return bodyPlain.includes(sigPlain)
+  // 식별 fragment — 시그니처 앞부분 80자. 보통 이름/직책/회사명 등 충돌 가능성 낮은 영역.
+  const fragment = sigPlain.slice(0, 80)
+  return bodyPlain.includes(fragment)
+}
+
+/**
  * Google API 일시적 오류(429 rate limit, 5xx) exponential backoff 재시도.
  * 401(토큰 만료)/404(파일 없음)/403(권한 없음)/400(요청 오류) 은 재시도 대상 아님.
  */
@@ -267,9 +295,11 @@ export function useSendCampaign() {
         throw new Error('발송할 본문이 비어있습니다. 템플릿 내용을 확인하세요.')
       }
 
-      // 서명이 body_html 에 이미 들어 있지 않으면 끝에 append.
-      // 편집 모드에서 서명만 바꿨는데 위저드가 body 를 갱신하지 못한 케이스 방어.
-      // (개인화 발송 — 캠페인 body 가 비어있고 recipient override 만 있을 땐 skip)
+      // 서명 fallback — body 에 서명이 정말 없을 때만 append.
+      // 이전: finalBody.includes(sigHtml) 단순 비교 → TipTap 이 본문을 정규화하면
+      //       HTML 미세 차이로 false 가 떨어져 서명이 중복 추가되던 버그.
+      // 수정: HTML 태그 제거한 plain text 로 비교. 서명의 식별 fragment (보통 첫
+      //       100자 — 이름/이메일 포함 영역) 가 본문에 있으면 이미 있다고 판단.
       if (campaign.signature_id && finalBody.trim()) {
         const { data: sig } = await supabase
           .from('signatures')
@@ -277,7 +307,7 @@ export function useSendCampaign() {
           .eq('id', campaign.signature_id)
           .maybeSingle()
         const sigHtml = (sig?.html as string | undefined) ?? ''
-        if (sigHtml && !finalBody.includes(sigHtml)) {
+        if (sigHtml && !bodyAlreadyContainsSignature(finalBody, sigHtml)) {
           finalBody = `${finalBody}<br/><br/>${sigHtml}`
         }
       }
