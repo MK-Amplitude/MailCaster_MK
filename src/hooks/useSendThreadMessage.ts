@@ -153,8 +153,15 @@ export function useSendThreadMessage() {
       const htmlWithPixel = injectTrackingPixel(bodyWithCids, buildThreadTrackingPixel(tmId))
 
       // 6) 발송
+      // sendGmail 성공 여부를 catch 에서 판별하기 위해 result 를 try 밖으로 노출.
+      // - result 가 채워졌으면 = Gmail 발송 성공 (메일이 이미 받는 사람에게 갔음).
+      //   이후 DB UPDATE 가 실패해도 status='failed' 로 박제하면 안 됨 — 실제로는 sent.
+      //   reconcile cron (migration 052) 의 branch 1 이 gmail_message_id 가 있는 pending row
+      //   를 sent 로 정정하므로, status 를 손대지 않고 pending 으로 두는 게 정합.
+      // - result 가 null 이면 = sendGmail 자체가 실패. status='failed' 로 마킹 OK.
+      let result: { id: string; threadId: string } | null = null
       try {
-        const result = await sendGmail({
+        result = await sendGmail({
           accessToken,
           from,
           to: input.toEmail,
@@ -169,12 +176,8 @@ export function useSendThreadMessage() {
         })
 
         // 발송 성공 — 즉시 gmail_message_id / gmail_thread_id 부터 먼저 UPDATE.
-        // 이렇게 분리하는 이유: 이후 RFC fetch + 두 번째 UPDATE 가 네트워크 단절/페이지 leave 로
-        // 실패해도, gmail_message_id 가 이미 DB 에 있으므로 reconcile cron (migration 052) 의
-        // branch 1 (gmail_message_id 있고 pending 인 row → sent 로 정정) 이 동작함.
-        //
-        // 첫 UPDATE 가 실패하면 throw → 아래 catch 가 status='failed' 로 마킹.
-        // 그 경우 사용자는 Gmail "보낸편지함" 으로 직접 확인 필요 (error_message 에 안내됨).
+        // 이후 RFC fetch / 두 번째 UPDATE 가 실패해도 gmail_message_id 가 DB 에 있으므로
+        // reconcile cron 의 branch 1 이 sent 로 정정.
         const firstUpdate = await supabase
           .from('thread_messages')
           .update({
@@ -183,9 +186,9 @@ export function useSendThreadMessage() {
           })
           .eq('id', tmId)
         if (firstUpdate.error) {
-          // PostgREST 가 throw 하지 않고 error 객체로 반환 — 명시적으로 throw
+          // 첫 UPDATE 실패. status 손대지 않고 throw → catch 가 result 존재를 보고 pending 유지.
           throw new Error(
-            `발송은 성공했으나 결과 기록 실패: ${firstUpdate.error.message}. Gmail 보낸편지함을 확인하세요.`,
+            `발송은 성공했으나 결과 기록 실패: ${firstUpdate.error.message}. 약 10분 후 자동 정정됩니다.`,
           )
         }
 
@@ -210,10 +213,22 @@ export function useSendThreadMessage() {
         return { tmId, gmailMessageId: result.id, gmailThreadId: result.threadId }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
-        await supabase
-          .from('thread_messages')
-          .update({ status: 'failed', error_message: msg })
-          .eq('id', tmId)
+        // sendGmail 성공 여부로 분기:
+        // - result !== null = Gmail 발송 성공, 이후 DB 단계에서 실패. pending 유지 → reconcile cron 이 정정.
+        // - result === null = sendGmail 자체 실패. failed 마킹.
+        if (result === null) {
+          await supabase
+            .from('thread_messages')
+            .update({ status: 'failed', error_message: msg })
+            .eq('id', tmId)
+        } else {
+          // pending 유지 + error_message 만 기록 (사용자가 확인할 수 있도록).
+          // status 는 reconcile cron 이 sent 로 정정함.
+          await supabase
+            .from('thread_messages')
+            .update({ error_message: msg })
+            .eq('id', tmId)
+        }
         throw e
       }
     },
