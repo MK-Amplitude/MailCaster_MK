@@ -153,10 +153,14 @@ export function ThreadMessageDetailDialog({ open, onOpenChange, message, onReply
             </>
           )}
 
-          {/* 오픈 추적 */}
+          {/* 오픈 추적 — bounce 된 메일은 추적 데이터 의미 없음 */}
           <div className="text-muted-foreground">수신확인</div>
           <div>
-            {message.opened ? (
+            {message.bounced ? (
+              <span className="text-muted-foreground italic text-sm">
+                반송된 메일 — 추적 불가
+              </span>
+            ) : message.opened ? (
               <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
                 <Eye className="w-3.5 h-3.5" />
                 <span className="font-medium">열어봤어요</span>
@@ -172,7 +176,7 @@ export function ThreadMessageDetailDialog({ open, onOpenChange, message, onReply
             )}
           </div>
 
-          {message.opened && (
+          {!message.bounced && message.opened && (
             <>
               <div className="text-muted-foreground">처음 오픈</div>
               <div>{formatTs(message.first_opened_at)}</div>
@@ -181,10 +185,14 @@ export function ThreadMessageDetailDialog({ open, onOpenChange, message, onReply
             </>
           )}
 
-          {/* 회신 추적 (047) */}
+          {/* 회신 추적 (047) — bounce 면 의미 없음 */}
           <div className="text-muted-foreground">회신 여부</div>
           <div>
-            {message.replied ? (
+            {message.bounced ? (
+              <span className="text-muted-foreground italic text-sm">
+                반송된 메일 — 회신 가능성 없음
+              </span>
+            ) : message.replied ? (
               <span className="inline-flex items-center gap-1 text-cyan-600 dark:text-cyan-400">
                 <MessageCircle className="w-3.5 h-3.5" />
                 <span className="font-medium">받은 회신 있음</span>

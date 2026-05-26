@@ -167,25 +167,36 @@ export function useSendThreadMessage() {
           inReplyTo: inReplyTo ?? undefined,
           inlineImages: inlineImages.length > 0 ? inlineImages : undefined,
         })
-        // 우리가 보낸 메시지의 RFC Message-ID 를 조회 — A 가 답장 시 In-Reply-To 헤더에 들어오는 값.
-        // check-replies pass3 가 이 값을 보고 어느 thread_message 의 회신인지 정확히 매핑.
-        // fetch 실패해도 발송은 성공이므로 best-effort.
+
+        // 발송 성공 — 즉시 gmail_message_id / gmail_thread_id 부터 먼저 UPDATE.
+        // 이렇게 분리하는 이유: 이후 RFC fetch + 두 번째 UPDATE 가 네트워크 단절/페이지 leave 로
+        // 실패해도, gmail_message_id 가 이미 DB 에 있으므로 reconcile cron (migration 052) 의
+        // branch 1 (gmail_message_id 있고 pending 인 row → sent 로 정정) 이 동작함.
+        // 만약 이 첫 UPDATE 자체가 실패하면 branch 2 (gmail_message_id NULL → failed) 가 정정.
+        // 그 경우 사용자는 Gmail "보낸편지함" 으로 확인 필요 — error_message 에 안내.
+        await supabase
+          .from('thread_messages')
+          .update({
+            gmail_message_id: result.id,
+            gmail_thread_id: result.threadId,
+          })
+          .eq('id', tmId)
+
+        // RFC Message-ID 조회 — A 답장 시 In-Reply-To 매칭용. best-effort.
         let ownRfcMessageId: string | null = null
         try {
           ownRfcMessageId = await fetchMessageRfcId(accessToken, result.id)
         } catch (e) {
-          // 비치명적 — rfc_message_id 가 NULL 이어도 pass3 가 fallback 으로 매핑함
+          // 비치명적 — rfc_message_id 가 NULL 이어도 pass3 의 chronological fallback 동작
           console.warn('[useSendThreadMessage] failed to fetch own RFC Message-ID:', e)
         }
 
-        // 성공 — 결과 기록
+        // 최종 상태 — status='sent' + sent_at + rfc_message_id
         await supabase
           .from('thread_messages')
           .update({
             status: 'sent',
             sent_at: new Date().toISOString(),
-            gmail_message_id: result.id,
-            gmail_thread_id: result.threadId, // 신규 thread 인 경우 Gmail 이 새로 발급한 id
             rfc_message_id: ownRfcMessageId,
           })
           .eq('id', tmId)

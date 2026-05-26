@@ -170,7 +170,15 @@ export function ThreadMessagesSection({ campaignId }: Props) {
                         </span>
                       </td>
                       <td className="px-4 py-2">
-                        {m.opened ? (
+                        {/* bounce 된 메일은 추적 데이터가 의미 없음 (메일이 안 갔으니) */}
+                        {m.bounced ? (
+                          <span
+                            className="text-xs text-muted-foreground"
+                            title="반송된 메일 — 추적 데이터 의미 없음"
+                          >
+                            —
+                          </span>
+                        ) : m.opened ? (
                           <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
                             <Eye className="w-3.5 h-3.5" />
                             <span className="text-xs font-medium">{m.open_count}회</span>
@@ -183,7 +191,14 @@ export function ThreadMessagesSection({ campaignId }: Props) {
                         )}
                       </td>
                       <td className="px-4 py-2">
-                        {m.replied ? (
+                        {m.bounced ? (
+                          <span
+                            className="text-xs text-muted-foreground"
+                            title="반송된 메일 — 추적 데이터 의미 없음"
+                          >
+                            —
+                          </span>
+                        ) : m.replied ? (
                           <span className="inline-flex items-center gap-1 text-cyan-600 dark:text-cyan-400">
                             <MessageCircle className="w-3.5 h-3.5" />
                             <span className="text-xs font-medium">{m.reply_count}건</span>
