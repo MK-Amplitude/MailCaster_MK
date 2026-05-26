@@ -964,8 +964,10 @@ export default function CampaignDetailPage() {
                                 <X className="w-3.5 h-3.5" />
                               </button>
                             )}
-                              {/* 발송된 수신자 — 팔로업/회신/전달 액션 메뉴 */}
-                              {r.status === 'sent' && (() => {
+                              {/* 발송 시도가 있던 수신자 — 팔로업/회신/전달 액션 메뉴.
+                                  sent 외에 bounced/failed 에서도 "전달" 만큼은 의미가 있으므로
+                                  메뉴는 노출하고 항목별로 개별 disable 처리한다. */}
+                              {(r.status === 'sent' || r.status === 'bounced' || r.status === 'failed') && (() => {
                                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                                 const rExt = r as any as {
                                   gmail_thread_id?: string | null
@@ -973,6 +975,9 @@ export default function CampaignDetailPage() {
                                   replied?: boolean
                                   contact_id?: string | null
                                 }
+                                const canFollowup = r.status === 'sent'
+                                const canReply = r.status === 'sent' && rExt.replied === true
+                                const canForward = !!rExt.gmail_message_id // 원본 메시지 존재해야 전달 가능
                                 const openMode = (mode: ThreadMode) => {
                                   setThreadCompose({
                                     mode,
@@ -998,24 +1003,33 @@ export default function CampaignDetailPage() {
                                     <DropdownMenuTrigger asChild>
                                       <button
                                         type="button"
-                                        className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded hover:bg-accent"
-                                        title="이 수신자에게 액션"
+                                        className="text-muted-foreground hover:text-foreground transition-colors p-1.5 rounded hover:bg-accent border border-transparent hover:border-border"
+                                        title="이 수신자에게 액션 (팔로업/회신/전달)"
+                                        aria-label="액션 메뉴 열기"
                                       >
-                                        <MoreHorizontal className="w-3.5 h-3.5" />
+                                        <MoreHorizontal className="w-4 h-4" />
                                       </button>
                                     </DropdownMenuTrigger>
                                     <DropdownMenuContent align="end">
-                                      <DropdownMenuItem onClick={() => openMode('followup')}>
+                                      <DropdownMenuItem
+                                        onClick={() => openMode('followup')}
+                                        disabled={!canFollowup}
+                                      >
                                         <Reply className="w-3.5 h-3.5 mr-2" />
                                         팔로업 (같은 thread)
                                       </DropdownMenuItem>
-                                      {rExt.replied && (
-                                        <DropdownMenuItem onClick={() => openMode('reply')}>
-                                          <ReplyAll className="w-3.5 h-3.5 mr-2" />
-                                          답장에 회신
-                                        </DropdownMenuItem>
-                                      )}
-                                      <DropdownMenuItem onClick={() => openMode('forward')}>
+                                      <DropdownMenuItem
+                                        onClick={() => openMode('reply')}
+                                        disabled={!canReply}
+                                      >
+                                        <ReplyAll className="w-3.5 h-3.5 mr-2" />
+                                        답장에 회신
+                                        {!canReply && <span className="ml-auto text-xs text-muted-foreground">회신 없음</span>}
+                                      </DropdownMenuItem>
+                                      <DropdownMenuItem
+                                        onClick={() => openMode('forward')}
+                                        disabled={!canForward}
+                                      >
                                         <Forward className="w-3.5 h-3.5 mr-2" />
                                         다른 사람에게 전달
                                       </DropdownMenuItem>
