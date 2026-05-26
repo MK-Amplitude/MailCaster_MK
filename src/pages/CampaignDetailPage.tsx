@@ -767,7 +767,8 @@ export default function CampaignDetailPage() {
                       <th className="text-left px-4 py-2 font-medium">상태</th>
                       <th className="text-left px-4 py-2 font-medium">활동</th>
                       <th className="text-left px-4 py-2 font-medium">발송 시각</th>
-                      {canEdit && <th className="w-10 px-2" />}
+                      {/* 액션 컬럼 — 편집 가능 (X 버튼) 이거나 발송된 캠페인 (팔로업/회신/전달 메뉴) 일 때 노출. */}
+                      <th className="w-10 px-2" />
                     </tr>
                   </thead>
                   <tbody>
@@ -944,26 +945,25 @@ export default function CampaignDetailPage() {
                               ? format(new Date(r.sent_at), 'M월 d일 HH:mm:ss', { locale: ko })
                               : '-'}
                           </td>
-                          {canEdit && (
-                            <td className="w-10 px-2 text-right">
-                              {/* pending 상태만 제거 가능 — 이미 발송된 row 는 보존 (이력) */}
-                              {r.status === 'pending' && (
-                                <button
-                                  type="button"
-                                  disabled={removeRecipient.isPending}
-                                  onClick={() =>
-                                    removeRecipient.mutate({
-                                      recipientId: r.id,
-                                      campaignId: id!,
-                                    })
-                                  }
-                                  className="text-muted-foreground hover:text-destructive transition-colors p-1 rounded hover:bg-destructive/10 disabled:opacity-50"
-                                  aria-label={`${r.email} 수신자 제외`}
-                                  title="수신자에서 제외"
-                                >
-                                  <X className="w-3.5 h-3.5" />
-                                </button>
-                              )}
+                          <td className="w-10 px-2 text-right">
+                            {/* pending 상태 제거 — draft/scheduled 캠페인에서만 가능 */}
+                            {canEdit && r.status === 'pending' && (
+                              <button
+                                type="button"
+                                disabled={removeRecipient.isPending}
+                                onClick={() =>
+                                  removeRecipient.mutate({
+                                    recipientId: r.id,
+                                    campaignId: id!,
+                                  })
+                                }
+                                className="text-muted-foreground hover:text-destructive transition-colors p-1 rounded hover:bg-destructive/10 disabled:opacity-50"
+                                aria-label={`${r.email} 수신자 제외`}
+                                title="수신자에서 제외"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            )}
                               {/* 발송된 수신자 — 팔로업/회신/전달 액션 메뉴 */}
                               {r.status === 'sent' && (() => {
                                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1023,8 +1023,7 @@ export default function CampaignDetailPage() {
                                   </DropdownMenu>
                                 )
                               })()}
-                            </td>
-                          )}
+                          </td>
                         </tr>
                       )
                     })}
