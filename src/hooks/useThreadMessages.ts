@@ -15,6 +15,11 @@ export type ThreadMessageReply =
 
 const QK = ['thread_messages']
 
+// 최근 발송 후 회신/오픈 갱신을 자동 반영하기 위한 폴링 윈도우 (밀리초).
+// cron 이 5분 주기라 너무 자주 polling 해도 효용 없음. 발송 직후 60분 동안만 30초 간격.
+const THREAD_RECENT_WINDOW_MS = 60 * 60 * 1000
+const THREAD_RECENT_POLL_MS = 30_000
+
 /** 특정 캠페인에 연관된 thread_messages 전체 */
 export function useThreadMessagesByCampaign(campaignId: string | undefined) {
   return useQuery({
@@ -29,12 +34,20 @@ export function useThreadMessagesByCampaign(campaignId: string | undefined) {
       return (data ?? []) as ThreadMessageRow[]
     },
     enabled: !!campaignId,
-    // 발송 중이거나 최근 발송된 row 가 있으면 짧게 폴링 — 오픈 카운터가 바뀔 수 있음
+    // 폴링 정책:
+    //   - pending row 있음 → 2초 (발송 완료 빨리 반영)
+    //   - 최근 1시간 안에 발송된 row 있음 → 30초 (cron 이 회신/오픈 업데이트 한 걸 반영)
+    //   - 그 외 → 폴링 안 함 (사용자가 새로고침해야 함)
     refetchInterval: (q) => {
       const c = q.state.data as ThreadMessageRow[] | undefined
       if (!c || c.length === 0) return false
-      const hasPending = c.some((m) => m.status === 'pending')
-      return hasPending ? 2000 : false
+      if (c.some((m) => m.status === 'pending')) return 2000
+      const now = Date.now()
+      const hasRecent = c.some((m) => {
+        if (!m.sent_at) return false
+        return now - new Date(m.sent_at).getTime() < THREAD_RECENT_WINDOW_MS
+      })
+      return hasRecent ? THREAD_RECENT_POLL_MS : false
     },
   })
 }
