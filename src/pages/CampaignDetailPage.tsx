@@ -15,6 +15,7 @@ import {
 } from '@/hooks/useCampaigns'
 import { useContacts } from '@/hooks/useContacts'
 import { ThreadComposeDialog } from '@/components/campaigns/ThreadComposeDialog'
+import { ThreadMessagesSection } from '@/components/campaigns/ThreadMessagesSection'
 import type { ThreadMode } from '@/hooks/useSendThreadMessage'
 import { useSignatureById } from '@/hooks/useSignatures'
 import { useProfile } from '@/hooks/useProfile'
@@ -1054,6 +1055,9 @@ export default function CampaignDetailPage() {
             </div>
           </CardContent>
         </Card>
+
+        {/* 팔로업/회신/전달 기록 — thread_messages 가 있을 때만 렌더링 (내부에서 빈 상태 분기) */}
+        {id && <ThreadMessagesSection campaignId={id} />}
       </div>
 
       <ConfirmDialog

@@ -14,6 +14,7 @@ import { useAuth } from './useAuth'
 import { sendGmail, fetchMessageRfcId } from '@/lib/gmail'
 import { getFreshGoogleToken } from '@/lib/googleToken'
 import { extractAndInlineImages } from '@/lib/inlineImages'
+import { buildThreadTrackingPixel, injectTrackingPixel } from './useSendCampaign'
 import { toast } from 'sonner'
 
 export type ThreadMode = 'followup' | 'reply' | 'forward'
@@ -105,7 +106,10 @@ export function useSendThreadMessage() {
       if (tmErr) throw tmErr
       const tmId = (tmRow as { id: string }).id
 
-      // 5) 발송
+      // 5) 트래킹 픽셀 주입 — tmId 가 있어야 하므로 insert 이후에 처리
+      const htmlWithPixel = injectTrackingPixel(bodyWithCids, buildThreadTrackingPixel(tmId))
+
+      // 6) 발송
       try {
         const result = await sendGmail({
           accessToken,
@@ -113,7 +117,7 @@ export function useSendThreadMessage() {
           to: input.toEmail,
           toName: input.toName,
           subject: input.subject,
-          html: bodyWithCids,
+          html: htmlWithPixel,
           cc: input.cc && input.cc.length > 0 ? input.cc : undefined,
           bcc: input.bcc && input.bcc.length > 0 ? input.bcc : undefined,
           threadId: input.threadId ?? undefined,

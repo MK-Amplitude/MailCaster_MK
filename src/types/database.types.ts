@@ -751,6 +751,11 @@ export interface Database {
           sent_at: string | null
           error_message: string | null
           created_at: string
+          // 046 — 오픈 추적
+          opened: boolean
+          first_opened_at: string | null
+          last_opened_at: string | null
+          open_count: number
         }
         Insert: {
           id?: string
@@ -773,6 +778,10 @@ export interface Database {
           sent_at?: string | null
           error_message?: string | null
           created_at?: string
+          opened?: boolean
+          first_opened_at?: string | null
+          last_opened_at?: string | null
+          open_count?: number
         }
         Update: {
           gmail_thread_id?: string | null
@@ -780,6 +789,10 @@ export interface Database {
           status?: 'pending' | 'sent' | 'failed'
           sent_at?: string | null
           error_message?: string | null
+          opened?: boolean
+          first_opened_at?: string | null
+          last_opened_at?: string | null
+          open_count?: number
         }
         Relationships: []
       }

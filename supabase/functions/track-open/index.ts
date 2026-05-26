@@ -1,7 +1,10 @@
 // Supabase Edge Function: track-open
 // ------------------------------------------------------------
 // 이메일 본문에 삽입된 1x1 투명 GIF 픽셀이 호출되는 엔드포인트.
-// GET /functions/v1/track-open?rid=<recipient_id>&cid=<campaign_id>
+//
+// 캠페인 메일:    GET /functions/v1/track-open?rid=<recipient_id>&cid=<campaign_id>
+// thread 메일:   GET /functions/v1/track-open?tmid=<thread_message_id>
+//   (rid+cid 와 tmid 는 상호배타 — 우선순위: tmid > rid+cid)
 //
 // 응답은 **항상 200 OK** + 1x1 투명 GIF (43 byte).
 // 쿼리 파라미터가 이상하거나 DB 기록 실패여도 에러 응답은 돌리지 않는다 —
@@ -78,12 +81,22 @@ Deno.serve(async (req) => {
     }
 
     const url = new URL(req.url)
+    const tmid = url.searchParams.get('tmid') ?? ''
     const rid = url.searchParams.get('rid') ?? ''
     const cid = url.searchParams.get('cid') ?? ''
 
-    if (!UUID_RE.test(rid) || !UUID_RE.test(cid)) {
-      console.warn('[track-open] invalid ids', { rid, cid })
-      return pixel()
+    // tmid (thread message) 우선 — 둘 다 오면 thread 모드
+    const isThread = !!tmid
+    if (isThread) {
+      if (!UUID_RE.test(tmid)) {
+        console.warn('[track-open] invalid tmid', { tmid })
+        return pixel()
+      }
+    } else {
+      if (!UUID_RE.test(rid) || !UUID_RE.test(cid)) {
+        console.warn('[track-open] invalid ids', { rid, cid })
+        return pixel()
+      }
     }
 
     // IP / UA 는 모니터링 / 중복 오픈 식별용. 없어도 OK.
@@ -104,17 +117,30 @@ Deno.serve(async (req) => {
     })
 
     // 호출은 fire-and-forget 에 가깝게 — 실패해도 픽셀은 항상 반환
-    supabase
-      .schema('mailcaster')
-      .rpc('track_email_open', {
-        p_recipient_id: rid,
-        p_campaign_id: cid,
-        p_ip: ip,
-        p_user_agent: ua,
-      })
-      .then((r: { error: unknown }) => {
-        if (r.error) console.warn('[track-open] rpc error:', r.error)
-      })
+    if (isThread) {
+      supabase
+        .schema('mailcaster')
+        .rpc('track_thread_open', {
+          p_thread_message_id: tmid,
+          p_ip: ip,
+          p_user_agent: ua,
+        })
+        .then((r: { error: unknown }) => {
+          if (r.error) console.warn('[track-open] thread rpc error:', r.error)
+        })
+    } else {
+      supabase
+        .schema('mailcaster')
+        .rpc('track_email_open', {
+          p_recipient_id: rid,
+          p_campaign_id: cid,
+          p_ip: ip,
+          p_user_agent: ua,
+        })
+        .then((r: { error: unknown }) => {
+          if (r.error) console.warn('[track-open] rpc error:', r.error)
+        })
+    }
 
     return pixel()
   } catch (e) {
