@@ -463,12 +463,13 @@ Deno.serve(async (req) => {
     let pass3Processed = 0
     let pass3RepliesFound = 0
     let pass3ThreadsProcessed = 0
+    let pass3BouncesFound = 0
     if (Date.now() - runStartedAt < RUN_BUDGET_MS - GMAIL_CALL_BUDGET_MS) {
       const pass3CooldownIso = new Date(Date.now() - THREAD_MSG_RECHECK_COOLDOWN_MS).toISOString()
       const { data: pass3Raw } = await supabase
         .schema('mailcaster')
         .from('thread_messages')
-        .select('id, org_id, user_id, gmail_thread_id, gmail_message_id, rfc_message_id, in_reply_to_message_id, campaign_id, sent_at')
+        .select('id, org_id, user_id, gmail_thread_id, gmail_message_id, rfc_message_id, in_reply_to_message_id, campaign_id, sent_at, bounced')
         .eq('status', 'sent')
         .not('gmail_thread_id', 'is', null)
         .or(`last_reply_check_at.is.null,last_reply_check_at.lt.${pass3CooldownIso}`)
@@ -484,6 +485,7 @@ Deno.serve(async (req) => {
         in_reply_to_message_id: string | null  // 우리가 응답한 원본의 RFC Message-ID (보조 매칭용)
         campaign_id: string | null
         sent_at: string | null
+        bounced: boolean
       }
       const pass3Rows = (pass3Raw ?? []) as Tm3Row[]
 
@@ -568,6 +570,53 @@ Deno.serve(async (req) => {
               break
             }
             pass3Processed++
+
+            // bounce 분기 — 정상 회신이 아닌 bounce 메시지 → thread_messages.bounced=true 마킹
+            if (nr.isBounce) {
+              // bounce 의 target tm — chronological fallback 만 (In-Reply-To 거의 없음)
+              const sortedBySentAt = [...group].sort((a, b) => {
+                const ta = a.sent_at ? Date.parse(a.sent_at) : 0
+                const tb = b.sent_at ? Date.parse(b.sent_at) : 0
+                return tb - ta
+              })
+              const bounceTm =
+                sortedBySentAt.find((g) => {
+                  const sentMs = g.sent_at
+                    ? Date.parse(g.sent_at)
+                    : Number.MAX_SAFE_INTEGER
+                  return sentMs <= nr.receivedAtMs
+                }) ?? sortedBySentAt[sortedBySentAt.length - 1]
+              if (!bounceTm || bounceTm.bounced) continue
+              // bounce 사유 추출
+              let bounceReason = `Bounced from ${nr.fromRaw}`
+              try {
+                const body = await fetchReplyBody(auth.token, nr.messageId)
+                const firstLine = extractBounceReason(body)
+                if (firstLine) bounceReason = firstLine
+              } catch {
+                // body fetch 실패해도 from 정보만으로 기록
+              }
+              const { error: bErr } = await supabase
+                .schema('mailcaster')
+                .from('thread_messages')
+                .update({
+                  bounced: true,
+                  bounced_at: nr.receivedAtIso,
+                  bounce_reason: bounceReason.slice(0, 500),
+                })
+                .eq('id', bounceTm.id)
+                .eq('bounced', false) // race-safe: 이미 마킹돼 있으면 no-op
+              if (bErr) {
+                console.warn(
+                  '[check-replies pass3] bounce update fail tmid=',
+                  bounceTm.id,
+                  bErr.message,
+                )
+              } else {
+                pass3BouncesFound++
+              }
+              continue // bounce 는 record_thread_reply 호출 X
+            }
 
             // 대상 tm 결정 (정확도 순):
             //   1) In-Reply-To / References 가 group 의 어떤 tm 의 rfc_message_id 와 매칭
@@ -720,6 +769,7 @@ Deno.serve(async (req) => {
       pass3_processed: pass3Processed,
       pass3_replies_found: pass3RepliesFound,
       pass3_threads_processed: pass3ThreadsProcessed,
+      pass3_bounces_found: pass3BouncesFound,
       users: byUser.size,
       batch_fetched: rows.length,
       elapsed_ms: Date.now() - runStartedAt,
@@ -1023,6 +1073,7 @@ async function fetchReplyMeta(accessToken: string, messageId: string): Promise<R
 
 // pass3 전용 — earliestThreadMessageSentAtMs 이후 + 타인 발신 + knownMessageIds 에 없는 메시지 전부.
 // In-Reply-To / References 헤더도 함께 가져옴 — 다중 회신을 정확한 tm 에 매핑하기 위함.
+// bounce 는 별도 isBounce=true 로 마킹해서 caller 가 분기 처리.
 async function fetchThreadAllNewReplies(
   accessToken: string,
   threadId: string,
@@ -1035,6 +1086,8 @@ async function fetchThreadAllNewReplies(
   receivedAtMs: number
   inReplyTo: string | null
   references: string[]
+  isBounce: boolean
+  fromRaw: string
 }>> {
   const url =
     `https://gmail.googleapis.com/gmail/v1/users/me/threads/${encodeURIComponent(threadId)}` +
@@ -1064,6 +1117,8 @@ async function fetchThreadAllNewReplies(
     receivedAtMs: number
     inReplyTo: string | null
     references: string[]
+    isBounce: boolean
+    fromRaw: string
   }> = []
   for (const m of messages) {
     if (knownMessageIds.has(m.id)) continue // 이미 저장된 회신
@@ -1073,7 +1128,6 @@ async function fetchThreadAllNewReplies(
     if (!fromRaw) continue
     const fromLower = fromRaw.toLowerCase()
     if (fromLower === userEmailLower) continue // 내가 보낸 followup/reply 추가본
-    if (isBounceFrom(fromRaw)) continue // bounce 는 정상 회신 아님
     const headers = m.payload?.headers
     const inReplyTo = getH(headers, 'In-Reply-To')
     const referencesRaw = getH(headers, 'References') ?? ''
@@ -1085,6 +1139,8 @@ async function fetchThreadAllNewReplies(
       receivedAtMs: ts,
       inReplyTo,
       references,
+      isBounce: isBounceFrom(fromRaw),
+      fromRaw,
     })
   }
   newReplies.sort((a, b) => a.receivedAtMs - b.receivedAtMs)

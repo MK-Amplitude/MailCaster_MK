@@ -33,6 +33,7 @@ import {
   XCircle,
   Clock,
   MessageCircle,
+  AlertTriangle,
 } from 'lucide-react'
 
 interface Props {
@@ -74,6 +75,7 @@ export function ThreadMessagesSection({ campaignId }: Props) {
   const openedCount = messages.filter((m) => m.opened).length
   const sentCount = messages.filter((m) => m.status === 'sent').length
   const repliedCount = messages.filter((m) => m.replied).length
+  const bouncedCount = messages.filter((m) => m.bounced).length
 
   return (
     <>
@@ -87,6 +89,9 @@ export function ThreadMessagesSection({ campaignId }: Props) {
             </Badge>
             <span className="text-xs text-muted-foreground font-normal ml-2">
               성공 {sentCount} · 오픈 {openedCount} · 회신 {repliedCount}
+              {bouncedCount > 0 && (
+                <span className="text-orange-600 dark:text-orange-400"> · 반송 {bouncedCount}</span>
+              )}
             </span>
           </CardTitle>
         </CardHeader>
@@ -146,10 +151,22 @@ export function ThreadMessagesSection({ campaignId }: Props) {
                           ? format(new Date(m.sent_at), 'M월 d일 HH:mm', { locale: ko })
                           : '-'}
                       </td>
-                      <td className={`px-4 py-2 ${statusMeta.color}`}>
-                        <span className="inline-flex items-center gap-1">
-                          <StatusIcon className="w-3.5 h-3.5" />
-                          {statusMeta.label}
+                      <td className={`px-4 py-2 ${m.bounced ? 'text-orange-600 dark:text-orange-400' : statusMeta.color}`}>
+                        <span
+                          className="inline-flex items-center gap-1"
+                          title={m.bounced && m.bounce_reason ? m.bounce_reason : undefined}
+                        >
+                          {m.bounced ? (
+                            <>
+                              <AlertTriangle className="w-3.5 h-3.5" />
+                              반송
+                            </>
+                          ) : (
+                            <>
+                              <StatusIcon className="w-3.5 h-3.5" />
+                              {statusMeta.label}
+                            </>
+                          )}
                         </span>
                       </td>
                       <td className="px-4 py-2">

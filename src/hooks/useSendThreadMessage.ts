@@ -86,29 +86,42 @@ export function useSendThreadMessage() {
       //      일치하는 contact 가 있으면 그쪽으로 교체. 없으면 NULL (잘못된 contact 가리키는 것보다 깨끗).
       const toEmailNorm = input.toEmail.trim().toLowerCase()
       let resolvedContactId: string | null = input.contactId ?? null
-      if (resolvedContactId) {
-        // parent contact 의 email 이 to_email 과 다르면 재 lookup (비서/대리응답 케이스)
-        const { data: parentContact } = await supabase
-          .from('contacts')
-          .select('email')
-          .eq('id', resolvedContactId)
-          .maybeSingle()
-        if (!parentContact || (parentContact.email ?? '').toLowerCase() !== toEmailNorm) {
-          resolvedContactId = null
+      try {
+        if (resolvedContactId) {
+          // parent contact 의 email 이 to_email 과 다르면 재 lookup (비서/대리응답 케이스).
+          // parent contact 가 다른 org 에 속해 있을 수도 있으니 org 검증도 함께.
+          const { data: parentContact } = await supabase
+            .from('contacts')
+            .select('email, org_id')
+            .eq('id', resolvedContactId)
+            .maybeSingle()
+          if (
+            !parentContact ||
+            parentContact.org_id !== currentOrg.id ||
+            (parentContact.email ?? '').toLowerCase() !== toEmailNorm
+          ) {
+            resolvedContactId = null
+          }
         }
-      }
-      if (!resolvedContactId) {
-        // org 내 contact 중 to_email 매칭. RLS 가 org 필터링.
-        // - ilike 로 대소문자 무관 매칭 (contacts.email 정규화가 일관 안 될 수 있음)
-        // - limit(1).maybeSingle() — 같은 이메일이 여러 contact 인 경우 throw 방지
-        const { data: foundContacts } = await supabase
-          .from('contacts')
-          .select('id')
-          .ilike('email', toEmailNorm)
-          .limit(1)
-        if (foundContacts && foundContacts.length > 0) {
-          resolvedContactId = (foundContacts[0] as { id: string }).id
+        if (!resolvedContactId) {
+          // 현재 org 의 contact 중 to_email 매칭.
+          // - .eq('org_id') 명시 — 사용자가 다중 org 멤버일 때 다른 org contact 선택 방지
+          // - .ilike 로 대소문자 무관 매칭
+          // - .limit(1) — 같은 이메일이 여러 row 면 첫 1개 (race-safe)
+          const { data: foundContacts } = await supabase
+            .from('contacts')
+            .select('id')
+            .eq('org_id', currentOrg.id)
+            .ilike('email', toEmailNorm)
+            .limit(1)
+          if (foundContacts && foundContacts.length > 0) {
+            resolvedContactId = (foundContacts[0] as { id: string }).id
+          }
         }
+      } catch (e) {
+        // contact lookup 실패해도 발송은 진행 — contact_id 만 NULL.
+        console.warn('[useSendThreadMessage] contact lookup failed:', e)
+        resolvedContactId = null
       }
 
       // 4) thread_messages pending 행 insert
