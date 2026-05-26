@@ -732,15 +732,6 @@ export function useSendCampaign() {
             const html = campaign.enable_open_tracking
               ? injectTrackingPixel(htmlWithLinks, buildTrackingPixel(r.id, campaignId))
               : htmlWithLinks
-            console.log('[sendCampaign] preparing', {
-              to: r.email,
-              subjectLen: subject.length,
-              htmlLen: html.length,
-              attachmentCount: mailAttachments.length,
-              mode: deliveryMode,
-              tracking: !!campaign.enable_open_tracking,
-            })
-
             // C1: 401 → 토큰 1회 refresh (refreshed flag 로 다중 refresh 방지),
             //     429/5xx → exponential backoff 재시도
             let refreshedForThisRecipient = false

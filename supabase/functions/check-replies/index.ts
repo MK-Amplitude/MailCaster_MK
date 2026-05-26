@@ -574,45 +574,10 @@ Deno.serve(async (req) => {
 
             // bounce 분기 — 정상 회신이 아닌 bounce 메시지 → thread_messages.bounced=true 마킹
             if (nr.isBounce) {
-              // bounce target tm 결정 (정상 reply 와 동일 우선순위):
-              //   1) In-Reply-To / References 가 group 의 rfc_message_id 와 매칭
-              //      (RFC 3464 / Google SMTP 의 bounce 는 거의 항상 In-Reply-To 채워 보냄)
-              //   2) References 가 in_reply_to_message_id 와 매칭 (보조)
-              //   3) chronological fallback — receivedAt 직전 sent_at 의 tm
-              let bounceTm: Tm3Row | null = null
-              const bounceCandidates = [nr.inReplyTo, ...nr.references].filter(
+              const refs = [nr.inReplyTo, ...nr.references].filter(
                 (v): v is string => !!v,
               )
-              for (const ref of bounceCandidates) {
-                const matched = group.find((g) => g.rfc_message_id === ref)
-                if (matched) {
-                  bounceTm = matched
-                  break
-                }
-              }
-              if (!bounceTm) {
-                for (const ref of bounceCandidates) {
-                  const matched = group.find((g) => g.in_reply_to_message_id === ref)
-                  if (matched) {
-                    bounceTm = matched
-                    break
-                  }
-                }
-              }
-              if (!bounceTm) {
-                const sortedBySentAt = [...group].sort((a, b) => {
-                  const ta = a.sent_at ? Date.parse(a.sent_at) : 0
-                  const tb = b.sent_at ? Date.parse(b.sent_at) : 0
-                  return tb - ta
-                })
-                bounceTm =
-                  sortedBySentAt.find((g) => {
-                    const sentMs = g.sent_at
-                      ? Date.parse(g.sent_at)
-                      : Number.MAX_SAFE_INTEGER
-                    return sentMs <= nr.receivedAtMs
-                  }) ?? sortedBySentAt[sortedBySentAt.length - 1]
-              }
+              const bounceTm = matchTargetTmInThread(group, refs, nr.receivedAtMs)
               if (!bounceTm || bounceTm.bounced) continue
               // bounce 사유 추출 — raw From 헤더 대신 친화 fallback
               const fromParsedForBounce = parseFromAddress(nr.fromRaw)
@@ -648,47 +613,11 @@ Deno.serve(async (req) => {
               continue // bounce 는 record_thread_reply 호출 X
             }
 
-            // 대상 tm 결정 (정확도 순):
-            //   1) In-Reply-To / References 가 group 의 어떤 tm 의 rfc_message_id 와 매칭
-            //      (= A 가 응답한 우리 메시지의 RFC Message-ID. 가장 정확.)
-            //   2) References 가 group 의 다른 RFC id (in_reply_to_message_id) 와 매칭
-            //      (= 우리 thread_message 가 응답했던 원본 — 같은 thread 의 상위 메시지)
-            //   3) receivedAt 직전 sent_at 의 tm (chronological fallback)
-            let targetTm: Tm3Row | null = null
-            const candidates = [nr.inReplyTo, ...nr.references].filter(
+            // 정상 reply 분기 — matchTargetTmInThread 사용 (bounce 와 동일 우선순위)
+            const refs = [nr.inReplyTo, ...nr.references].filter(
               (v): v is string => !!v,
             )
-            // 1순위
-            for (const ref of candidates) {
-              const matched = group.find((g) => g.rfc_message_id === ref)
-              if (matched) {
-                targetTm = matched
-                break
-              }
-            }
-            // 2순위 (보조)
-            if (!targetTm) {
-              for (const ref of candidates) {
-                const matched = group.find((g) => g.in_reply_to_message_id === ref)
-                if (matched) {
-                  targetTm = matched
-                  break
-                }
-              }
-            }
-            // 3순위 — chronological fallback
-            if (!targetTm) {
-              const sortedBySentAt = [...group].sort((a, b) => {
-                const ta = a.sent_at ? Date.parse(a.sent_at) : 0
-                const tb = b.sent_at ? Date.parse(b.sent_at) : 0
-                return tb - ta // DESC
-              })
-              targetTm =
-                sortedBySentAt.find((g) => {
-                  const sentMs = g.sent_at ? Date.parse(g.sent_at) : Number.MAX_SAFE_INTEGER
-                  return sentMs <= nr.receivedAtMs
-                }) ?? sortedBySentAt[sortedBySentAt.length - 1]
-            }
+            const targetTm = matchTargetTmInThread(group, refs, nr.receivedAtMs)
             if (!targetTm) continue
 
             // 본문/메타 fetch
@@ -1099,6 +1028,42 @@ async function fetchReplyMeta(accessToken: string, messageId: string): Promise<R
     rfcMessageId: getH('Message-ID') ?? getH('Message-Id'),
     bodyText: extractTextBody(msg.payload) ?? '',
   }
+}
+
+// pass3 의 타겟 tm 결정 헬퍼. bounce/reply 분기 모두 같은 우선순위 사용.
+//   1) RFC Message-ID 매칭 (A 가 우리 메시지에 응답한 In-Reply-To 헤더)
+//   2) in_reply_to_message_id 매칭 (보조 — 우리 thread_message 가 응답한 원본)
+//   3) chronological fallback (receivedAt 직전 sent_at 의 tm)
+function matchTargetTmInThread<
+  T extends {
+    rfc_message_id: string | null
+    in_reply_to_message_id: string | null
+    sent_at: string | null
+  },
+>(group: T[], references: string[], receivedAtMs: number): T | null {
+  // 1순위 — rfc_message_id 매칭
+  for (const ref of references) {
+    const matched = group.find((g) => g.rfc_message_id === ref)
+    if (matched) return matched
+  }
+  // 2순위 — in_reply_to_message_id 매칭
+  for (const ref of references) {
+    const matched = group.find((g) => g.in_reply_to_message_id === ref)
+    if (matched) return matched
+  }
+  // 3순위 — receivedAt 직전 sent_at 의 tm
+  if (group.length === 0) return null
+  const sortedBySentAt = [...group].sort((a, b) => {
+    const ta = a.sent_at ? Date.parse(a.sent_at) : 0
+    const tb = b.sent_at ? Date.parse(b.sent_at) : 0
+    return tb - ta
+  })
+  return (
+    sortedBySentAt.find((g) => {
+      const sentMs = g.sent_at ? Date.parse(g.sent_at) : Number.MAX_SAFE_INTEGER
+      return sentMs <= receivedAtMs
+    }) ?? sortedBySentAt[sortedBySentAt.length - 1]
+  )
 }
 
 // pass3 전용 — earliestThreadMessageSentAtMs 이후 + 타인 발신 + knownMessageIds 에 없는 메시지 전부.
