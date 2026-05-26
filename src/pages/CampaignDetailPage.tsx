@@ -30,6 +30,7 @@ import { ContactDetailSheet } from '@/components/contacts/ContactDetailSheet'
 import { ContactFormDialog } from '@/components/contacts/ContactFormDialog'
 import type { ContactWithGroups } from '@/types/contact'
 import { formatBytes } from '@/lib/utils'
+import { renderTemplate } from '@/lib/mailMerge'
 import { useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
@@ -991,8 +992,14 @@ export default function CampaignDetailPage() {
                                     original: {
                                       gmailMessageId: rExt.gmail_message_id ?? null,
                                       gmailThreadId: rExt.gmail_thread_id ?? null,
-                                      subject: campaign?.subject ?? null,
-                                      bodyHtml: campaign?.body_html ?? null,
+                                      // 제목/본문 모두 수신자별 변수 머지 — 실제로 발송된 모습을 인용 블록에 보여주기 위해.
+                                      // (캠페인 row 자체는 {{name}} 같은 placeholder 가 남아 있음)
+                                      subject: campaign?.subject
+                                        ? renderTemplate(campaign.subject, (r.variables ?? {}) as Record<string, string | null>)
+                                        : null,
+                                      bodyHtml: campaign?.body_html
+                                        ? renderTemplate(campaign.body_html, (r.variables ?? {}) as Record<string, string | null>)
+                                        : null,
                                       fromLabel: `${profile?.default_sender_name ?? profile?.display_name ?? ''} <${profile?.email ?? ''}>`,
                                       sentAt: r.sent_at,
                                     },
