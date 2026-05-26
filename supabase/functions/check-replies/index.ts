@@ -468,7 +468,7 @@ Deno.serve(async (req) => {
       const { data: pass3Raw } = await supabase
         .schema('mailcaster')
         .from('thread_messages')
-        .select('id, org_id, user_id, gmail_thread_id, gmail_message_id, in_reply_to_message_id, campaign_id, sent_at')
+        .select('id, org_id, user_id, gmail_thread_id, gmail_message_id, rfc_message_id, in_reply_to_message_id, campaign_id, sent_at')
         .eq('status', 'sent')
         .not('gmail_thread_id', 'is', null)
         .or(`last_reply_check_at.is.null,last_reply_check_at.lt.${pass3CooldownIso}`)
@@ -480,7 +480,8 @@ Deno.serve(async (req) => {
         user_id: string | null
         gmail_thread_id: string
         gmail_message_id: string | null
-        in_reply_to_message_id: string | null  // 우리가 보냈을 때 In-Reply-To 헤더로 쓴 값
+        rfc_message_id: string | null         // 우리가 보낸 메시지의 RFC 2822 Message-ID (A 답장 In-Reply-To)
+        in_reply_to_message_id: string | null  // 우리가 응답한 원본의 RFC Message-ID (보조 매칭용)
         campaign_id: string | null
         sent_at: string | null
       }
@@ -568,29 +569,36 @@ Deno.serve(async (req) => {
             }
             pass3Processed++
 
-            // 대상 tm 결정:
-            // 1순위 - In-Reply-To 또는 References 가 group 의 누군가의 in_reply_to_message_id /
-            //         gmail_message_id 와 매칭 (우리가 보낸 RFC Message-ID 가 In-Reply-To 헤더에 들어감)
-            // 2순위 - receivedAt 직전 sent_at 의 tm (chronological fallback)
+            // 대상 tm 결정 (정확도 순):
+            //   1) In-Reply-To / References 가 group 의 어떤 tm 의 rfc_message_id 와 매칭
+            //      (= A 가 응답한 우리 메시지의 RFC Message-ID. 가장 정확.)
+            //   2) References 가 group 의 다른 RFC id (in_reply_to_message_id) 와 매칭
+            //      (= 우리 thread_message 가 응답했던 원본 — 같은 thread 의 상위 메시지)
+            //   3) receivedAt 직전 sent_at 의 tm (chronological fallback)
             let targetTm: Tm3Row | null = null
             const candidates = [nr.inReplyTo, ...nr.references].filter(
               (v): v is string => !!v,
             )
+            // 1순위
             for (const ref of candidates) {
-              // group 안에서 in_reply_to_message_id 또는 gmail_message_id 매칭
-              // (in_reply_to_message_id 는 RFC Message-ID, gmail_message_id 는 Gmail 내부 id —
-              //  보통 In-Reply-To 는 RFC Message-ID, 우리는 in_reply_to_message_id 에 그것을 저장)
-              const matched = group.find(
-                (g) =>
-                  g.in_reply_to_message_id === ref || g.gmail_message_id === ref,
-              )
+              const matched = group.find((g) => g.rfc_message_id === ref)
               if (matched) {
                 targetTm = matched
                 break
               }
             }
+            // 2순위 (보조)
             if (!targetTm) {
-              // fallback — receivedAt < sent_at 의 가장 가까운 직전 tm
+              for (const ref of candidates) {
+                const matched = group.find((g) => g.in_reply_to_message_id === ref)
+                if (matched) {
+                  targetTm = matched
+                  break
+                }
+              }
+            }
+            // 3순위 — chronological fallback
+            if (!targetTm) {
               const sortedBySentAt = [...group].sort((a, b) => {
                 const ta = a.sent_at ? Date.parse(a.sent_at) : 0
                 const tb = b.sent_at ? Date.parse(b.sent_at) : 0
@@ -1083,11 +1091,28 @@ async function fetchThreadAllNewReplies(
   return newReplies
 }
 
-// 받은 회신의 본문에서 인용 부분을 떼어내 깨끗한 본문만 저장 → 재귀 회신 시 quote 폭발 방지.
-// stripQuotedAndSignature 가 이미 있지만 LLM 분류용으로 더 공격적. record_thread_reply 에 들어가는
-// body_text 는 사용자 인용 블록에 나중에 다시 들어가므로, 안전하게 동일한 stripping 을 적용.
+// 받은 회신의 본문에서 quote 부분을 떼어내 깨끗한 본문만 저장 → 재귀 회신 시 quote 폭발 방지.
+// stripQuotedAndSignature 와 달리 시그니처는 보존 — 사용자가 회신한 사람의 부서/연락처 등을
+// detail 모달에서 보고 싶어할 수 있음.
 function stripQuoteForStorage(text: string): string {
-  return stripQuotedAndSignature(text)
+  // 1) "On {date}, {name} wrote:" / "{date} ... 작성:" / "----- Original Message -----" /
+  //    "From: ... Sent: ..." 같은 인용 헤더 이후를 자르기
+  const replyHeaderPatterns = [
+    /\n\s*On .+ wrote:[\s\S]*$/m,
+    /\n\s*\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2}[\s\S]+(작성|wrote|쓴 글|보낸 메일):[\s\S]*$/m,
+    /\n\s*-+\s*Original Message\s*-+[\s\S]*$/im,
+    /\n\s*From:.+\nSent:.+[\s\S]*$/im,
+  ]
+  let out = text
+  for (const re of replyHeaderPatterns) out = out.replace(re, '')
+
+  // 2) 인용된 라인 (> 로 시작) 제거 — 시그니처는 건드리지 않음
+  out = out
+    .split('\n')
+    .filter((l) => !/^\s*>/.test(l))
+    .join('\n')
+
+  return out.trim()
 }
 
 // "이름 <foo@bar.com>" 또는 "foo@bar.com" 파싱 → { name, email }

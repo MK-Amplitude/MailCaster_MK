@@ -761,6 +761,8 @@ export interface Database {
           replied_at: string | null
           last_reply_check_at: string | null
           reply_count: number
+          // 050 — 우리가 보낸 메시지의 RFC Message-ID (회신 In-Reply-To 매칭용)
+          rfc_message_id: string | null
         }
         Insert: {
           id?: string
@@ -791,6 +793,7 @@ export interface Database {
           replied_at?: string | null
           last_reply_check_at?: string | null
           reply_count?: number
+          rfc_message_id?: string | null
         }
         Update: {
           gmail_thread_id?: string | null
@@ -806,6 +809,7 @@ export interface Database {
           replied_at?: string | null
           last_reply_check_at?: string | null
           reply_count?: number
+          rfc_message_id?: string | null
         }
         Relationships: []
       }
