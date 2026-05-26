@@ -32,6 +32,11 @@ export interface SendThreadInput {
    * 이 함수가 직접 fetchMessageRfcId 로 RFC Message-ID 를 가져와 In-Reply-To 에 넣는다.
    */
   inReplyToGmailMessageId?: string | null
+  /**
+   * 이미 알고 있는 RFC Message-ID (thread_message_replies.rfc_message_id 등).
+   * 있으면 fetchMessageRfcId 호출 스킵 → Gmail API quota 절감.
+   */
+  inReplyToRfcMessageId?: string | null
   /** thread_messages 에 기록할 연관 메타 */
   campaignId?: string | null
   recipientId?: string | null
@@ -68,9 +73,11 @@ export function useSendThreadMessage() {
       const from = fromName ? `${fromName} <${fromEmail}>` : fromEmail
 
       // 2) access_token + RFC Message-ID (있으면)
+      //   - 이미 알고 있는 rfc id (input.inReplyToRfcMessageId) 우선 사용 → Gmail API 호출 스킵
+      //   - 없으면 inReplyToGmailMessageId 로 fetchMessageRfcId 호출
       const accessToken = await getFreshGoogleToken(user.id)
-      let inReplyTo: string | null = null
-      if (input.inReplyToGmailMessageId) {
+      let inReplyTo: string | null = input.inReplyToRfcMessageId ?? null
+      if (!inReplyTo && input.inReplyToGmailMessageId) {
         inReplyTo = await fetchMessageRfcId(
           accessToken,
           input.inReplyToGmailMessageId,
@@ -176,19 +183,33 @@ export function useSendThreadMessage() {
         })
 
         // 발송 성공 — 즉시 gmail_message_id / gmail_thread_id 부터 먼저 UPDATE.
-        // 이후 RFC fetch / 두 번째 UPDATE 가 실패해도 gmail_message_id 가 DB 에 있으므로
-        // reconcile cron 의 branch 1 이 sent 로 정정.
-        const firstUpdate = await supabase
-          .from('thread_messages')
-          .update({
-            gmail_message_id: result.id,
-            gmail_thread_id: result.threadId,
-          })
-          .eq('id', tmId)
-        if (firstUpdate.error) {
-          // 첫 UPDATE 실패. status 손대지 않고 throw → catch 가 result 존재를 보고 pending 유지.
+        // 이게 성공해야 reconcile cron 의 branch 1 (gmail_message_id 있는 pending → sent) 이 동작.
+        // 일시적 네트워크 오류 대응을 위해 retry (3회, exponential backoff).
+        let firstUpdateOk = false
+        let firstUpdateErr: string | null = null
+        for (let attempt = 0; attempt < 3; attempt++) {
+          if (attempt > 0) {
+            await new Promise((resolve) => setTimeout(resolve, 500 * Math.pow(2, attempt - 1)))
+          }
+          const r = await supabase
+            .from('thread_messages')
+            .update({
+              gmail_message_id: result.id,
+              gmail_thread_id: result.threadId,
+            })
+            .eq('id', tmId)
+          if (!r.error) {
+            firstUpdateOk = true
+            break
+          }
+          firstUpdateErr = r.error.message
+        }
+        if (!firstUpdateOk) {
+          // 3회 재시도 모두 실패 → reconcile cron 도 동작 불가 (gmail_message_id NULL 유지).
+          // Gmail 발송은 실제로 성공했으니 사용자에게 명시적으로 안내 — 중복 발송 방지.
           throw new Error(
-            `발송은 성공했으나 결과 기록 실패: ${firstUpdate.error.message}. 약 10분 후 자동 정정됩니다.`,
+            `Gmail 발송은 완료됐으나 시스템 기록 실패 (${firstUpdateErr ?? 'unknown'}).` +
+              ` 중복 발송 방지를 위해 Gmail "보낸편지함"에서 확인 후 처리하세요.`,
           )
         }
 
