@@ -203,6 +203,13 @@ export function buildTrackingPixel(recipientId: string, campaignId: string): str
   return `<img src="${url}" alt="" width="1" height="1" style="display:block;width:1px;height:1px;border:0;margin:0;padding:0;overflow:hidden;" />`
 }
 
+// thread_messages (팔로업/회신/전달) 용 오픈 추적 픽셀.
+// 같은 엔드포인트지만 tmid 파라미터만 — edge function 이 분기해서 track_thread_open RPC 호출.
+export function buildThreadTrackingPixel(threadMessageId: string): string {
+  const url = `${TRACK_OPEN_ENDPOINT}?tmid=${encodeURIComponent(threadMessageId)}`
+  return `<img src="${url}" alt="" width="1" height="1" style="display:block;width:1px;height:1px;border:0;margin:0;padding:0;overflow:hidden;" />`
+}
+
 export function injectTrackingPixel(html: string, pixelHtml: string): string {
   // </body> 태그가 있으면 그 앞에 삽입, 없으면 맨 뒤에.
   if (/<\/body>/i.test(html)) {
