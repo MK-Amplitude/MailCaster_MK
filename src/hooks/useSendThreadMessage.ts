@@ -172,15 +172,22 @@ export function useSendThreadMessage() {
         // 이렇게 분리하는 이유: 이후 RFC fetch + 두 번째 UPDATE 가 네트워크 단절/페이지 leave 로
         // 실패해도, gmail_message_id 가 이미 DB 에 있으므로 reconcile cron (migration 052) 의
         // branch 1 (gmail_message_id 있고 pending 인 row → sent 로 정정) 이 동작함.
-        // 만약 이 첫 UPDATE 자체가 실패하면 branch 2 (gmail_message_id NULL → failed) 가 정정.
-        // 그 경우 사용자는 Gmail "보낸편지함" 으로 확인 필요 — error_message 에 안내.
-        await supabase
+        //
+        // 첫 UPDATE 가 실패하면 throw → 아래 catch 가 status='failed' 로 마킹.
+        // 그 경우 사용자는 Gmail "보낸편지함" 으로 직접 확인 필요 (error_message 에 안내됨).
+        const firstUpdate = await supabase
           .from('thread_messages')
           .update({
             gmail_message_id: result.id,
             gmail_thread_id: result.threadId,
           })
           .eq('id', tmId)
+        if (firstUpdate.error) {
+          // PostgREST 가 throw 하지 않고 error 객체로 반환 — 명시적으로 throw
+          throw new Error(
+            `발송은 성공했으나 결과 기록 실패: ${firstUpdate.error.message}. Gmail 보낸편지함을 확인하세요.`,
+          )
+        }
 
         // RFC Message-ID 조회 — A 답장 시 In-Reply-To 매칭용. best-effort.
         let ownRfcMessageId: string | null = null
