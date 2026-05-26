@@ -765,7 +765,7 @@ export interface Database {
         Insert: {
           id?: string
           org_id: string
-          user_id: string
+          user_id?: string | null
           campaign_id?: string | null
           recipient_id?: string | null
           contact_id?: string | null

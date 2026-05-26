@@ -68,6 +68,9 @@ const PASS2_BATCH_SIZE = 50
 const PASS3_BATCH_SIZE = 50
 // Gmail messages.get (회신 본문 + 헤더 조회) 예산.
 const REPLY_META_BUDGET_MS = 1_500
+// pass3 의 cooldown — thread_messages 의 다중 회신 감지를 위해 replied 상태 무관하게 재방문.
+// pass2 (6시간) 와 같은 값. 너무 짧으면 Gmail quota 부담, 너무 길면 후속 회신 발견 지연.
+const THREAD_MSG_RECHECK_COOLDOWN_MS = 6 * 60 * 60 * 1000
 
 type ReplyCategory =
   | 'interested'
@@ -447,20 +450,24 @@ Deno.serve(async (req) => {
     }
 
     // ------------------------------------------------------------
-    // pass 3 — thread_messages (팔로업/회신/전달) 의 회신 폴링
+    // pass 3 — thread_messages (팔로업/회신/전달) 의 회신 폴링 (다중 회신 지원)
     // ------------------------------------------------------------
-    // pass1 / pass2 와 동일 패턴이지만 별도 테이블 + 별도 RPC.
-    // 새 회신 발견 시 record_thread_reply RPC 호출 → thread_message_replies INSERT + replied=true.
+    // 설계:
+    //   - replied 상태 무관하게 cooldown (6h) 기반으로 재방문 → 두 번째 이후 회신도 감지.
+    //   - 이미 thread_message_replies 에 기록된 gmail_message_id 들을 미리 SELECT 해서
+    //     fetchThreadAllNewReplies 가 "새" 메시지만 반환.
+    //   - record_thread_reply RPC 의 ON CONFLICT 가 race-safe 보장 (중복 INSERT 시 no-op).
     let pass3Processed = 0
     let pass3RepliesFound = 0
     if (Date.now() - runStartedAt < RUN_BUDGET_MS - GMAIL_CALL_BUDGET_MS) {
+      const pass3CooldownIso = new Date(Date.now() - THREAD_MSG_RECHECK_COOLDOWN_MS).toISOString()
       const { data: pass3Raw } = await supabase
         .schema('mailcaster')
         .from('thread_messages')
-        .select('id, org_id, user_id, gmail_thread_id, sent_at, to_email')
+        .select('id, org_id, user_id, gmail_thread_id, sent_at')
         .eq('status', 'sent')
-        .eq('replied', false)
         .not('gmail_thread_id', 'is', null)
+        .or(`last_reply_check_at.is.null,last_reply_check_at.lt.${pass3CooldownIso}`)
         .order('last_reply_check_at', { ascending: true, nullsFirst: true })
         .limit(PASS3_BATCH_SIZE)
       const pass3Rows = (pass3Raw ?? []) as Array<{
@@ -469,7 +476,6 @@ Deno.serve(async (req) => {
         user_id: string | null
         gmail_thread_id: string
         sent_at: string | null
-        to_email: string
       }>
 
       // user_id 별 그룹핑
@@ -501,51 +507,67 @@ Deno.serve(async (req) => {
           if (Date.now() - runStartedAt > RUN_BUDGET_MS - GMAIL_CALL_BUDGET_MS - REPLY_META_BUDGET_MS) break pass3Loop
           pass3Processed++
           try {
-            // fetchThreadAnalysis 는 r.gmail_thread_id 와 r.sent_at 만 쓰므로 thread_messages row 도 호환.
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const analysis = await fetchThreadAnalysis(accessToken, r as any, userEmailLower)
-            if (!analysis || !analysis.reply) {
-              // 회신 없음 — last_reply_check_at 회전
-              await supabase
-                .schema('mailcaster')
-                .from('thread_messages')
-                .update({ last_reply_check_at: nowIso })
-                .eq('id', r.id)
-              continue
-            }
-            // 회신 발견 → meta 조회 (from / subject / snippet / body / rfc_message_id)
-            let meta: ReplyMeta | null = null
-            try {
-              meta = await fetchReplyMeta(accessToken, analysis.reply.messageId)
-            } catch (e) {
-              console.warn(
-                '[check-replies pass3] reply meta fetch fail tmid=',
-                r.id,
-                e instanceof Error ? e.message : e
-              )
-            }
-            const fromParsed = parseFromAddress(meta?.from ?? null)
-            const { error: rpcErr } = await supabase
+            // 이미 기록된 회신들의 Gmail message id 셋
+            const { data: knownRaw } = await supabase
               .schema('mailcaster')
-              .rpc('record_thread_reply', {
-                p_thread_message_id: r.id,
-                p_org_id: r.org_id,
-                p_gmail_message_id: analysis.reply.messageId,
-                p_gmail_thread_id: r.gmail_thread_id,
-                p_rfc_message_id: meta?.rfcMessageId ?? null,
-                p_from_email: fromParsed.email,
-                p_from_name: fromParsed.name,
-                p_subject: meta?.subject ?? null,
-                p_snippet: meta?.snippet ?? null,
-                p_body_text: (meta?.bodyText ?? '').slice(0, REPLY_BODY_MAX_CHARS),
-                p_received_at: analysis.reply.repliedAtIso,
-              })
-            if (rpcErr) {
-              console.warn('[check-replies pass3] record_thread_reply rpc error tmid=', r.id, rpcErr.message)
-            } else {
-              pass3RepliesFound++
+              .from('thread_message_replies')
+              .select('gmail_message_id')
+              .eq('thread_message_id', r.id)
+            const knownIds = new Set(
+              (knownRaw ?? []).map((k: { gmail_message_id: string }) => k.gmail_message_id),
+            )
+
+            const newReplies = await fetchThreadAllNewReplies(
+              accessToken,
+              r.gmail_thread_id,
+              r.sent_at ? Date.parse(r.sent_at) : 0,
+              userEmailLower,
+              knownIds,
+            )
+
+            // 각 새 회신마다 본문/메타 가져와 RPC 호출
+            for (const nr of newReplies) {
+              if (Date.now() - runStartedAt > RUN_BUDGET_MS - REPLY_META_BUDGET_MS) break
+              let meta: ReplyMeta | null = null
+              try {
+                meta = await fetchReplyMeta(accessToken, nr.messageId)
+              } catch (e) {
+                console.warn(
+                  '[check-replies pass3] reply meta fetch fail tmid=',
+                  r.id,
+                  'mid=',
+                  nr.messageId,
+                  e instanceof Error ? e.message : e,
+                )
+              }
+              const fromParsed = parseFromAddress(meta?.from ?? null)
+              const { error: rpcErr } = await supabase
+                .schema('mailcaster')
+                .rpc('record_thread_reply', {
+                  p_thread_message_id: r.id,
+                  p_org_id: r.org_id,
+                  p_gmail_message_id: nr.messageId,
+                  p_gmail_thread_id: r.gmail_thread_id,
+                  p_rfc_message_id: meta?.rfcMessageId ?? null,
+                  p_from_email: fromParsed.email,
+                  p_from_name: fromParsed.name,
+                  p_subject: meta?.subject ?? null,
+                  p_snippet: meta?.snippet ?? null,
+                  p_body_text: (meta?.bodyText ?? '').slice(0, REPLY_BODY_MAX_CHARS),
+                  p_received_at: nr.receivedAtIso,
+                })
+              if (rpcErr) {
+                console.warn(
+                  '[check-replies pass3] record_thread_reply rpc error tmid=',
+                  r.id,
+                  rpcErr.message,
+                )
+              } else {
+                pass3RepliesFound++
+              }
             }
-            // 어느 경로든 last_reply_check_at 회전
+
+            // 어느 경로든 (회신 발견 0건 포함) last_reply_check_at 회전 → cooldown 큐 회전
             await supabase
               .schema('mailcaster')
               .from('thread_messages')
@@ -555,7 +577,7 @@ Deno.serve(async (req) => {
             console.warn(
               '[check-replies pass3] gmail error tmid=',
               r.id,
-              e instanceof Error ? e.message : e
+              e instanceof Error ? e.message : e,
             )
             await supabase
               .schema('mailcaster')
@@ -649,9 +671,17 @@ function isBounceFrom(from: string): boolean {
   return BOUNCE_FROM_PATTERNS.some((p) => p.test(from))
 }
 
+// fetchThreadAnalysis 는 사실상 gmail_thread_id 와 sent_at 만 쓴다.
+// Row 전체를 받으면 (recipients 와 thread_messages) 둘을 호환할 때 `as any` 가 필요해지므로
+// 좁은 인터페이스로 한정.
+interface ThreadAnalysisInput {
+  gmail_thread_id: string
+  sent_at: string | null
+}
+
 async function fetchThreadAnalysis(
   accessToken: string,
-  r: Row,
+  r: ThreadAnalysisInput,
   userEmailLower: string
 ): Promise<ThreadAnalysis | null> {
   const url =
@@ -889,6 +919,49 @@ async function fetchReplyMeta(accessToken: string, messageId: string): Promise<R
     rfcMessageId: getH('Message-ID') ?? getH('Message-Id'),
     bodyText: extractTextBody(msg.payload) ?? '',
   }
+}
+
+// pass3 전용 — sent_at 이후 + 타인 발신 + knownMessageIds 에 없는 메시지 전부.
+// fetchThreadAnalysis 와 달리 "earliest only" 가 아니라 모든 새 회신을 반환 → 다중 회신 감지.
+async function fetchThreadAllNewReplies(
+  accessToken: string,
+  threadId: string,
+  sentAtMs: number,
+  userEmailLower: string,
+  knownMessageIds: Set<string>,
+): Promise<Array<{ messageId: string; receivedAtIso: string }>> {
+  const url =
+    `https://gmail.googleapis.com/gmail/v1/users/me/threads/${encodeURIComponent(threadId)}` +
+    `?format=metadata&metadataHeaders=From&metadataHeaders=Date`
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } })
+  if (!res.ok) {
+    if (res.status === 404) return [] // thread 삭제됨
+    const body = await res.text().catch(() => '')
+    throw new Error(`Gmail threads.get ${res.status}: ${body.slice(0, 200)}`)
+  }
+  const thread: {
+    messages?: Array<{
+      id: string
+      internalDate?: string
+      payload?: { headers?: Array<{ name: string; value: string }> }
+    }>
+  } = await res.json()
+  const messages = thread.messages ?? []
+  const newReplies: Array<{ messageId: string; receivedAtIso: string }> = []
+  for (const m of messages) {
+    if (knownMessageIds.has(m.id)) continue // 이미 저장된 회신
+    const ts = Number(m.internalDate ?? 0)
+    if (!ts || ts <= sentAtMs) continue // 발송 이전 메시지는 회신 아님
+    const fromRaw = extractFromHeader(m.payload?.headers) ?? ''
+    if (!fromRaw) continue
+    const fromLower = fromRaw.toLowerCase()
+    if (fromLower === userEmailLower) continue // 내가 보낸 followup/reply 추가본
+    if (isBounceFrom(fromRaw)) continue // bounce 는 정상 회신 아님 (recipients pass1 처럼 별도 처리는 V1 스코프 외)
+    newReplies.push({ messageId: m.id, receivedAtIso: new Date(ts).toISOString() })
+  }
+  // 받은 순으로 정렬 — 본문 페치 + 저장 순서 안정성
+  newReplies.sort((a, b) => a.receivedAtIso.localeCompare(b.receivedAtIso))
+  return newReplies
 }
 
 // "이름 <foo@bar.com>" 또는 "foo@bar.com" 파싱 → { name, email }

@@ -197,7 +197,11 @@ export function ThreadMessageDetailDialog({ open, onOpenChange, message, onReply
               받은 회신 ({replies.length}건)
             </div>
             <div className="space-y-3">
-              {replies.map((reply) => (
+              {replies.map((reply) => {
+                // from_email 이 NULL/빈값이면 To 필드를 채울 수 없으므로 "회신하기" 비활성.
+                // (parseFromAddress 가 angle-addr 없는 비정상 헤더에서 email=null 을 돌려줄 수 있음)
+                const canReply = !!reply.from_email?.trim()
+                return (
                 <div
                   key={reply.id}
                   className="border rounded-lg p-3 bg-cyan-50/50 dark:bg-cyan-950/20"
@@ -223,6 +227,8 @@ export function ThreadMessageDetailDialog({ open, onOpenChange, message, onReply
                         size="sm"
                         variant="outline"
                         onClick={() => onReplyClick(reply)}
+                        disabled={!canReply}
+                        title={canReply ? undefined : '회신 발신자 이메일이 없어 회신할 수 없습니다.'}
                         className="shrink-0"
                       >
                         <Mail className="w-3.5 h-3.5 mr-1" />
@@ -236,7 +242,8 @@ export function ThreadMessageDetailDialog({ open, onOpenChange, message, onReply
                     )}
                   </div>
                 </div>
-              ))}
+                )
+              })}
             </div>
           </div>
         )}
