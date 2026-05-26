@@ -10,6 +10,8 @@ import { supabase } from '@/lib/supabase'
 import type { Database } from '@/types/database.types'
 
 export type ThreadMessageRow = Database['mailcaster']['Tables']['thread_messages']['Row']
+export type ThreadMessageReply =
+  Database['mailcaster']['Tables']['thread_message_replies']['Row']
 
 const QK = ['thread_messages']
 
@@ -34,6 +36,23 @@ export function useThreadMessagesByCampaign(campaignId: string | undefined) {
       const hasPending = c.some((m) => m.status === 'pending')
       return hasPending ? 2000 : false
     },
+  })
+}
+
+/** 특정 thread_message 가 받은 회신들 (received) */
+export function useThreadMessageReplies(threadMessageId: string | undefined) {
+  return useQuery({
+    queryKey: [...QK, 'replies', threadMessageId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('thread_message_replies')
+        .select('*')
+        .eq('thread_message_id', threadMessageId!)
+        .order('received_at', { ascending: true })
+      if (error) throw error
+      return (data ?? []) as ThreadMessageReply[]
+    },
+    enabled: !!threadMessageId,
   })
 }
 
