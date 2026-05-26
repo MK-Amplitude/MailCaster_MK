@@ -46,3 +46,14 @@ export function formatBytes(bytes: number | null | undefined): string {
  *  20MB 원본은 base64 26.6MB 로 즉시 초과하므로 위험. 18MB 로 안전 마진 확보. */
 export const GMAIL_ATTACHMENT_LIMIT = 25 * 1024 * 1024
 export const GMAIL_ATTACHMENT_SAFE_THRESHOLD = 18 * 1024 * 1024
+
+/** HTML 특수문자 이스케이프 — plain text 를 HTML 컨텍스트에 안전하게 삽입.
+ *  순서 중요: `&` 가 가장 먼저 (다른 entity 가 만들어지기 전). */
+export function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
