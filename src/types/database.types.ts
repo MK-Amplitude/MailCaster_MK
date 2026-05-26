@@ -728,6 +728,61 @@ export interface Database {
         }
         Relationships: []
       }
+      // 045 — 캠페인 발송 후 1:1 후속 메일 (팔로업/회신/전달)
+      thread_messages: {
+        Row: {
+          id: string
+          org_id: string
+          user_id: string | null
+          campaign_id: string | null
+          recipient_id: string | null
+          contact_id: string | null
+          mode: 'followup' | 'reply' | 'forward'
+          to_email: string
+          to_name: string | null
+          cc: string[]
+          bcc: string[]
+          subject: string | null
+          body_html: string | null
+          gmail_thread_id: string | null
+          gmail_message_id: string | null
+          in_reply_to_message_id: string | null
+          status: 'pending' | 'sent' | 'failed'
+          sent_at: string | null
+          error_message: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          org_id: string
+          user_id: string
+          campaign_id?: string | null
+          recipient_id?: string | null
+          contact_id?: string | null
+          mode: 'followup' | 'reply' | 'forward'
+          to_email: string
+          to_name?: string | null
+          cc?: string[]
+          bcc?: string[]
+          subject?: string | null
+          body_html?: string | null
+          gmail_thread_id?: string | null
+          gmail_message_id?: string | null
+          in_reply_to_message_id?: string | null
+          status?: 'pending' | 'sent' | 'failed'
+          sent_at?: string | null
+          error_message?: string | null
+          created_at?: string
+        }
+        Update: {
+          gmail_thread_id?: string | null
+          gmail_message_id?: string | null
+          status?: 'pending' | 'sent' | 'failed'
+          sent_at?: string | null
+          error_message?: string | null
+        }
+        Relationships: []
+      }
       followup_steps: {
         Row: {
           id: string

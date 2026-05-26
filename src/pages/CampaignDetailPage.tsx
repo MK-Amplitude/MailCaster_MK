@@ -14,7 +14,10 @@ import {
   useRemoveRecipientFromCampaign,
 } from '@/hooks/useCampaigns'
 import { useContacts } from '@/hooks/useContacts'
+import { ThreadComposeDialog } from '@/components/campaigns/ThreadComposeDialog'
+import type { ThreadMode } from '@/hooks/useSendThreadMessage'
 import { useSignatureById } from '@/hooks/useSignatures'
+import { useProfile } from '@/hooks/useProfile'
 import { replyCategoryOption, type ReplyCategory } from '@/types/replyCategory'
 import { useBackfillReplyCategories } from '@/hooks/useBackfillReplyCategories'
 import { matchesSearch } from '@/lib/search'
@@ -66,6 +69,9 @@ import {
   Ban,
   Eye,
   Reply,
+  ReplyAll,
+  Forward,
+  MoreHorizontal,
   AlertCircle,
 } from 'lucide-react'
 import { format } from 'date-fns'
@@ -96,6 +102,7 @@ export default function CampaignDetailPage() {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (campaign as any)?.signature_id ?? null
   )
+  const { data: profile } = useProfile()
   const previewBodyHtml = useMemo(() => {
     const body = campaign?.body_html ?? ''
     const sigHtml = signature?.html ?? ''
@@ -123,6 +130,25 @@ export default function CampaignDetailPage() {
   const [rescheduleOpen, setRescheduleOpen] = useState(false)
   const [rescheduleDraft, setRescheduleDraft] = useState<string>('')
   const [sendNowOpen, setSendNowOpen] = useState(false)
+  // 팔로업 / 회신 / 전달 다이얼로그 — 발송된 수신자 행에서 액션 클릭 시 열림.
+  const [threadCompose, setThreadCompose] = useState<{
+    mode: ThreadMode
+    recipient: {
+      contactId?: string | null
+      recipientId?: string | null
+      campaignId?: string | null
+      email: string
+      name?: string | null
+    }
+    original: {
+      gmailMessageId: string | null
+      gmailThreadId: string | null
+      subject: string | null
+      bodyHtml?: string | null
+      fromLabel?: string | null
+      sentAt?: string | null
+    }
+  } | null>(null)
   // 수신자 이메일 클릭 시 ContactDetailSheet 인라인 오픈 — 캠페인 페이지를 떠나지 않고
   // 사용 직책/그룹사/메모 등을 즉시 수정할 수 있게 한다.
   const [openContactId, setOpenContactId] = useState<string | null>(null)
@@ -938,6 +964,65 @@ export default function CampaignDetailPage() {
                                   <X className="w-3.5 h-3.5" />
                                 </button>
                               )}
+                              {/* 발송된 수신자 — 팔로업/회신/전달 액션 메뉴 */}
+                              {r.status === 'sent' && (() => {
+                                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                                const rExt = r as any as {
+                                  gmail_thread_id?: string | null
+                                  gmail_message_id?: string | null
+                                  replied?: boolean
+                                  contact_id?: string | null
+                                }
+                                const openMode = (mode: ThreadMode) => {
+                                  setThreadCompose({
+                                    mode,
+                                    recipient: {
+                                      contactId: rExt.contact_id ?? null,
+                                      recipientId: r.id,
+                                      campaignId: id!,
+                                      email: r.email,
+                                      name: r.name,
+                                    },
+                                    original: {
+                                      gmailMessageId: rExt.gmail_message_id ?? null,
+                                      gmailThreadId: rExt.gmail_thread_id ?? null,
+                                      subject: campaign?.subject ?? null,
+                                      bodyHtml: campaign?.body_html ?? null,
+                                      fromLabel: `${profile?.default_sender_name ?? profile?.display_name ?? ''} <${profile?.email ?? ''}>`,
+                                      sentAt: r.sent_at,
+                                    },
+                                  })
+                                }
+                                return (
+                                  <DropdownMenu>
+                                    <DropdownMenuTrigger asChild>
+                                      <button
+                                        type="button"
+                                        className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded hover:bg-accent"
+                                        title="이 수신자에게 액션"
+                                      >
+                                        <MoreHorizontal className="w-3.5 h-3.5" />
+                                      </button>
+                                    </DropdownMenuTrigger>
+                                    <DropdownMenuContent align="end">
+                                      <DropdownMenuItem onClick={() => openMode('followup')}>
+                                        <Reply className="w-3.5 h-3.5 mr-2" />
+                                        팔로업 (같은 thread)
+                                      </DropdownMenuItem>
+                                      {rExt.replied && (
+                                        <DropdownMenuItem onClick={() => openMode('reply')}>
+                                          <ReplyAll className="w-3.5 h-3.5 mr-2" />
+                                          답장에 회신
+                                        </DropdownMenuItem>
+                                      )}
+                                      <DropdownMenuItem onClick={() => openMode('forward')}>
+                                        <Forward className="w-3.5 h-3.5 mr-2" />
+                                        다른 사람에게 전달
+                                      </DropdownMenuItem>
+                                    </DropdownMenuContent>
+                                  </DropdownMenu>
+                                )
+                              })()}
                             </td>
                           )}
                         </tr>
@@ -1080,6 +1165,17 @@ export default function CampaignDetailPage() {
         }}
         contact={editContact}
       />
+      {threadCompose && (
+        <ThreadComposeDialog
+          open={!!threadCompose}
+          onOpenChange={(v) => {
+            if (!v) setThreadCompose(null)
+          }}
+          mode={threadCompose.mode}
+          original={threadCompose.original}
+          recipient={threadCompose.recipient}
+        />
+      )}
     </div>
   )
 }
