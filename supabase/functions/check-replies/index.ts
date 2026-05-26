@@ -471,6 +471,7 @@ Deno.serve(async (req) => {
         .from('thread_messages')
         .select('id, org_id, user_id, gmail_thread_id, gmail_message_id, rfc_message_id, in_reply_to_message_id, campaign_id, sent_at, bounced')
         .eq('status', 'sent')
+        .eq('bounced', false) // bounce 된 tm 은 다시 폴링 안 함 — Gmail quota 절감
         .not('gmail_thread_id', 'is', null)
         .or(`last_reply_check_at.is.null,last_reply_check_at.lt.${pass3CooldownIso}`)
         .order('last_reply_check_at', { ascending: true, nullsFirst: true })
@@ -573,28 +574,57 @@ Deno.serve(async (req) => {
 
             // bounce 분기 — 정상 회신이 아닌 bounce 메시지 → thread_messages.bounced=true 마킹
             if (nr.isBounce) {
-              // bounce 의 target tm — chronological fallback 만 (In-Reply-To 거의 없음)
-              const sortedBySentAt = [...group].sort((a, b) => {
-                const ta = a.sent_at ? Date.parse(a.sent_at) : 0
-                const tb = b.sent_at ? Date.parse(b.sent_at) : 0
-                return tb - ta
-              })
-              const bounceTm =
-                sortedBySentAt.find((g) => {
-                  const sentMs = g.sent_at
-                    ? Date.parse(g.sent_at)
-                    : Number.MAX_SAFE_INTEGER
-                  return sentMs <= nr.receivedAtMs
-                }) ?? sortedBySentAt[sortedBySentAt.length - 1]
+              // bounce target tm 결정 (정상 reply 와 동일 우선순위):
+              //   1) In-Reply-To / References 가 group 의 rfc_message_id 와 매칭
+              //      (RFC 3464 / Google SMTP 의 bounce 는 거의 항상 In-Reply-To 채워 보냄)
+              //   2) References 가 in_reply_to_message_id 와 매칭 (보조)
+              //   3) chronological fallback — receivedAt 직전 sent_at 의 tm
+              let bounceTm: Tm3Row | null = null
+              const bounceCandidates = [nr.inReplyTo, ...nr.references].filter(
+                (v): v is string => !!v,
+              )
+              for (const ref of bounceCandidates) {
+                const matched = group.find((g) => g.rfc_message_id === ref)
+                if (matched) {
+                  bounceTm = matched
+                  break
+                }
+              }
+              if (!bounceTm) {
+                for (const ref of bounceCandidates) {
+                  const matched = group.find((g) => g.in_reply_to_message_id === ref)
+                  if (matched) {
+                    bounceTm = matched
+                    break
+                  }
+                }
+              }
+              if (!bounceTm) {
+                const sortedBySentAt = [...group].sort((a, b) => {
+                  const ta = a.sent_at ? Date.parse(a.sent_at) : 0
+                  const tb = b.sent_at ? Date.parse(b.sent_at) : 0
+                  return tb - ta
+                })
+                bounceTm =
+                  sortedBySentAt.find((g) => {
+                    const sentMs = g.sent_at
+                      ? Date.parse(g.sent_at)
+                      : Number.MAX_SAFE_INTEGER
+                    return sentMs <= nr.receivedAtMs
+                  }) ?? sortedBySentAt[sortedBySentAt.length - 1]
+              }
               if (!bounceTm || bounceTm.bounced) continue
-              // bounce 사유 추출
-              let bounceReason = `Bounced from ${nr.fromRaw}`
+              // bounce 사유 추출 — raw From 헤더 대신 친화 fallback
+              const fromParsedForBounce = parseFromAddress(nr.fromRaw)
+              const fromLabel =
+                fromParsedForBounce.email ?? fromParsedForBounce.name ?? '메일 시스템'
+              let bounceReason = `수신 거부 (${fromLabel})`
               try {
                 const body = await fetchReplyBody(auth.token, nr.messageId)
                 const firstLine = extractBounceReason(body)
                 if (firstLine) bounceReason = firstLine
               } catch {
-                // body fetch 실패해도 from 정보만으로 기록
+                // body fetch 실패해도 friendly fallback 으로 기록
               }
               const { error: bErr } = await supabase
                 .schema('mailcaster')
