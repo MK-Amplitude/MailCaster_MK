@@ -223,19 +223,22 @@ export function ThreadMessagesSection({ campaignId }: Props) {
         onReplyClick={handleReplyToReceived}
       />
 
-      {/* 받은 회신에 다시 회신할 때 — 같은 thread 안에서 reply 모드 */}
+      {/* 받은 회신에 다시 회신할 때 — 같은 thread 안에서 reply 모드.
+          key 로 reply.id 를 지정 — 다른 회신에 다시 "회신하기" 클릭 시 ThreadComposeDialog 의
+          useEffect deps 에 reply.id 가 없어도 React 가 강제 remount → 새 본문/인용으로 reset. */}
       {replyCompose && (
         <ThreadComposeDialog
+          key={replyCompose.reply.id}
           open={!!replyCompose}
           onOpenChange={(o) => !o && setReplyCompose(null)}
           mode="reply"
           original={{
             // 같은 thread 유지 — 회신은 부모 thread_message 의 thread 안에 계속 쌓임
             gmailThreadId: replyCompose.parentMessage.gmail_thread_id,
-            // In-Reply-To 헤더 — 받은 회신 메시지의 RFC Message-ID 직접 사용 (있으면)
-            // gmail_message_id 는 Gmail 내부 id 라 RFC header 와 다름 → ThreadComposeDialog 가
-            // fetchMessageRfcId 로 변환하지만, rfc_message_id 가 이미 있으면 그게 더 정확.
+            // In-Reply-To 헤더 — 받은 회신 메시지의 RFC Message-ID 직접 사용 (있으면 fetch 스킵).
+            // record_thread_reply RPC 가 rfc_message_id 를 채워두므로 대부분 비어있지 않음.
             gmailMessageId: replyCompose.reply.gmail_message_id,
+            rfcMessageId: replyCompose.reply.rfc_message_id,
             subject: replyCompose.reply.subject ?? replyCompose.parentMessage.subject,
             // 인용 본문 — body_text 를 HTML 로 감싸서 처리 (개행 보존)
             bodyHtml: replyCompose.reply.body_text

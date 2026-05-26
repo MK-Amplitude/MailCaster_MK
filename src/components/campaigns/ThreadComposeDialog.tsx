@@ -49,6 +49,11 @@ import { matchesSearch } from '@/lib/search'
 interface OriginalMessage {
   /** Gmail 내부 message id (recipients.gmail_message_id 또는 답장 메시지 id). */
   gmailMessageId: string | null
+  /**
+   * 원본 메시지의 RFC 2822 Message-ID. 있으면 fetchMessageRfcId 호출 스킵 (Gmail API quota 절감).
+   * thread_message_replies.rfc_message_id 가 이미 저장돼 있으면 그대로 전달.
+   */
+  rfcMessageId?: string | null
   /** Gmail thread id — followup/reply 는 이 thread 에 끼움. */
   gmailThreadId: string | null
   subject: string | null
@@ -152,23 +157,32 @@ export function ThreadComposeDialog({
   }, [allContacts, toSearch])
 
   const handleSend = async () => {
-    await send.mutateAsync({
-      mode,
-      toEmail,
-      toName,
-      subject,
-      html: body,
-      // followup / reply: 같은 thread 안에 들어가야 함. forward: 새 thread.
-      threadId: mode === 'forward' ? null : original.gmailThreadId,
-      // followup 도 In-Reply-To 헤더 넣어 Gmail 이 "답장 chain" 으로 인식하게 함.
-      // (Gmail 은 threadId 만으로도 묶지만, 표준 헤더를 같이 보내는 게 모든 클라이언트 호환)
-      inReplyToGmailMessageId:
-        mode === 'forward' ? null : original.gmailMessageId,
-      campaignId: recipient.campaignId,
-      recipientId: recipient.recipientId,
-      contactId: recipient.contactId,
-    })
-    onOpenChange(false)
+    // try/finally — Gmail 발송 후 DB 단계에서 throw 가 나도 다이얼로그는 반드시 닫음.
+    // 그렇지 않으면 사용자가 같은 본문을 다시 클릭해 중복 발송 위험 (8차 감사 C1).
+    // 에러 토스트는 useSendThreadMessage 의 onError 가 처리.
+    try {
+      await send.mutateAsync({
+        mode,
+        toEmail,
+        toName,
+        subject,
+        html: body,
+        // followup / reply: 같은 thread 안에 들어가야 함. forward: 새 thread.
+        threadId: mode === 'forward' ? null : original.gmailThreadId,
+        // followup 도 In-Reply-To 헤더 넣어 Gmail 이 "답장 chain" 으로 인식하게 함.
+        // (Gmail 은 threadId 만으로도 묶지만, 표준 헤더를 같이 보내는 게 모든 클라이언트 호환)
+        inReplyToGmailMessageId:
+          mode === 'forward' ? null : original.gmailMessageId,
+        // 이미 알고 있는 RFC Message-ID (thread_message_replies.rfc_message_id 등) — fetch 스킵용
+        inReplyToRfcMessageId:
+          mode === 'forward' ? null : original.rfcMessageId ?? null,
+        campaignId: recipient.campaignId,
+        recipientId: recipient.recipientId,
+        contactId: recipient.contactId,
+      })
+    } finally {
+      onOpenChange(false)
+    }
   }
 
   const modeMeta = getModeMeta(mode)
