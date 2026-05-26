@@ -102,14 +102,12 @@ export function ThreadComposeDialog({
     return `${subjectPrefix}${base}`
   })()
 
-  // 본문 초기값 — 사용자 영역 (빈 div) + 시그니처 + 인용 (reply/forward).
+  // 본문 초기값 — 사용자 영역 (빈 div) + 시그니처 + 원본 인용 블록.
+  // followup 도 인용 포함: 발송자가 "내가 뭐 보냈더라" 를 보면서 쓸 수 있어야 하고,
+  // Gmail 답장 UX 와도 일관 (Gmail 은 같은 thread 안에서 인용을 자동 collapse).
+  // 사용자가 원하면 편집기에서 인용 블록을 지우고 보낼 수 있음.
   const initialBody = (() => {
     const sigPart = defaultSig?.html ? `<br/><br/>${defaultSig.html}` : ''
-    if (mode === 'followup') {
-      // followup 은 새 메시지처럼 작성. 인용 X (이미 thread 안이라 Gmail 이 자동 묶음)
-      return `<p></p>${sigPart}`
-    }
-    // reply / forward — 원본 인용 블록 추가
     const quote = original.bodyHtml ? buildQuoteBlock(original) : ''
     return `<p></p>${sigPart}${quote}`
   })()
