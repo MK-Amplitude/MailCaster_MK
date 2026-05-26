@@ -81,6 +81,32 @@ export function useSendThreadMessage() {
       const { html: bodyWithCids, images: inlineImages } =
         await extractAndInlineImages(input.html)
 
+      // 3.5) contact_id 재매핑 — to_email 이 기존 contact 가 아닐 수도 있음 (비서/대리응답자가 회신).
+      //      input.contactId 는 parent thread_message 의 것이 그대로 넘어왔으므로, to_email 과
+      //      일치하는 contact 가 있으면 그쪽으로 교체. 없으면 NULL (잘못된 contact 가리키는 것보다 깨끗).
+      const toEmailNorm = input.toEmail.trim().toLowerCase()
+      let resolvedContactId: string | null = input.contactId ?? null
+      if (resolvedContactId) {
+        // parent 의 contact 의 email 이 to_email 과 다르면 재 lookup
+        const { data: parentContact } = await supabase
+          .from('contacts')
+          .select('email')
+          .eq('id', resolvedContactId)
+          .maybeSingle()
+        if (!parentContact || (parentContact.email ?? '').toLowerCase() !== toEmailNorm) {
+          resolvedContactId = null
+        }
+      }
+      if (!resolvedContactId) {
+        // org 내 contact 중 to_email 매칭. RLS 가 org 필터링.
+        const { data: foundContact } = await supabase
+          .from('contacts')
+          .select('id')
+          .eq('email', toEmailNorm)
+          .maybeSingle()
+        if (foundContact?.id) resolvedContactId = foundContact.id as string
+      }
+
       // 4) thread_messages pending 행 insert
       const { data: tmRow, error: tmErr } = await supabase
         .from('thread_messages')
@@ -89,7 +115,7 @@ export function useSendThreadMessage() {
           user_id: user.id,
           campaign_id: input.campaignId ?? null,
           recipient_id: input.recipientId ?? null,
-          contact_id: input.contactId ?? null,
+          contact_id: resolvedContactId,
           mode: input.mode,
           to_email: input.toEmail.trim(),
           to_name: input.toName ?? null,
