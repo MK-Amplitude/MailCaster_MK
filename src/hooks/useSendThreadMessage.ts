@@ -1,12 +1,13 @@
 // 캠페인 발송 후의 1:1 후속 메일 (팔로업/회신/전달) 발송 hook.
 //
-// 흐름:
-//   1) profile 의 google_refresh_token 으로 access_token 획득
-//   2) (있으면) 원본 메시지의 RFC Message-ID 조회
-//   3) thread_messages 에 pending 행 insert
-//   4) Gmail API 로 발송 (threadId + In-Reply-To 헤더)
-//   5) 성공 시 thread_messages row 업데이트 (sent + gmail_message_id)
-//   6) 실패 시 status='failed' + error_message
+// 핵심 흐름:
+//   1) 토큰 + RFC Message-ID 준비 (input.rfcMessageId 있으면 fetch 스킵)
+//   2) 본문에 inline 이미지 처리 + contact_id 재매핑 (to_email 기준)
+//   3) thread_messages pending row insert → tmId 확보
+//   4) 트래킹 픽셀 주입 → sendGmail
+//   5) gmail_message_id 먼저 별도 UPDATE (retry) → status='sent' + rfc_message_id UPDATE
+//   6) 실패 시 catch — Gmail 발송은 성공 (result≠null) 이면 pending 유지 + 마커 임베드,
+//      Gmail 자체 실패 (result=null) 면 status='failed' 마킹. reconcile cron 이 자동 정정.
 
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
@@ -16,6 +17,14 @@ import { getFreshGoogleToken } from '@/lib/googleToken'
 import { extractAndInlineImages } from '@/lib/inlineImages'
 import { buildThreadTrackingPixel, injectTrackingPixel } from './useSendCampaign'
 import { toast } from 'sonner'
+
+// 발송 결과 기록 UPDATE 의 재시도 설정.
+// 일시적 RLS/네트워크 실패 대응. retry 모두 실패하면 reconcile cron (migration 052/054) 이
+// error_message 의 [gmail_msg_id=...] 마커를 추출해 복구하므로 false-failed 박제 없음.
+const UPDATE_MAX_ATTEMPTS = 3
+const UPDATE_BACKOFF_BASE_MS = 500
+// migration 052 의 INTERVAL '10 minutes' + migration 055 의 cron */10 = 최대 20분 안내.
+const STALE_RECONCILE_NOTICE = '최대 20분 안에 자동 정정됩니다.'
 
 export type ThreadMode = 'followup' | 'reply' | 'forward'
 
@@ -183,13 +192,16 @@ export function useSendThreadMessage() {
         })
 
         // 발송 성공 — 즉시 gmail_message_id / gmail_thread_id 부터 먼저 UPDATE.
-        // 이게 성공해야 reconcile cron 의 branch 1 (gmail_message_id 있는 pending → sent) 이 동작.
-        // 일시적 네트워크 오류 대응을 위해 retry (3회, exponential backoff).
+        // 성공 시 reconcile cron 의 branch 1 (gmail_message_id 있는 pending → sent) 이 정상 동작.
+        // retry 모두 실패하면 throw 메시지에 [gmail_msg_id=XXX] 마커 임베드 → migration 054 의
+        // marker recovery branch 가 추출해서 gmail_message_id 복구 + sent 정정 (false-failed 회피).
         let firstUpdateOk = false
         let firstUpdateErr: string | null = null
-        for (let attempt = 0; attempt < 3; attempt++) {
+        for (let attempt = 0; attempt < UPDATE_MAX_ATTEMPTS; attempt++) {
           if (attempt > 0) {
-            await new Promise((resolve) => setTimeout(resolve, 500 * Math.pow(2, attempt - 1)))
+            await new Promise((resolve) =>
+              setTimeout(resolve, UPDATE_BACKOFF_BASE_MS * Math.pow(2, attempt - 1)),
+            )
           }
           const r = await supabase
             .from('thread_messages')
@@ -205,13 +217,9 @@ export function useSendThreadMessage() {
           firstUpdateErr = r.error.message
         }
         if (!firstUpdateOk) {
-          // 3회 재시도 모두 실패. Gmail 발송은 성공이라 status='failed' 마킹은 회피해야 함
-          // (재발송 시 중복). reconcile cron 이 복구할 수 있도록 error_message 에 gmail message id
-          // 를 마커 형식으로 임베드 → migration 054 의 새 branch 가 추출해서 gmail_message_id
-          // 복구 + status='sent' 정정.
           throw new Error(
             `Gmail 발송은 완료됐으나 시스템 기록 실패 (${firstUpdateErr ?? 'unknown'}).` +
-              ` 최대 20분 안에 자동 정정됩니다.` +
+              ` ${STALE_RECONCILE_NOTICE}` +
               ` [gmail_msg_id=${result.id}]`,
           )
         }
@@ -248,9 +256,11 @@ export function useSendThreadMessage() {
         const tryUpdate = async (
           payload: { status?: 'failed'; error_message: string },
         ): Promise<boolean> => {
-          for (let attempt = 0; attempt < 3; attempt++) {
+          for (let attempt = 0; attempt < UPDATE_MAX_ATTEMPTS; attempt++) {
             if (attempt > 0) {
-              await new Promise((r) => setTimeout(r, 500 * Math.pow(2, attempt - 1)))
+              await new Promise((r) =>
+                setTimeout(r, UPDATE_BACKOFF_BASE_MS * Math.pow(2, attempt - 1)),
+              )
             }
             const r = await supabase
               .from('thread_messages')
