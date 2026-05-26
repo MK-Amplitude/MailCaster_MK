@@ -1191,6 +1191,8 @@ export default function CampaignDetailPage() {
       />
       {threadCompose && (
         <ThreadComposeDialog
+          // key 로 recipient+mode 조합 → 다른 수신자/모드로 다시 열 때 강제 remount (8차 fix 일관성)
+          key={`${threadCompose.mode}-${threadCompose.recipient.recipientId ?? threadCompose.recipient.email}`}
           open={!!threadCompose}
           onOpenChange={(v) => {
             if (!v) setThreadCompose(null)
