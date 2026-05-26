@@ -17,8 +17,10 @@ import { Badge } from '@/components/ui/badge'
 import {
   useThreadMessagesByCampaign,
   type ThreadMessageRow,
+  type ThreadMessageReply,
 } from '@/hooks/useThreadMessages'
 import { ThreadMessageDetailDialog } from './ThreadMessageDetailDialog'
+import { ThreadComposeDialog } from './ThreadComposeDialog'
 import { format } from 'date-fns'
 import { ko } from 'date-fns/locale'
 import {
@@ -30,6 +32,7 @@ import {
   CheckCircle2,
   XCircle,
   Clock,
+  MessageCircle,
 } from 'lucide-react'
 
 interface Props {
@@ -51,6 +54,17 @@ const STATUS_META = {
 export function ThreadMessagesSection({ campaignId }: Props) {
   const { data: messages = [], isLoading } = useThreadMessagesByCampaign(campaignId)
   const [selected, setSelected] = useState<ThreadMessageRow | null>(null)
+  // 받은 회신에 "회신하기" 클릭 시 → ThreadComposeDialog 를 reply 모드로 열기 위한 상태
+  const [replyCompose, setReplyCompose] = useState<{
+    parentMessage: ThreadMessageRow
+    reply: ThreadMessageReply
+  } | null>(null)
+
+  const handleReplyToReceived = (reply: ThreadMessageReply) => {
+    if (!selected) return
+    setReplyCompose({ parentMessage: selected, reply })
+    setSelected(null) // 상세 모달 닫고 작성 다이얼로그로 전환
+  }
 
   if (isLoading) return null
   if (messages.length === 0) return null
@@ -59,6 +73,7 @@ export function ThreadMessagesSection({ campaignId }: Props) {
   const totalCount = messages.length
   const openedCount = messages.filter((m) => m.opened).length
   const sentCount = messages.filter((m) => m.status === 'sent').length
+  const repliedCount = messages.filter((m) => m.replied).length
 
   return (
     <>
@@ -71,7 +86,7 @@ export function ThreadMessagesSection({ campaignId }: Props) {
               {totalCount}건
             </Badge>
             <span className="text-xs text-muted-foreground font-normal ml-2">
-              성공 {sentCount} · 오픈 {openedCount}
+              성공 {sentCount} · 오픈 {openedCount} · 회신 {repliedCount}
             </span>
           </CardTitle>
         </CardHeader>
@@ -86,6 +101,7 @@ export function ThreadMessagesSection({ campaignId }: Props) {
                   <th className="text-left px-4 py-2 font-medium w-32">발송 시각</th>
                   <th className="text-left px-4 py-2 font-medium w-24">상태</th>
                   <th className="text-left px-4 py-2 font-medium w-28">수신확인</th>
+                  <th className="text-left px-4 py-2 font-medium w-24">회신</th>
                 </tr>
               </thead>
               <tbody>
@@ -149,6 +165,16 @@ export function ThreadMessagesSection({ campaignId }: Props) {
                           </span>
                         )}
                       </td>
+                      <td className="px-4 py-2">
+                        {m.replied ? (
+                          <span className="inline-flex items-center gap-1 text-cyan-600 dark:text-cyan-400">
+                            <MessageCircle className="w-3.5 h-3.5" />
+                            <span className="text-xs font-medium">{m.reply_count}건</span>
+                          </span>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">-</span>
+                        )}
+                      </td>
                     </tr>
                   )
                 })}
@@ -162,7 +188,56 @@ export function ThreadMessagesSection({ campaignId }: Props) {
         open={!!selected}
         onOpenChange={(o) => !o && setSelected(null)}
         message={selected}
+        onReplyClick={handleReplyToReceived}
       />
+
+      {/* 받은 회신에 다시 회신할 때 — 같은 thread 안에서 reply 모드 */}
+      {replyCompose && (
+        <ThreadComposeDialog
+          open={!!replyCompose}
+          onOpenChange={(o) => !o && setReplyCompose(null)}
+          mode="reply"
+          original={{
+            // 같은 thread 유지 — 회신은 부모 thread_message 의 thread 안에 계속 쌓임
+            gmailThreadId: replyCompose.parentMessage.gmail_thread_id,
+            // In-Reply-To 헤더 — 받은 회신 메시지의 RFC Message-ID 직접 사용 (있으면)
+            // gmail_message_id 는 Gmail 내부 id 라 RFC header 와 다름 → ThreadComposeDialog 가
+            // fetchMessageRfcId 로 변환하지만, rfc_message_id 가 이미 있으면 그게 더 정확.
+            gmailMessageId: replyCompose.reply.gmail_message_id,
+            subject: replyCompose.reply.subject ?? replyCompose.parentMessage.subject,
+            // 인용 본문 — body_text 를 HTML 로 감싸서 처리 (개행 보존)
+            bodyHtml: replyCompose.reply.body_text
+              ? `<pre style="white-space: pre-wrap; font-family: inherit;">${escapeHtml(replyCompose.reply.body_text)}</pre>`
+              : null,
+            fromLabel: formatFromLabel(replyCompose.reply),
+            sentAt: replyCompose.reply.received_at,
+          }}
+          recipient={{
+            // 회신을 보낸 사람에게 회신하는 거니, From → To
+            email: replyCompose.reply.from_email ?? '',
+            name: replyCompose.reply.from_name,
+            contactId: replyCompose.parentMessage.contact_id,
+            recipientId: replyCompose.parentMessage.recipient_id,
+            campaignId: replyCompose.parentMessage.campaign_id,
+          }}
+        />
+      )}
     </>
   )
+}
+
+// "이름 <email>" 형식. 둘 다 없으면 "발신자"
+function formatFromLabel(reply: ThreadMessageReply): string {
+  if (reply.from_name && reply.from_email) return `${reply.from_name} <${reply.from_email}>`
+  if (reply.from_email) return reply.from_email
+  return reply.from_name ?? '발신자'
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
 }

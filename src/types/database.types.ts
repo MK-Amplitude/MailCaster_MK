@@ -756,6 +756,11 @@ export interface Database {
           first_opened_at: string | null
           last_opened_at: string | null
           open_count: number
+          // 047 — 회신 추적
+          replied: boolean
+          replied_at: string | null
+          last_reply_check_at: string | null
+          reply_count: number
         }
         Insert: {
           id?: string
@@ -782,6 +787,10 @@ export interface Database {
           first_opened_at?: string | null
           last_opened_at?: string | null
           open_count?: number
+          replied?: boolean
+          replied_at?: string | null
+          last_reply_check_at?: string | null
+          reply_count?: number
         }
         Update: {
           gmail_thread_id?: string | null
@@ -793,6 +802,48 @@ export interface Database {
           first_opened_at?: string | null
           last_opened_at?: string | null
           open_count?: number
+          replied?: boolean
+          replied_at?: string | null
+          last_reply_check_at?: string | null
+          reply_count?: number
+        }
+        Relationships: []
+      }
+      // 047 — thread_messages 에 받은 회신 본문/메타
+      thread_message_replies: {
+        Row: {
+          id: string
+          thread_message_id: string
+          org_id: string
+          gmail_message_id: string
+          gmail_thread_id: string | null
+          rfc_message_id: string | null
+          from_email: string | null
+          from_name: string | null
+          subject: string | null
+          snippet: string | null
+          body_text: string | null
+          received_at: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          thread_message_id: string
+          org_id: string
+          gmail_message_id: string
+          gmail_thread_id?: string | null
+          rfc_message_id?: string | null
+          from_email?: string | null
+          from_name?: string | null
+          subject?: string | null
+          snippet?: string | null
+          body_text?: string | null
+          received_at?: string
+          created_at?: string
+        }
+        Update: {
+          subject?: string | null
+          body_text?: string | null
         }
         Relationships: []
       }
