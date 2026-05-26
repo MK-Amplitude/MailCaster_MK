@@ -20,37 +20,16 @@ import {
   type ThreadMessageReply,
 } from '@/hooks/useThreadMessages'
 import { ThreadMessageDetailDialog } from './ThreadMessageDetailDialog'
+import { escapeHtml } from '@/lib/utils'
 import { ThreadComposeDialog } from './ThreadComposeDialog'
 import { format } from 'date-fns'
 import { ko } from 'date-fns/locale'
-import {
-  Reply,
-  ReplyAll,
-  Forward,
-  Eye,
-  EyeOff,
-  CheckCircle2,
-  XCircle,
-  Clock,
-  MessageCircle,
-  AlertTriangle,
-} from 'lucide-react'
+import { Reply, Eye, EyeOff, MessageCircle, AlertTriangle } from 'lucide-react'
+import { THREAD_MODE_META, THREAD_STATUS_META } from './threadMessageMeta'
 
 interface Props {
   campaignId: string
 }
-
-const MODE_META = {
-  followup: { label: '팔로업', Icon: Reply, badgeClass: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' },
-  reply: { label: '회신', Icon: ReplyAll, badgeClass: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300' },
-  forward: { label: '전달', Icon: Forward, badgeClass: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300' },
-} as const
-
-const STATUS_META = {
-  pending: { Icon: Clock, color: 'text-amber-600 dark:text-amber-400', label: '발송 중' },
-  sent: { Icon: CheckCircle2, color: 'text-green-600 dark:text-green-400', label: '성공' },
-  failed: { Icon: XCircle, color: 'text-red-600 dark:text-red-400', label: '실패' },
-} as const
 
 export function ThreadMessagesSection({ campaignId }: Props) {
   const { data: messages = [], isLoading } = useThreadMessagesByCampaign(campaignId)
@@ -111,8 +90,8 @@ export function ThreadMessagesSection({ campaignId }: Props) {
               </thead>
               <tbody>
                 {messages.map((m) => {
-                  const modeMeta = MODE_META[m.mode]
-                  const statusMeta = STATUS_META[m.status]
+                  const modeMeta = THREAD_MODE_META[m.mode]
+                  const statusMeta = THREAD_STATUS_META[m.status]
                   const ModeIcon = modeMeta.Icon
                   const StatusIcon = statusMeta.Icon
                   return (
@@ -164,7 +143,7 @@ export function ThreadMessagesSection({ campaignId }: Props) {
                           ) : (
                             <>
                               <StatusIcon className="w-3.5 h-3.5" />
-                              {statusMeta.label}
+                              {statusMeta.shortLabel}
                             </>
                           )}
                         </span>
@@ -268,11 +247,3 @@ function formatFromLabel(reply: ThreadMessageReply): string {
   return reply.from_name ?? '발신자'
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-}

@@ -3,6 +3,7 @@ import { supabase } from '@/lib/supabase'
 import { useAuth } from './useAuth'
 import { sendGmail, encodeAttachmentsForReuse, type MailAttachment } from '@/lib/gmail'
 import { extractAndInlineImages } from '@/lib/inlineImages'
+import { escapeHtml } from '@/lib/utils'
 import { getFreshGoogleToken, forceRefreshGoogleToken } from '@/lib/googleToken'
 import { downloadFile, getFileMeta, shareAsPublicLink } from '@/lib/drive'
 import { extractVariables, renderTemplate } from '@/lib/mailMerge'
@@ -173,15 +174,6 @@ function buildLinkSection(items: Array<{ filename: string; link: string; size: n
   <p style="margin:0 0 8px 0;"><strong>📎 첨부 파일</strong> <span style="color:#6b7280;font-size:12px;">(Gmail 25MB 초과로 Google Drive 링크로 전달됩니다)</span></p>
   <ul style="padding-left:20px;margin:0;">${listItems}</ul>
 </div>`.trim()
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
 }
 
 // ------------------------------------------------------------

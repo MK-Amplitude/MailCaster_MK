@@ -19,19 +19,8 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { format } from 'date-fns'
 import { ko } from 'date-fns/locale'
-import {
-  Reply,
-  ReplyAll,
-  Forward,
-  Eye,
-  EyeOff,
-  CheckCircle2,
-  XCircle,
-  Clock,
-  MessageCircle,
-  Mail,
-  AlertTriangle,
-} from 'lucide-react'
+import { Eye, EyeOff, MessageCircle, Mail, AlertTriangle } from 'lucide-react'
+import { THREAD_MODE_META, THREAD_STATUS_META } from './threadMessageMeta'
 import type { ThreadMessageRow, ThreadMessageReply } from '@/hooks/useThreadMessages'
 import { useThreadMessageReplies } from '@/hooks/useThreadMessages'
 
@@ -41,24 +30,6 @@ interface Props {
   message: ThreadMessageRow | null
   /** 회신 클릭 → ThreadComposeDialog 를 reply 모드로 열기 */
   onReplyClick?: (reply: ThreadMessageReply) => void
-}
-
-const MODE_META: Record<
-  ThreadMessageRow['mode'],
-  { label: string; Icon: typeof Reply; color: string }
-> = {
-  followup: { label: '팔로업', Icon: Reply, color: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' },
-  reply: { label: '회신', Icon: ReplyAll, color: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300' },
-  forward: { label: '전달', Icon: Forward, color: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300' },
-}
-
-const STATUS_META: Record<
-  ThreadMessageRow['status'],
-  { label: string; Icon: typeof CheckCircle2; color: string }
-> = {
-  pending: { label: '발송 중', Icon: Clock, color: 'text-amber-600 dark:text-amber-400' },
-  sent: { label: '발송 성공', Icon: CheckCircle2, color: 'text-green-600 dark:text-green-400' },
-  failed: { label: '발송 실패', Icon: XCircle, color: 'text-red-600 dark:text-red-400' },
 }
 
 function formatTs(ts: string | null): string {
@@ -71,8 +42,8 @@ export function ThreadMessageDetailDialog({ open, onOpenChange, message, onReply
 
   if (!message) return null
 
-  const modeMeta = MODE_META[message.mode]
-  const statusMeta = STATUS_META[message.status]
+  const modeMeta = THREAD_MODE_META[message.mode]
+  const statusMeta = THREAD_STATUS_META[message.status]
   const ModeIcon = modeMeta.Icon
   const StatusIcon = statusMeta.Icon
 
@@ -82,7 +53,7 @@ export function ThreadMessageDetailDialog({ open, onOpenChange, message, onReply
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <span
-              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${modeMeta.color}`}
+              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${modeMeta.badgeClass}`}
             >
               <ModeIcon className="w-3 h-3" />
               {modeMeta.label}
@@ -128,7 +99,7 @@ export function ThreadMessageDetailDialog({ open, onOpenChange, message, onReply
             ) : (
               <>
                 <StatusIcon className="w-3.5 h-3.5" />
-                {statusMeta.label}
+                {statusMeta.longLabel}
               </>
             )}
             {message.error_message && (
