@@ -70,9 +70,9 @@ GRANT SELECT, INSERT ON mailcaster.thread_message_replies TO service_role;
 COMMENT ON TABLE mailcaster.thread_message_replies IS
   '팔로업/회신/전달 메일 (thread_messages) 에 대해 받은 회신의 본문/메타. cron 이 INSERT.';
 
--- 3) RPC — thread message 회신 기록 (race-safe)
--- ON CONFLICT DO NOTHING + RETURNING 으로 "이번 호출이 첫 신규 회신인가" 판정.
--- 첫 회신이면 thread_messages.replied=true 마킹 + reply_count 증가.
+-- 3) RPC — thread message 회신 기록 (race-safe).
+-- 본 정의는 049 에서 (org_id 검증 추가) 재정의됨 → 049 가 production 의 진본.
+-- 여기는 초기 placeholder. 두 정의가 모두 적용되도록 순서 보장 (045→047→049).
 CREATE OR REPLACE FUNCTION mailcaster.record_thread_reply(
   p_thread_message_id UUID,
   p_org_id            UUID,
@@ -86,41 +86,14 @@ CREATE OR REPLACE FUNCTION mailcaster.record_thread_reply(
   p_body_text         TEXT,
   p_received_at       TIMESTAMPTZ
 )
-RETURNS BOOLEAN  -- TRUE = 첫 회신 (replied 마킹 됨), FALSE = 중복/no-op
+RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = mailcaster, pg_catalog, public
 AS $$
-DECLARE
-  v_inserted_id UUID;
 BEGIN
-  INSERT INTO mailcaster.thread_message_replies (
-    thread_message_id, org_id,
-    gmail_message_id, gmail_thread_id, rfc_message_id,
-    from_email, from_name, subject, snippet, body_text,
-    received_at
-  ) VALUES (
-    p_thread_message_id, p_org_id,
-    p_gmail_message_id, p_gmail_thread_id, p_rfc_message_id,
-    p_from_email, p_from_name, p_subject, p_snippet, p_body_text,
-    COALESCE(p_received_at, NOW())
-  )
-  ON CONFLICT (thread_message_id, gmail_message_id) DO NOTHING
-  RETURNING id INTO v_inserted_id;
-
-  IF v_inserted_id IS NULL THEN
-    -- 이미 같은 회신이 기록돼 있음 — no-op
-    RETURN FALSE;
-  END IF;
-
-  -- 새 회신 — thread_messages 갱신 (replied 마킹은 1회만, count 는 항상 +1)
-  UPDATE mailcaster.thread_messages
-     SET replied      = TRUE,
-         replied_at   = COALESCE(replied_at, COALESCE(p_received_at, NOW())),
-         reply_count  = COALESCE(reply_count, 0) + 1
-   WHERE id = p_thread_message_id;
-
-  RETURN TRUE;
+  -- 본문은 049 에서 재정의 — 여기는 초기 stub (없으면 GRANT 가 실패하므로 시그니처 확보용).
+  RAISE EXCEPTION 'record_thread_reply: 049 의 정의가 적용되지 않음. 마이그레이션 순서 확인.';
 END;
 $$;
 

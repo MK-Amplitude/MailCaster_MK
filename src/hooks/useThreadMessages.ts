@@ -68,20 +68,3 @@ export function useThreadMessageReplies(threadMessageId: string | undefined) {
     enabled: !!threadMessageId,
   })
 }
-
-/** 특정 연락처에 보낸 thread_messages — 향후 ContactDetailSheet 에서 사용 */
-export function useThreadMessagesByContact(contactId: string | undefined) {
-  return useQuery({
-    queryKey: [...QK, 'contact', contactId],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from('thread_messages')
-        .select('*')
-        .eq('contact_id', contactId!)
-        .order('created_at', { ascending: false })
-      if (error) throw error
-      return (data ?? []) as ThreadMessageRow[]
-    },
-    enabled: !!contactId,
-  })
-}
