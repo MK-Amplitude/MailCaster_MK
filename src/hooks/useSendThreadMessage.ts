@@ -87,7 +87,7 @@ export function useSendThreadMessage() {
       const toEmailNorm = input.toEmail.trim().toLowerCase()
       let resolvedContactId: string | null = input.contactId ?? null
       if (resolvedContactId) {
-        // parent 의 contact 의 email 이 to_email 과 다르면 재 lookup
+        // parent contact 의 email 이 to_email 과 다르면 재 lookup (비서/대리응답 케이스)
         const { data: parentContact } = await supabase
           .from('contacts')
           .select('email')
@@ -99,12 +99,16 @@ export function useSendThreadMessage() {
       }
       if (!resolvedContactId) {
         // org 내 contact 중 to_email 매칭. RLS 가 org 필터링.
-        const { data: foundContact } = await supabase
+        // - ilike 로 대소문자 무관 매칭 (contacts.email 정규화가 일관 안 될 수 있음)
+        // - limit(1).maybeSingle() — 같은 이메일이 여러 contact 인 경우 throw 방지
+        const { data: foundContacts } = await supabase
           .from('contacts')
           .select('id')
-          .eq('email', toEmailNorm)
-          .maybeSingle()
-        if (foundContact?.id) resolvedContactId = foundContact.id as string
+          .ilike('email', toEmailNorm)
+          .limit(1)
+        if (foundContacts && foundContacts.length > 0) {
+          resolvedContactId = (foundContacts[0] as { id: string }).id
+        }
       }
 
       // 4) thread_messages pending 행 insert
@@ -150,6 +154,17 @@ export function useSendThreadMessage() {
           inReplyTo: inReplyTo ?? undefined,
           inlineImages: inlineImages.length > 0 ? inlineImages : undefined,
         })
+        // 우리가 보낸 메시지의 RFC Message-ID 를 조회 — A 가 답장 시 In-Reply-To 헤더에 들어오는 값.
+        // check-replies pass3 가 이 값을 보고 어느 thread_message 의 회신인지 정확히 매핑.
+        // fetch 실패해도 발송은 성공이므로 best-effort.
+        let ownRfcMessageId: string | null = null
+        try {
+          ownRfcMessageId = await fetchMessageRfcId(accessToken, result.id)
+        } catch (e) {
+          // 비치명적 — rfc_message_id 가 NULL 이어도 pass3 가 fallback 으로 매핑함
+          console.warn('[useSendThreadMessage] failed to fetch own RFC Message-ID:', e)
+        }
+
         // 성공 — 결과 기록
         await supabase
           .from('thread_messages')
@@ -158,6 +173,7 @@ export function useSendThreadMessage() {
             sent_at: new Date().toISOString(),
             gmail_message_id: result.id,
             gmail_thread_id: result.threadId, // 신규 thread 인 경우 Gmail 이 새로 발급한 id
+            rfc_message_id: ownRfcMessageId,
           })
           .eq('id', tmId)
         return { tmId, gmailMessageId: result.id, gmailThreadId: result.threadId }
