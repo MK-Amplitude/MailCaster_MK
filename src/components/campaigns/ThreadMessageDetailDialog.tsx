@@ -30,6 +30,7 @@ import {
   Clock,
   MessageCircle,
   Mail,
+  AlertTriangle,
 } from 'lucide-react'
 import type { ThreadMessageRow, ThreadMessageReply } from '@/hooks/useThreadMessages'
 import { useThreadMessageReplies } from '@/hooks/useThreadMessages'
@@ -118,15 +119,39 @@ export function ThreadMessageDetailDialog({ open, onOpenChange, message, onReply
           <div>{formatTs(message.sent_at)}</div>
 
           <div className="text-muted-foreground">상태</div>
-          <div className={`inline-flex items-center gap-1 ${statusMeta.color}`}>
-            <StatusIcon className="w-3.5 h-3.5" />
-            {statusMeta.label}
+          <div className={`inline-flex items-center gap-1 ${message.bounced ? 'text-orange-600 dark:text-orange-400' : statusMeta.color}`}>
+            {message.bounced ? (
+              <>
+                <AlertTriangle className="w-3.5 h-3.5" />
+                반송됨
+              </>
+            ) : (
+              <>
+                <StatusIcon className="w-3.5 h-3.5" />
+                {statusMeta.label}
+              </>
+            )}
             {message.error_message && (
               <span className="ml-2 text-xs text-red-500" title={message.error_message}>
                 ({message.error_message.slice(0, 60)}{message.error_message.length > 60 ? '…' : ''})
               </span>
             )}
           </div>
+
+          {message.bounced && message.bounce_reason && (
+            <>
+              <div className="text-muted-foreground">반송 사유</div>
+              <div className="text-sm text-orange-700 dark:text-orange-400">
+                {message.bounce_reason}
+              </div>
+              {message.bounced_at && (
+                <>
+                  <div className="text-muted-foreground">반송 시각</div>
+                  <div>{formatTs(message.bounced_at)}</div>
+                </>
+              )}
+            </>
+          )}
 
           {/* 오픈 추적 */}
           <div className="text-muted-foreground">수신확인</div>

@@ -763,6 +763,10 @@ export interface Database {
           reply_count: number
           // 050 — 우리가 보낸 메시지의 RFC Message-ID (회신 In-Reply-To 매칭용)
           rfc_message_id: string | null
+          // 051 — bounce 추적
+          bounced: boolean
+          bounced_at: string | null
+          bounce_reason: string | null
         }
         Insert: {
           id?: string
@@ -794,6 +798,9 @@ export interface Database {
           last_reply_check_at?: string | null
           reply_count?: number
           rfc_message_id?: string | null
+          bounced?: boolean
+          bounced_at?: string | null
+          bounce_reason?: string | null
         }
         Update: {
           gmail_thread_id?: string | null
@@ -810,6 +817,9 @@ export interface Database {
           last_reply_check_at?: string | null
           reply_count?: number
           rfc_message_id?: string | null
+          bounced?: boolean
+          bounced_at?: string | null
+          bounce_reason?: string | null
         }
         Relationships: []
       }
