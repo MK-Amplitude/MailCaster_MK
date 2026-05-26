@@ -205,11 +205,14 @@ export function useSendThreadMessage() {
           firstUpdateErr = r.error.message
         }
         if (!firstUpdateOk) {
-          // 3회 재시도 모두 실패 → reconcile cron 도 동작 불가 (gmail_message_id NULL 유지).
-          // Gmail 발송은 실제로 성공했으니 사용자에게 명시적으로 안내 — 중복 발송 방지.
+          // 3회 재시도 모두 실패. Gmail 발송은 성공이라 status='failed' 마킹은 회피해야 함
+          // (재발송 시 중복). reconcile cron 이 복구할 수 있도록 error_message 에 gmail message id
+          // 를 마커 형식으로 임베드 → migration 054 의 새 branch 가 추출해서 gmail_message_id
+          // 복구 + status='sent' 정정.
           throw new Error(
             `Gmail 발송은 완료됐으나 시스템 기록 실패 (${firstUpdateErr ?? 'unknown'}).` +
-              ` 중복 발송 방지를 위해 Gmail "보낸편지함"에서 확인 후 처리하세요.`,
+              ` 약 10분 후 자동 정정됩니다.` +
+              ` [gmail_msg_id=${result.id}]`,
           )
         }
 
