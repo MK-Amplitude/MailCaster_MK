@@ -211,7 +211,7 @@ export function useSendThreadMessage() {
           // 복구 + status='sent' 정정.
           throw new Error(
             `Gmail 발송은 완료됐으나 시스템 기록 실패 (${firstUpdateErr ?? 'unknown'}).` +
-              ` 약 10분 후 자동 정정됩니다.` +
+              ` 최대 20분 안에 자동 정정됩니다.` +
               ` [gmail_msg_id=${result.id}]`,
           )
         }
@@ -240,18 +240,32 @@ export function useSendThreadMessage() {
         // sendGmail 성공 여부로 분기:
         // - result !== null = Gmail 발송 성공, 이후 DB 단계에서 실패. pending 유지 → reconcile cron 이 정정.
         // - result === null = sendGmail 자체 실패. failed 마킹.
+        //
+        // catch 안의 UPDATE 들도 retry 적용 — firstUpdate 가 막 실패한 직후라 같은 원인
+        // (RLS / 인증 만료 / 네트워크) 으로 재실패할 가능성이 큼. 특히 result !== null 분기는
+        // error_message 에 [gmail_msg_id=XXX] 마커가 들어가야 reconcile cron 이 복구 가능 →
+        // 이 UPDATE 가 실패하면 마커가 휘발돼 false-failed 박제 (10차 감사 C1).
+        const tryUpdate = async (
+          payload: { status?: 'failed'; error_message: string },
+        ): Promise<boolean> => {
+          for (let attempt = 0; attempt < 3; attempt++) {
+            if (attempt > 0) {
+              await new Promise((r) => setTimeout(r, 500 * Math.pow(2, attempt - 1)))
+            }
+            const r = await supabase
+              .from('thread_messages')
+              .update(payload)
+              .eq('id', tmId)
+            if (!r.error) return true
+          }
+          return false
+        }
+
         if (result === null) {
-          await supabase
-            .from('thread_messages')
-            .update({ status: 'failed', error_message: msg })
-            .eq('id', tmId)
+          await tryUpdate({ status: 'failed', error_message: msg })
         } else {
-          // pending 유지 + error_message 만 기록 (사용자가 확인할 수 있도록).
-          // status 는 reconcile cron 이 sent 로 정정함.
-          await supabase
-            .from('thread_messages')
-            .update({ error_message: msg })
-            .eq('id', tmId)
+          // pending 유지 + error_message (마커 포함) 기록 → reconcile cron 이 마커 추출 후 정정.
+          await tryUpdate({ error_message: msg })
         }
         throw e
       }
