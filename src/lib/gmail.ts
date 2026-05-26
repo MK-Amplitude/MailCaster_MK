@@ -60,6 +60,14 @@ interface SendMailInput {
    * bulk 발송 모드에서는 수신자 전원을 여기 넣어 단일 요청으로 브로드캐스트한다.
    */
   bcc?: string[]
+  /**
+   * Gmail thread 안에 답장/팔로업으로 끼우기 — Gmail API 의 threadId 파라미터로 사용.
+   * 같이 inReplyTo 도 넘기면 표준 RFC 2822 In-Reply-To / References 헤더가 들어가
+   * 모든 메일 클라이언트에서 thread 안 메시지로 인식.
+   */
+  threadId?: string
+  /** 답장 대상 원본 메시지의 Message-ID (꺽쇠 포함/미포함 모두 허용). */
+  inReplyTo?: string
 }
 
 /**
@@ -271,7 +279,7 @@ function joinAddressList(list: string[] | undefined): string | undefined {
 }
 
 async function buildMime(input: Omit<SendMailInput, 'accessToken'>): Promise<string> {
-  const { from, to, toName, subject, html, replyTo, attachments, cc, bcc, inlineImages } = input
+  const { from, to, toName, subject, html, replyTo, attachments, cc, bcc, inlineImages, inReplyTo } = input
   // 모든 헤더 입력값은 CR/LF 인젝션 방지를 위해 선제 new sanitize.
   const cleanFrom = encodeAddressHeader(stripCRLF(from))
   const cleanTo = stripCRLF(to)
@@ -287,6 +295,13 @@ async function buildMime(input: Omit<SendMailInput, 'accessToken'>): Promise<str
   // (RFC 상 Bcc 는 수신자에게 노출되면 안 되지만, gmail.googleapis.com 은 내부적으로 제거)
   if (bccLine) baseHeaders.push(`Bcc: ${bccLine}`)
   if (cleanReplyTo) baseHeaders.push(`Reply-To: ${cleanReplyTo}`)
+  // 답장 / 팔로업 — In-Reply-To + References 헤더 표준. 모든 클라이언트가 thread
+  // 안 메시지로 인식. Message-ID 는 <id@host> 형식이어야 표준 — 없으면 자동으로 감싼다.
+  if (inReplyTo) {
+    const wrapped = inReplyTo.trim().startsWith('<') ? inReplyTo.trim() : `<${inReplyTo.trim()}>`
+    baseHeaders.push(`In-Reply-To: ${wrapped}`)
+    baseHeaders.push(`References: ${wrapped}`)
+  }
   baseHeaders.push(`Subject: ${encodeHeader(subject)}`, 'MIME-Version: 1.0')
 
   const hasInline = inlineImages && inlineImages.length > 0
@@ -412,7 +427,9 @@ export async function sendGmail(input: SendMailInput): Promise<GmailSendResult> 
         Authorization: `Bearer ${input.accessToken}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ raw }),
+      body: JSON.stringify(
+        input.threadId ? { raw, threadId: input.threadId } : { raw },
+      ),
       signal: controller.signal,
     })
   } catch (e) {
@@ -442,4 +459,78 @@ export async function sendGmail(input: SendMailInput): Promise<GmailSendResult> 
 
   const json = (await res.json()) as GmailSendResult
   return json
+}
+
+/**
+ * Gmail 메시지의 RFC 2822 Message-ID 헤더 값을 조회.
+ * In-Reply-To 헤더로 넘길 표준 식별자 — Gmail 내부 message id (`19abc...`) 와 다름.
+ * 조회 실패 시 null. 호출자는 그 경우 threadId 만으로 thread 안 메시지 처리.
+ */
+export async function fetchMessageRfcId(
+  accessToken: string,
+  gmailMessageId: string,
+): Promise<string | null> {
+  try {
+    const res = await fetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(
+        gmailMessageId,
+      )}?format=metadata&metadataHeaders=Message-ID`,
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    )
+    if (!res.ok) return null
+    const data = await res.json()
+    const headers = data.payload?.headers ?? []
+    const found = headers.find(
+      (h: { name: string }) => h.name.toLowerCase() === 'message-id',
+    )
+    return found?.value ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Gmail 메시지에서 답장 작성용 메타데이터 (subject / message-id / from / to / date) 조회.
+ * ThreadComposeDialog 가 reply/forward 시 원본을 인용하기 위해 사용.
+ */
+export interface ThreadOriginalMeta {
+  rfcMessageId: string | null
+  subject: string | null
+  from: string | null
+  to: string | null
+  date: string | null
+}
+
+export async function fetchOriginalMeta(
+  accessToken: string,
+  gmailMessageId: string,
+): Promise<ThreadOriginalMeta> {
+  try {
+    const res = await fetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(
+        gmailMessageId,
+      )}?format=metadata&metadataHeaders=Message-ID&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Date`,
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    )
+    if (!res.ok) {
+      return { rfcMessageId: null, subject: null, from: null, to: null, date: null }
+    }
+    const data = await res.json()
+    const headers = data.payload?.headers ?? []
+    const pick = (name: string): string | null => {
+      const h = headers.find(
+        (x: { name: string }) => x.name.toLowerCase() === name.toLowerCase(),
+      )
+      return h?.value ?? null
+    }
+    return {
+      rfcMessageId: pick('Message-ID'),
+      subject: pick('Subject'),
+      from: pick('From'),
+      to: pick('To'),
+      date: pick('Date'),
+    }
+  } catch {
+    return { rfcMessageId: null, subject: null, from: null, to: null, date: null }
+  }
 }
