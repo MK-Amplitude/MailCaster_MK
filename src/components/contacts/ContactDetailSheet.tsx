@@ -18,6 +18,7 @@ import { Pencil, UserX, UserCheck, Building2, Phone, Clock, FileText, Sparkles, 
 import { ContactTimeline } from '@/components/engagement/ContactTimeline'
 import { ContactMailHistory } from '@/components/contacts/ContactMailHistory'
 import { useComposeLauncher } from '@/components/campaigns/ComposeLauncher'
+import { findSimilarGroups } from '@/lib/companyGroupSimilarity'
 import {
   CUSTOMER_TYPE_OPTIONS,
   type ContactWithGroups,
@@ -483,6 +484,7 @@ function ContactGroupsEditor({
 }
 
 // 그룹사 인라인 편집기 — datalist 로 기존 그룹사를 자동완성 + 자유 입력 둘 다 지원.
+// 자유 입력 시: 비슷한 기존 그룹사가 있으면 "통일하시겠습니까?" 안내 — 표기 분산 방지.
 // blur 또는 Enter 시 저장, Esc 취소.
 function ParentGroupEditor({
   contact,
@@ -500,8 +502,17 @@ function ParentGroupEditor({
     setValue(contact.parent_group ?? '')
   }, [contact.id, contact.parent_group])
 
-  const save = () => {
-    const trimmed = value.trim()
+  // 입력값과 비슷한 기존 그룹사 (정규화 후 substring/편집거리 기반).
+  // 정확 일치는 제외 — 즉 입력값이 기존 옵션과 다르되 비슷할 때만 표시.
+  const similarSuggestions = useMemo(() => {
+    if (!value.trim()) return []
+    if (options.includes(value.trim())) return [] // 기존 그대로 선택한 경우 안내 불필요
+    return findSimilarGroups(value, options, 0.7, 3)
+  }, [value, options])
+
+  const save = (override?: string) => {
+    const next = override !== undefined ? override : value
+    const trimmed = next.trim()
     const newValue = trimmed === '' ? null : trimmed
     if (newValue === (contact.parent_group ?? null)) return
     updateContact.mutate({ id: contact.id, data: { parent_group: newValue } })
@@ -529,7 +540,7 @@ function ParentGroupEditor({
         list={listId}
         value={value}
         onChange={(e) => setValue(e.target.value)}
-        onBlur={save}
+        onBlur={() => save()}
         onKeyDown={(e) => {
           if (e.key === 'Enter') {
             e.preventDefault()
@@ -548,6 +559,27 @@ function ParentGroupEditor({
           <option key={g} value={g} />
         ))}
       </datalist>
+      {/* 유사 매칭 안내 — 표기 분산 (예: "현대백화점" vs "현대백화점주식회사") 방지 */}
+      {similarSuggestions.length > 0 && (
+        <div className="text-[10px] text-amber-700 dark:text-amber-300 bg-amber-50/60 dark:bg-amber-900/20 rounded p-1.5 space-y-1">
+          <div>비슷한 기존 그룹사가 있습니다 — 통일하시겠습니까?</div>
+          <div className="flex flex-wrap gap-1">
+            {similarSuggestions.map((s) => (
+              <button
+                key={s.name}
+                type="button"
+                onClick={() => {
+                  setValue(s.name)
+                  save(s.name)
+                }}
+                className="px-1.5 py-0.5 rounded border border-amber-300 dark:border-amber-700 bg-white dark:bg-zinc-950 hover:bg-amber-100 dark:hover:bg-amber-900/40 transition-colors"
+              >
+                {s.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       <p className="text-[10px] text-muted-foreground">
         목록에서 선택하거나 새 그룹명을 직접 입력. Enter 또는 다른 곳 클릭 시 저장.
       </p>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -22,6 +22,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { useCreateContact, useUpdateContact, useParentGroupOptions } from '@/hooks/useContacts'
+import { findSimilarGroups } from '@/lib/companyGroupSimilarity'
 import { resolveCompanyForContact } from '@/lib/resolveCompany'
 import { useQueryClient } from '@tanstack/react-query'
 import { Sparkles, Loader2 } from 'lucide-react'
@@ -69,11 +70,21 @@ export function ContactFormDialog({ open, onOpenChange, contact, prefill }: Cont
     handleSubmit,
     reset,
     control,
+    watch,
+    setValue,
     formState: { errors },
   } = useForm<FormData>({
     resolver: zodResolver(schema),
     defaultValues: { customer_type: 'general' },
   })
+
+  // 그룹사 자동 유사 매칭 — 자유 입력 후 비슷한 기존 그룹사가 있으면 통합 제안
+  const parentGroupValue = watch('parent_group') ?? ''
+  const similarSuggestions = useMemo(() => {
+    if (!parentGroupValue.trim()) return []
+    if (parentGroupOptions.includes(parentGroupValue.trim())) return []
+    return findSimilarGroups(parentGroupValue, parentGroupOptions, 0.7, 3)
+  }, [parentGroupValue, parentGroupOptions])
 
   useEffect(() => {
     if (open) {
@@ -253,6 +264,26 @@ export function ContactFormDialog({ open, onOpenChange, contact, prefill }: Cont
                   <option key={g} value={g} />
                 ))}
               </datalist>
+              {/* 유사 매칭 안내 — 표기 분산 (예: "현대백화점" vs "현대백화점주식회사") 방지 */}
+              {similarSuggestions.length > 0 && (
+                <div className="text-[10px] text-amber-700 dark:text-amber-300 bg-amber-50/60 dark:bg-amber-900/20 rounded p-1.5 space-y-1">
+                  <div>비슷한 기존 그룹사가 있습니다 — 통일하시겠습니까?</div>
+                  <div className="flex flex-wrap gap-1">
+                    {similarSuggestions.map((s) => (
+                      <button
+                        key={s.name}
+                        type="button"
+                        onClick={() =>
+                          setValue('parent_group', s.name, { shouldDirty: true })
+                        }
+                        className="px-1.5 py-0.5 rounded border border-amber-300 dark:border-amber-700 bg-white dark:bg-zinc-950 hover:bg-amber-100 dark:hover:bg-amber-900/40 transition-colors"
+                      >
+                        {s.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
           <p className="text-[11px] text-muted-foreground -mt-2">
