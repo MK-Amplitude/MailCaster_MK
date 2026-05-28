@@ -263,7 +263,11 @@ export function useCreateContact() {
       qc.invalidateQueries({ queryKey: [QUERY_KEY] })
       qc.invalidateQueries({ queryKey: [COMMON_QUERY_KEY] })
       toast.success('연락처가 추가되었습니다.')
-      if (result?.id && result.company_raw) {
+      // AI 그룹사 분석 자동 trigger:
+      //   - 회사명 (company_raw) 있으면 회사명 + 도메인으로 정확한 분석
+      //   - 회사명 없어도 이메일 도메인이 회사 도메인 (gmail/naver 등 개인 메일 아님) 이면 도메인 단독 분석
+      //   - 둘 다 없으면 helper 가 no-op
+      if (result?.id && (result.company_raw || result.email)) {
         resolveCompanyForContact({
           rawName: result.company_raw,
           contactId: result.id,

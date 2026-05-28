@@ -40,22 +40,35 @@ interface ResolveArgs {
   qc?: QueryClient
 }
 
+/** Edge function 응답 결과 — UI 가 confidence 등 활용 가능 */
+export interface ResolveResult {
+  name_ko: string | null
+  name_en: string | null
+  parent_group: string | null
+  extracted_department: string | null
+  confidence: number
+  cached: boolean
+}
+
 /**
  * Contact 의 회사명/그룹사를 AI 로 추론.
  * - rawName 이 있으면 회사명 + 도메인 힌트로 정확도 ↑
  * - rawName 이 없으면 이메일 도메인 단독으로 추론 (예: enj@thehyundai.com → "현대백화점")
- * - 둘 다 없으면 no-op
+ * - 둘 다 없으면 null 반환 (no-op)
+ *
+ * 반환값으로 호출자가 confidence / 결과를 UI 에 표시할 수 있음.
+ * 실패 시 null 반환 (throw 안 함 — fire-and-forget 패턴).
  */
 export async function resolveCompanyForContact({
   rawName,
   contactId,
   email,
   qc,
-}: ResolveArgs): Promise<void> {
+}: ResolveArgs): Promise<ResolveResult | null> {
   const name = rawName?.trim()
   const emailDomain = extractDomain(email)
   // 회사명도 없고 (개인 메일 아닌) 유효 도메인도 없으면 호출 불가
-  if (!name && !emailDomain) return
+  if (!name && !emailDomain) return null
 
   try {
     const { data, error } = await supabase.functions.invoke('resolve-company', {
@@ -68,14 +81,16 @@ export async function resolveCompanyForContact({
     })
     if (error) {
       console.warn('[resolve-company] invoke failed:', error.message)
-      return
+      return null
     }
     console.log('[resolve-company] result:', data)
     if (qc) {
       qc.invalidateQueries({ queryKey: ['contacts'] })
     }
+    return data as ResolveResult
   } catch (e) {
     console.warn('[resolve-company] unexpected:', e)
+    return null
   }
 }
 

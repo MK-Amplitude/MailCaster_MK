@@ -507,13 +507,33 @@ function ParentGroupEditor({
   const handleAiResolve = async () => {
     setAiPending(true)
     try {
-      await resolveCompanyForContact({
+      const result = await resolveCompanyForContact({
         rawName: contact.company,
         contactId: contact.id,
         email: contact.email,
         qc,
       })
-      toast.success('AI 분석 완료 — 결과가 자동으로 채워졌습니다.')
+      if (!result) {
+        toast.error('AI 분석을 수행할 수 없습니다 — 이메일이 개인 메일이거나 정보가 부족합니다.')
+        return
+      }
+      // confidence 에 따라 메시지 차등 — 사용자가 결과 신뢰도를 인지할 수 있게.
+      const pct = Math.round((result.confidence ?? 0) * 100)
+      if (!result.name_ko && !result.name_en) {
+        toast.error(`AI 가 회사를 식별하지 못했습니다 — 도메인이 너무 특수하거나 정보 부족.`)
+      } else if (pct >= 80) {
+        toast.success(
+          `AI 분석 완료 (${pct}% 확신) — ${result.parent_group ?? result.name_ko ?? '결과'}`,
+        )
+      } else if (pct >= 50) {
+        toast.warning(
+          `AI 분석 결과 ${pct}% 확신 — ${result.parent_group ?? result.name_ko ?? ''} (확인 권장)`,
+        )
+      } else {
+        toast.warning(
+          `AI 분석 결과 신뢰도 낮음 (${pct}%) — 직접 확인 후 수정해 주세요.`,
+        )
+      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'AI 분석 실패')
     } finally {
@@ -629,6 +649,18 @@ function ParentGroupEditor({
           <Sparkles className="w-3 h-3 animate-pulse" />
           AI 분석 중...
         </span>
+      )}
+      {/* lookup_status 인디케이터 — 이전 AI 분석 결과 신뢰도 안내.
+          'resolved' 면 작은 ✓, 'not_found' 면 노란 경고 — 직접 확인 권장. */}
+      {!aiPending && contact.company_lookup_status === 'not_found' && (
+        <p className="text-[10px] text-amber-700 dark:text-amber-300">
+          ⚠ AI 가 이전에 회사를 식별하지 못했습니다 — 그룹사를 직접 입력해 주세요.
+        </p>
+      )}
+      {!aiPending && contact.company_lookup_status === 'resolved' && contact.parent_group && (
+        <p className="text-[10px] text-emerald-700 dark:text-emerald-300">
+          ✓ AI 가 분석한 그룹사입니다. 잘못됐다면 직접 수정하세요.
+        </p>
       )}
       <p className="text-[10px] text-muted-foreground">
         그룹사 이름을 직접 입력하세요 — 별도 등록 절차 없음. Enter 또는 다른 곳 클릭 시 저장.
