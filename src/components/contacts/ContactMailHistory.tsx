@@ -11,7 +11,7 @@ import { format } from 'date-fns'
 import { ko } from 'date-fns/locale'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { ArrowDownLeft, ArrowUpRight, Mail, MessageCircle, AlertTriangle } from 'lucide-react'
+import { ArrowDownLeft, ArrowUpRight, Mail, MessageCircle, AlertTriangle, Eye, EyeOff } from 'lucide-react'
 import {
   useContactMailHistory,
   type MailHistoryItem,
@@ -123,6 +123,10 @@ function MailHistoryRow({
                   반송
                 </span>
               )}
+              {/* 오픈 추적 — bounce 가 아니면 항상 표시 (1통이든 다수든 일관) */}
+              {!m.bounced && (
+                <OpenBadge opened={m.opened} openCount={m.open_count} />
+              )}
               {!m.bounced && m.replied && (
                 <span className="inline-flex items-center gap-1 text-xs text-cyan-600 dark:text-cyan-400">
                   <MessageCircle className="w-3 h-3" />
@@ -174,6 +178,10 @@ function MailHistoryRow({
                   <AlertTriangle className="w-3 h-3" />
                   반송
                 </span>
+              )}
+              {/* 캠페인 발송도 오픈 추적 동일하게 표시 */}
+              {!r.bounced && (
+                <OpenBadge opened={r.opened} openCount={r.open_count} />
               )}
               {!r.bounced && r.replied && (
                 <span className="inline-flex items-center gap-1 text-xs text-cyan-600 dark:text-cyan-400">
@@ -261,4 +269,28 @@ function MailHistoryRow({
 function formatFromLabel(reply: InboundMessage): string {
   if (reply.from_name && reply.from_email) return `${reply.from_name} <${reply.from_email}>`
   return reply.from_email
+}
+
+/** 발송된 메일의 오픈 추적 표시 — 1통이든 다수든 일관된 형태. 보내진 모든 메일에 사용. */
+function OpenBadge({ opened, openCount }: { opened: boolean; openCount: number }) {
+  if (opened) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400"
+        title={`총 ${openCount}회 열어봤습니다`}
+      >
+        <Eye className="w-3 h-3" />
+        {openCount}회
+      </span>
+    )
+  }
+  return (
+    <span
+      className="inline-flex items-center gap-1 text-xs text-muted-foreground"
+      title="아직 열어보지 않았습니다"
+    >
+      <EyeOff className="w-3 h-3" />
+      미오픈
+    </span>
+  )
 }

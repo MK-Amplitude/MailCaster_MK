@@ -22,6 +22,8 @@ import {
   Zap,
   Layers,
   Inbox,
+  Eye,
+  EyeOff,
 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useInboxStats } from '@/hooks/useInboxStats'
@@ -117,8 +119,8 @@ export default function EngagementPage() {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
-          {/* 받은편지함 액션 카드 — 가장 actionable 한 정보를 첫 두 자리에 배치 */}
+        {/* 메일 액션 카드 — 받은편지함 + 발송 오픈 (사용자 매일 보는 핵심 정보) */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2">
           <KpiCard
             icon={Inbox}
             label="미응답 받은 메일"
@@ -133,6 +135,32 @@ export default function EngagementPage() {
             accent="text-cyan-600 dark:text-cyan-400"
             onClick={() => navigate('/inbox')}
           />
+          {/* 발송된 모든 메일의 오픈 합 — 1통이든 다수든 동일 추적 */}
+          <KpiCard
+            icon={Eye}
+            label="최근 30일 오픈"
+            value={inboxStats.outboundOpenedCount}
+            sub={
+              inboxStats.outboundSentCount > 0
+                ? `${Math.round(
+                    (inboxStats.outboundOpenedCount / inboxStats.outboundSentCount) * 100,
+                  )}% / ${inboxStats.outboundSentCount}통`
+                : undefined
+            }
+            accent="text-emerald-600 dark:text-emerald-400"
+            onClick={() => navigate('/inbox')}
+          />
+          <KpiCard
+            icon={EyeOff}
+            label="미오픈 발송"
+            value={inboxStats.outboundUnopenedCount}
+            accent="text-amber-600 dark:text-amber-400"
+            onClick={() => navigate('/inbox')}
+          />
+        </div>
+
+        {/* 관계 cadence 카드 — 영업 호흡 관점 */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           <KpiCard
             icon={Users}
             label="총 연락처"
@@ -265,12 +293,15 @@ function KpiCard({
   icon: Icon,
   label,
   value,
+  sub,
   accent,
   onClick,
 }: {
   icon: React.ElementType
   label: string
   value: number
+  /** 숫자 아래 작은 보조 텍스트 — 예: "37% / 12통" */
+  sub?: string
   accent: string
   onClick?: () => void
 }) {
@@ -302,6 +333,7 @@ function KpiCard({
         <div className={cn('text-2xl font-semibold mt-1 tabular-nums', accent)}>
           {value.toLocaleString()}
         </div>
+        {sub && <div className="text-xs text-muted-foreground mt-0.5">{sub}</div>}
       </CardContent>
     </Card>
   )
