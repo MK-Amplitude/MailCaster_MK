@@ -284,6 +284,8 @@ export default function ContactsPage() {
     }
     toast.info(`AI 분석 시작 — ${tasks.length}건 (도메인 ${seenDomains.size}개)`)
     let done = 0
+    // 같은 도메인이 캐시에 이미 있으면 cache hit. 그러나 사용자가 일괄 backfill 을 실행한다는 건
+    // "전에 분석 안 된 contact 들" 대상이라 보통 cache miss. 첫 호출만 LLM, 나머지는 캐시 활용 (도메인 단위).
     for (const t of tasks) {
       try {
         await resolveCompanyForContact({
