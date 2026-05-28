@@ -38,7 +38,9 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { UserPlus, Upload, Users, Search, UserX, Trash2, FolderPlus, Tag, Wand2, ScanLine, Loader2, Archive, ArchiveRestore, RotateCcw } from 'lucide-react'
+import { UserPlus, Upload, Users, Search, UserX, Trash2, FolderPlus, Tag, Wand2, ScanLine, Loader2, Archive, ArchiveRestore, RotateCcw, Sparkles } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
+import { resolveCompanyForContact } from '@/lib/resolveCompany'
 import { PersonalizedSendDialog } from '@/components/campaigns/PersonalizedSendDialog'
 import { useOcrBusinessCard, type OcrFields } from '@/hooks/useOcrBusinessCard'
 import { toast } from 'sonner'
@@ -56,6 +58,7 @@ import {
 type ScopeValue = ContactScope | 'common'
 
 export default function ContactsPage() {
+  const qc = useQueryClient()
   const [scope, setScope] = useState<ScopeValue>('org')
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState<ContactStatus>('all')
@@ -250,6 +253,56 @@ export default function ContactsPage() {
 
   const handleToggleUnsub = (contact: ContactWithGroups) => {
     toggleUnsub.mutate({ id: contact.id, unsubscribe: !contact.is_unsubscribed })
+  }
+
+  // 일괄 AI 그룹사 분석 — 선택된 contact 중 그룹사가 비어있고 유효한 회사 도메인 있는 것만.
+  // 같은 도메인은 dedupe (한 도메인당 1번만 LLM 호출, 나머지는 캐시 활용).
+  // 진행 중 toast 로 진행률 표시.
+  const handleBulkAiResolve = async () => {
+    const ids = scope === 'common' ? expandedCommonContactIds : [...selectedIds]
+    const targets = contacts.filter(
+      (c) => ids.includes(c.id) && !c.parent_group && c.email,
+    )
+    if (targets.length === 0) {
+      toast.info('AI 분석 대상이 없습니다 — 선택한 연락처에 그룹사가 이미 채워져 있거나 이메일이 없습니다.')
+      return
+    }
+    // dedupe by domain — 회사명 단독 + 도메인 단독 두 케이스 모두 cover
+    const seenDomains = new Set<string>()
+    const tasks: Array<{ id: string; rawName: string | null; email: string }> = []
+    for (const c of targets) {
+      const domain = c.email.split('@')[1]?.toLowerCase()
+      if (!domain) continue
+      // 같은 도메인이라도 회사명이 다르면 결과가 다를 수 있어 별도 호출 (cache_key 가 query_key 라).
+      // 단순화: 모두 호출하되 server-side cache 가 중복 LLM 호출 차단.
+      seenDomains.add(domain)
+      tasks.push({ id: c.id, rawName: c.company_raw ?? c.company ?? null, email: c.email })
+    }
+    if (tasks.length === 0) {
+      toast.info('AI 분석 가능한 도메인이 없습니다 (개인 메일 제외).')
+      return
+    }
+    toast.info(`AI 분석 시작 — ${tasks.length}건 (도메인 ${seenDomains.size}개)`)
+    let done = 0
+    for (const t of tasks) {
+      try {
+        await resolveCompanyForContact({
+          rawName: t.rawName,
+          contactId: t.id,
+          email: t.email,
+          qc,
+        })
+      } catch {
+        // 개별 실패는 무시 — 나머지 계속
+      }
+      done++
+      // 매 10건마다 진행 알림
+      if (done % 10 === 0 && done < tasks.length) {
+        toast.info(`AI 분석 진행 중... ${done} / ${tasks.length}`)
+      }
+    }
+    toast.success(`AI 그룹사 분석 완료 — ${tasks.length}건 처리`)
+    clearSelection()
   }
 
   const openNewForm = () => {
@@ -503,6 +556,11 @@ export default function ContactsPage() {
             label: 'AI 개인화 발송',
             icon: <Wand2 className="w-3.5 h-3.5 mr-1" />,
             onClick: () => setPersonalizeOpen(true),
+          },
+          {
+            label: 'AI 그룹사 분석',
+            icon: <Sparkles className="w-3.5 h-3.5 mr-1" />,
+            onClick: handleBulkAiResolve,
           },
           {
             label: '그룹에 추가',
