@@ -17,9 +17,12 @@ const corsHeaders = {
 }
 
 interface ResolveInput {
-  raw_name: string
+  raw_name?: string
   contact_id?: string
   email_domain?: string
+  /** true 면 company_cache 무시하고 LLM 재호출. 캐시된 결과의 parent_group 이 null 이지만
+   *  새 프롬프트로 다시 시도하고 싶을 때 사용. */
+  force_refresh?: boolean
 }
 
 interface CompanyResult {
@@ -39,7 +42,7 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { raw_name, contact_id, email_domain }: ResolveInput = await req.json()
+    const { raw_name, contact_id, email_domain, force_refresh }: ResolveInput = await req.json()
     // raw_name 또는 email_domain (또는 contact_id 로부터 도메인 추출 가능) 중 하나는 필수.
     // 도메인 단독 모드 — 회사명 없이 이메일 도메인만으로 그룹사 추론.
     const hasRawName = raw_name && raw_name.trim().length > 0
@@ -80,7 +83,9 @@ Deno.serve(async (req) => {
       .eq('query_key', queryKey)
       .maybeSingle()
 
-    const hasUsefulCache = cached && (cached.name_ko || cached.name_en)
+    // force_refresh=true 면 캐시를 무시 — 프롬프트 개선 후 다시 분석하고 싶을 때.
+    const hasUsefulCache =
+      !force_refresh && cached && (cached.name_ko || cached.name_en)
 
     let result: CompanyResult
     let cacheHit = false
@@ -249,15 +254,26 @@ async function callOpenAI(
 4) parent_group (그룹사) — 한국 대기업 그룹사의 자회사인 경우만 채움. 한글로 짧게.
    - 알려진 그룹사: 롯데, 신세계, 삼성, 현대, LG, SK, GS, 한화, CJ, 카카오, 네이버, 두산, 코오롱, 효성, 포스코, 농심, 오리온, 현대백화점, 미래에셋, 골프존, 이랜드, SPC, 하림, 빙그레, 종근당, 한미약품, 셀트리온, 넥슨, 엔씨소프트, 넷마블, 크래프톤, NHN, 야놀자, 우아한형제들, 등
    - 매핑 예시:
-       "롯데캐피탈" → parent_group="롯데"
-       "신세계라이브쇼핑" / "이마트" / "SSG.COM" / "스타벅스코리아" → parent_group="신세계"
-       "CJ제일제당" / "CJ ENM" / "CJ올리브영" → parent_group="CJ"
-       "GS리테일" / "GS칼텍스" → parent_group="GS"
-       "SK텔레콤" / "SK하이닉스" / "SK D&D" / "SK렌터카" → parent_group="SK"
-       "카카오엔터테인먼트" / "카카오스타일" / "카카오헬스케어" → parent_group="카카오"
+       "롯데캐피탈" / "롯데쇼핑" / "롯데마트" / "롯데웰푸드" / "롯데케미칼" / "롯데정보통신" → parent_group="롯데"
+       "신세계라이브쇼핑" / "이마트" / "SSG.COM" / "스타벅스코리아" / "신세계인터내셔날" / "조선호텔앤리조트" → parent_group="신세계"
+       "CJ제일제당" / "CJ ENM" / "CJ올리브영" / "CJ대한통운" / "CJ푸드빌" / "CJ프레시웨이" → parent_group="CJ"
+       "GS리테일" / "GS칼텍스" / "GS건설" / "GS25" → parent_group="GS"
+       "SK텔레콤" / "SK하이닉스" / "SK D&D" / "SK렌터카" / "SK이노베이션" / "SK바이오팜" / "SK스퀘어" → parent_group="SK"
+       "카카오엔터테인먼트" / "카카오스타일" / "카카오헬스케어" / "카카오뱅크" / "카카오페이" / "카카오모빌리티" → parent_group="카카오"
        "골프존카운티" / "골프존커머스" → parent_group="골프존"
-       "삼성전자" / "삼성SDS" → parent_group="삼성"
-       "현대자동차" / "현대건설" / "기아" → parent_group="현대"
+       "삼성전자" / "삼성SDS" / "삼성물산" / "삼성생명" / "삼성화재" / "삼성카드" / "삼성SDI" / "삼성디스플레이" / "삼성중공업" / "삼성바이오로직스" / "삼성증권" / "제일기획" / "에스원" → parent_group="삼성"
+       "현대자동차" / "현대건설" / "기아" / "현대모비스" / "현대제철" / "현대글로비스" / "현대카드" / "현대캐피탈" → parent_group="현대"
+       "현대백화점" / "현대그린푸드" / "현대홈쇼핑" / "한섬" / "지누스" → parent_group="현대백화점"
+       "LG전자" / "LG화학" / "LG디스플레이" / "LG에너지솔루션" / "LG생활건강" / "LG U+" / "LG CNS" / "LG이노텍" → parent_group="LG"
+       "한화시스템" / "한화에어로스페이스" / "한화솔루션" / "한화생명" / "한화건설" / "한화호텔앤드리조트" → parent_group="한화"
+       "두산에너빌리티" / "두산밥캣" / "두산로보틱스" / "두산퓨얼셀" → parent_group="두산"
+       "포스코홀딩스" / "포스코이앤씨" / "포스코퓨처엠" / "포스코인터내셔널" → parent_group="포스코"
+       "효성티앤씨" / "효성중공업" / "효성첨단소재" → parent_group="효성"
+       "코오롱인더스트리" / "코오롱글로벌" / "코오롱생명과학" → parent_group="코오롱"
+       "네이버클라우드" / "라인" / "스노우" / "네이버웹툰" → parent_group="네이버"
+       "넥슨코리아" / "네오플" / "넥슨게임즈" → parent_group="넥슨"
+       "엔씨소프트" / "NC다이노스" → parent_group="엔씨소프트"
+       "넷마블게임즈" / "넷마블엔투" → parent_group="넷마블"
    - 독립 스타트업 / 그룹 미소속 / 식별 불가 → parent_group=null
    - 글로벌 본사 (Google, Microsoft 등) → parent_group=null (한국 그룹사 아니므로)
 5) 도메인 힌트가 "없음" 이면 이름만으로 판단. (개인 메일 도메인은 서버에서 이미 제거됨.)

@@ -504,6 +504,15 @@ function ParentGroupEditor({
 
   // AI 자동 분석 — 이메일 도메인 + 기존 회사명을 LLM 에 보내 그룹사 추론.
   // 도메인이 개인 메일 (gmail/naver 등) 이면 추론 불가.
+  // 이미 분석 시도된 contact 인데 그룹사가 비어있으면 "다시 분석" 모드 — 캐시 무시.
+  // 처음 분석이면 (lookup_status가 null/pending) 일반 호출.
+  const aiButtonLabel =
+    contact.company_lookup_status === 'resolved' && !contact.parent_group
+      ? 'AI 로 다시 분석 (캐시 무시)'
+      : contact.company_lookup_status === 'not_found'
+        ? 'AI 로 다시 시도 (캐시 무시)'
+        : 'AI 로 그룹사 자동 분석 (이메일 도메인 + 회사명 기반)'
+
   const handleAiResolve = async () => {
     setAiPending(true)
     try {
@@ -512,6 +521,13 @@ function ParentGroupEditor({
         contactId: contact.id,
         email: contact.email,
         qc,
+        // 이전 분석 결과의 parent_group 이 null 이거나 식별 실패면 force refresh
+        forceRefresh:
+          contact.company_lookup_status === 'resolved' && !contact.parent_group
+            ? true
+            : contact.company_lookup_status === 'not_found'
+              ? true
+              : false,
       })
       if (!result) {
         toast.error('AI 분석을 수행할 수 없습니다 — 이메일이 개인 메일이거나 정보가 부족합니다.')
@@ -632,7 +648,8 @@ function ParentGroupEditor({
             ✓ &ldquo;{value.trim()}&rdquo; 을(를) 새 그룹사로 등록합니다 — 저장하면 다음부터 자동완성에 표시됩니다.
           </p>
         )}
-      {/* AI 자동 분석 — 비어있거나 사용자가 확신 없을 때, 이메일 도메인 + 회사명으로 추론 */}
+      {/* AI 자동 분석 — 비어있거나 사용자가 확신 없을 때, 이메일 도메인 + 회사명으로 추론.
+          이미 분석됐는데 그룹사 비어있으면 "다시 분석 (캐시 무시)" 으로 자동 변경. */}
       {!aiPending && (
         <button
           type="button"
@@ -641,7 +658,7 @@ function ParentGroupEditor({
           className="self-start inline-flex items-center gap-1 text-[10px] text-primary hover:underline disabled:opacity-50"
         >
           <Sparkles className="w-3 h-3" />
-          AI 로 그룹사 자동 분석 (이메일 도메인 + 회사명 기반)
+          {aiButtonLabel}
         </button>
       )}
       {aiPending && (

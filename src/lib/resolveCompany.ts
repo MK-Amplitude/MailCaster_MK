@@ -38,6 +38,8 @@ interface ResolveArgs {
   /** 회사 식별 정확도를 높이기 위한 이메일 도메인 힌트 소스 (optional) */
   email?: string | null
   qc?: QueryClient
+  /** 캐시 무시하고 LLM 재호출 — 이전 분석 결과의 parent_group 이 비어있을 때 다시 시도 */
+  forceRefresh?: boolean
 }
 
 /** Edge function 응답 결과 — UI 가 confidence 등 활용 가능 */
@@ -64,6 +66,7 @@ export async function resolveCompanyForContact({
   contactId,
   email,
   qc,
+  forceRefresh,
 }: ResolveArgs): Promise<ResolveResult | null> {
   const name = rawName?.trim()
   const emailDomain = extractDomain(email)
@@ -77,6 +80,7 @@ export async function resolveCompanyForContact({
         ...(name ? { raw_name: name } : {}),
         contact_id: contactId,
         ...(emailDomain ? { email_domain: emailDomain } : {}),
+        ...(forceRefresh ? { force_refresh: true } : {}),
       },
     })
     if (error) {
