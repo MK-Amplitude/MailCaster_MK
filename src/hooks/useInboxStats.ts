@@ -9,6 +9,10 @@ interface InboxStats {
   total: number
   todayCount: number
   unrepliedCount: number
+  // 최근 30일 outbound 발송 + 오픈 통계 (모든 발송 = thread + 캠페인)
+  outboundSentCount: number
+  outboundOpenedCount: number
+  outboundUnopenedCount: number
 }
 
 export function useInboxStats(): InboxStats {
@@ -31,6 +35,40 @@ export function useInboxStats(): InboxStats {
         gmail_thread_id: string | null
         received_at: string
       }>
+    },
+    refetchInterval: 60_000,
+  })
+
+  // 최근 30일 outbound 통계 — thread_messages + recipients 합산.
+  const { data: outboundStats = { sent: 0, opened: 0 } } = useQuery({
+    queryKey: ['inbox-stats', 'outbound', sinceIso],
+    queryFn: async () => {
+      const threadP = supabase
+        .from('thread_messages')
+        .select('opened, bounced, status')
+        .eq('status', 'sent')
+        .gte('sent_at', sinceIso)
+      const recP = supabase
+        .from('recipients')
+        .select('opened, bounced, status')
+        .in('status', ['sent', 'bounced'])
+        .gte('sent_at', sinceIso)
+      const [t, r] = await Promise.all([threadP, recP])
+      let sent = 0
+      let opened = 0
+      for (const row of t.data ?? []) {
+        const rr = row as { opened?: boolean; bounced?: boolean }
+        if (rr.bounced) continue
+        sent++
+        if (rr.opened) opened++
+      }
+      for (const row of r.data ?? []) {
+        const rr = row as { opened?: boolean; bounced?: boolean }
+        if (rr.bounced) continue
+        sent++
+        if (rr.opened) opened++
+      }
+      return { sent, opened }
     },
     refetchInterval: 60_000,
   })
@@ -70,6 +108,13 @@ export function useInboxStats(): InboxStats {
       const ourLast = ourSentByThread[m.gmail_thread_id]
       if (!ourLast || ourLast < m.received_at) unrepliedCount++
     }
-    return { total: inbound.length, todayCount, unrepliedCount }
-  }, [inbound, ourSentByThread])
+    return {
+      total: inbound.length,
+      todayCount,
+      unrepliedCount,
+      outboundSentCount: outboundStats.sent,
+      outboundOpenedCount: outboundStats.opened,
+      outboundUnopenedCount: Math.max(0, outboundStats.sent - outboundStats.opened),
+    }
+  }, [inbound, ourSentByThread, outboundStats])
 }
