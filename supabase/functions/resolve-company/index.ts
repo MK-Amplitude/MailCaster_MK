@@ -40,12 +40,18 @@ Deno.serve(async (req) => {
 
   try {
     const { raw_name, contact_id, email_domain }: ResolveInput = await req.json()
-    if (!raw_name || !raw_name.trim()) {
-      return json({ error: 'raw_name required' }, 400)
+    // raw_name 또는 email_domain (또는 contact_id 로부터 도메인 추출 가능) 중 하나는 필수.
+    // 도메인 단독 모드 — 회사명 없이 이메일 도메인만으로 그룹사 추론.
+    const hasRawName = raw_name && raw_name.trim().length > 0
+    const hasDomainHint = email_domain && email_domain.trim().length > 0
+    if (!hasRawName && !hasDomainHint && !contact_id) {
+      return json({ error: 'raw_name, email_domain 또는 contact_id 중 하나는 필요합니다.' }, 400)
     }
 
-    const query = raw_name.trim()
-    const queryKey = query.toLowerCase()
+    // raw_name 이 없으면 도메인 자체를 query 로 사용 (캐시 키는 도메인).
+    // 둘 다 있으면 raw_name 우선.
+    const query = hasRawName ? raw_name!.trim() : (email_domain ?? '').trim()
+    const queryKey = (hasRawName ? raw_name! : query).toLowerCase()
     const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
       auth: { persistSession: false },
     })
@@ -267,11 +273,19 @@ async function callOpenAI(
    - 그룹사명 자체 ("롯데", "삼성") 는 부서가 아님.
 8) 반드시 JSON 으로만 답변. 추가 설명 금지.`
 
+  // 도메인 단독 모드 (회사명 없이) — query 와 emailDomain 이 같음. 프롬프트에 도메인만 주어진 케이스 명시.
+  const isDomainOnly = !!emailDomain && query.toLowerCase() === emailDomain.toLowerCase()
   const domainLine = emailDomain
     ? `이메일 도메인 힌트: "${emailDomain}"`
     : `이메일 도메인 힌트: 없음`
 
-  const userPrompt = `회사명 또는 도메인: "${query}"
+  const userPrompt = isDomainOnly
+    ? `회사명 입력은 없습니다. 아래 이메일 도메인만으로 소유 기업과 그룹사를 추론하세요:
+${domainLine}
+
+다음 형식으로 답변:
+{"name_ko": string|null, "name_en": string|null, "parent_group": string|null, "extracted_department": null, "confidence": 0.0~1.0}`
+    : `회사명 또는 도메인: "${query}"
 ${domainLine}
 
 다음 형식으로 답변:

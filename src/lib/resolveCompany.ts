@@ -32,13 +32,20 @@ function extractDomain(email: string | null | undefined): string | null {
 }
 
 interface ResolveArgs {
-  rawName: string
+  /** 회사명 (없으면 도메인 단독 모드) */
+  rawName?: string | null
   contactId: string
   /** 회사 식별 정확도를 높이기 위한 이메일 도메인 힌트 소스 (optional) */
   email?: string | null
   qc?: QueryClient
 }
 
+/**
+ * Contact 의 회사명/그룹사를 AI 로 추론.
+ * - rawName 이 있으면 회사명 + 도메인 힌트로 정확도 ↑
+ * - rawName 이 없으면 이메일 도메인 단독으로 추론 (예: enj@thehyundai.com → "현대백화점")
+ * - 둘 다 없으면 no-op
+ */
 export async function resolveCompanyForContact({
   rawName,
   contactId,
@@ -46,16 +53,16 @@ export async function resolveCompanyForContact({
   qc,
 }: ResolveArgs): Promise<void> {
   const name = rawName?.trim()
-  if (!name) return
-
   const emailDomain = extractDomain(email)
+  // 회사명도 없고 (개인 메일 아닌) 유효 도메인도 없으면 호출 불가
+  if (!name && !emailDomain) return
 
   try {
     const { data, error } = await supabase.functions.invoke('resolve-company', {
       body: {
-        raw_name: name,
+        // raw_name 이 비어있으면 서버가 도메인 단독 모드로 처리
+        ...(name ? { raw_name: name } : {}),
         contact_id: contactId,
-        // 클라이언트에서 도메인을 알면 서버 DB 조회를 아끼고, 모르면 서버가 fallback 처리.
         ...(emailDomain ? { email_domain: emailDomain } : {}),
       },
     })

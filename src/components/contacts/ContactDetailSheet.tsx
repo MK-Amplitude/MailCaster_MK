@@ -19,6 +19,9 @@ import { ContactTimeline } from '@/components/engagement/ContactTimeline'
 import { ContactMailHistory } from '@/components/contacts/ContactMailHistory'
 import { useComposeLauncher } from '@/components/campaigns/ComposeLauncher'
 import { findSimilarGroups } from '@/lib/companyGroupSimilarity'
+import { resolveCompanyForContact } from '@/lib/resolveCompany'
+import { useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
 import {
   CUSTOMER_TYPE_OPTIONS,
   type ContactWithGroups,
@@ -495,7 +498,28 @@ function ParentGroupEditor({
 }) {
   const updateContact = useUpdateContact()
   const { data: options = [] } = useParentGroupOptions()
+  const qc = useQueryClient()
   const [value, setValue] = useState(contact.parent_group ?? '')
+  const [aiPending, setAiPending] = useState(false)
+
+  // AI 자동 분석 — 이메일 도메인 + 기존 회사명을 LLM 에 보내 그룹사 추론.
+  // 도메인이 개인 메일 (gmail/naver 등) 이면 추론 불가.
+  const handleAiResolve = async () => {
+    setAiPending(true)
+    try {
+      await resolveCompanyForContact({
+        rawName: contact.company,
+        contactId: contact.id,
+        email: contact.email,
+        qc,
+      })
+      toast.success('AI 분석 완료 — 결과가 자동으로 채워졌습니다.')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'AI 분석 실패')
+    } finally {
+      setAiPending(false)
+    }
+  }
 
   // 다른 contact 로 전환되거나 외부에서 값이 바뀌면 동기화
   useEffect(() => {
@@ -588,6 +612,24 @@ function ParentGroupEditor({
             ✓ &ldquo;{value.trim()}&rdquo; 을(를) 새 그룹사로 등록합니다 — 저장하면 다음부터 자동완성에 표시됩니다.
           </p>
         )}
+      {/* AI 자동 분석 — 비어있거나 사용자가 확신 없을 때, 이메일 도메인 + 회사명으로 추론 */}
+      {!aiPending && (
+        <button
+          type="button"
+          onClick={handleAiResolve}
+          disabled={updateContact.isPending}
+          className="self-start inline-flex items-center gap-1 text-[10px] text-primary hover:underline disabled:opacity-50"
+        >
+          <Sparkles className="w-3 h-3" />
+          AI 로 그룹사 자동 분석 (이메일 도메인 + 회사명 기반)
+        </button>
+      )}
+      {aiPending && (
+        <span className="self-start text-[10px] text-muted-foreground inline-flex items-center gap-1">
+          <Sparkles className="w-3 h-3 animate-pulse" />
+          AI 분석 중...
+        </span>
+      )}
       <p className="text-[10px] text-muted-foreground">
         그룹사 이름을 직접 입력하세요 — 별도 등록 절차 없음. Enter 또는 다른 곳 클릭 시 저장.
       </p>
