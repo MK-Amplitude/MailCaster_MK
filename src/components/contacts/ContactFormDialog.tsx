@@ -284,10 +284,18 @@ export function ContactFormDialog({ open, onOpenChange, contact, prefill }: Cont
                   </div>
                 </div>
               )}
+              {/* 신규 그룹사 등록 안내 — "리스트에 추가해야 하나?" 헷갈림 방지 */}
+              {parentGroupValue.trim() &&
+                !parentGroupOptions.includes(parentGroupValue.trim()) &&
+                similarSuggestions.length === 0 && (
+                  <p className="text-[10px] text-emerald-700 dark:text-emerald-300">
+                    ✓ &ldquo;{parentGroupValue.trim()}&rdquo; 을(를) 새 그룹사로 등록합니다 — 별도 추가 절차 없음.
+                  </p>
+                )}
             </div>
           </div>
           <p className="text-[11px] text-muted-foreground -mt-2">
-            메일 그룹 발송 시 분류/그룹사별로 따로 보낼 수 있어요. AI 가 회사명 분석 후 자동 채워주지만 수동 수정도 가능합니다.
+            그룹사 이름을 직접 입력하면 됩니다 — 별도 등록 절차 없이 저장 시 자동 등록되어 다른 연락처에도 자동완성으로 표시됩니다. AI 가 회사명을 자동으로 분류해주기도 합니다.
           </p>
 
           <div className="space-y-1.5">
