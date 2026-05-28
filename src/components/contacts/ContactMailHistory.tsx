@@ -1,0 +1,202 @@
+// Contact 한 명의 메일 히스토리 — outbound (thread_messages) + inbound (inbound_messages) 통합.
+//
+// 표시:
+//   - 시간 역순 (최근 위)
+//   - 각 행: 방향 아이콘 (↗ 보냄 / ↙ 받음), 시각, 제목, snippet/본문 일부
+//   - 받은 메일 (inbound) 옆에 "회신" 버튼 → ThreadComposeDialog reply 모드
+//   - 행 클릭: 본문 모달 (또는 inline 확장)
+
+import { useState } from 'react'
+import { format } from 'date-fns'
+import { ko } from 'date-fns/locale'
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { ArrowDownLeft, ArrowUpRight, Mail, MessageCircle, AlertTriangle } from 'lucide-react'
+import {
+  useContactMailHistory,
+  type MailHistoryItem,
+  type InboundMessage,
+} from '@/hooks/useContactMailHistory'
+import { ThreadComposeDialog } from '@/components/campaigns/ThreadComposeDialog'
+import { escapeHtml } from '@/lib/utils'
+
+interface Props {
+  contactId: string
+  contactName?: string | null
+}
+
+export function ContactMailHistory({ contactId, contactName }: Props) {
+  const { data: items = [], isLoading } = useContactMailHistory(contactId)
+  // 받은 메일에 "회신" 클릭 시 ThreadComposeDialog 를 reply 모드로 열기
+  const [replyTo, setReplyTo] = useState<InboundMessage | null>(null)
+
+  if (isLoading) {
+    return <div className="text-sm text-muted-foreground">메일 히스토리 로딩 중...</div>
+  }
+  if (items.length === 0) {
+    return (
+      <div className="text-sm text-muted-foreground py-4">
+        주고받은 메일이 없습니다. Gmail 에 새 메일이 도착하면 5분 이내 자동 표시됩니다.
+      </div>
+    )
+  }
+
+  return (
+    <>
+      <div className="space-y-2">
+        {items.map((it, idx) => (
+          <MailHistoryRow
+            key={`${it.kind}-${it.row.id}-${idx}`}
+            item={it}
+            onReplyClick={(inb) => setReplyTo(inb)}
+          />
+        ))}
+      </div>
+
+      {replyTo && (
+        <ThreadComposeDialog
+          key={replyTo.id}
+          open={!!replyTo}
+          onOpenChange={(o) => !o && setReplyTo(null)}
+          mode="reply"
+          original={{
+            gmailThreadId: replyTo.gmail_thread_id,
+            gmailMessageId: replyTo.gmail_message_id,
+            rfcMessageId: replyTo.rfc_message_id,
+            subject: replyTo.subject,
+            bodyHtml: replyTo.body_text
+              ? `<pre style="white-space: pre-wrap; font-family: inherit;">${escapeHtml(replyTo.body_text)}</pre>`
+              : replyTo.body_html,
+            fromLabel: formatFromLabel(replyTo),
+            sentAt: replyTo.received_at,
+          }}
+          recipient={{
+            email: replyTo.from_email,
+            name: replyTo.from_name ?? contactName ?? null,
+            contactId: contactId,
+            recipientId: null,
+            campaignId: null,
+          }}
+        />
+      )}
+    </>
+  )
+}
+
+function MailHistoryRow({
+  item,
+  onReplyClick,
+}: {
+  item: MailHistoryItem
+  onReplyClick: (inb: InboundMessage) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const ts = format(new Date(item.ts), 'M월 d일 HH:mm', { locale: ko })
+
+  if (item.kind === 'outbound') {
+    const m = item.row
+    const modeLabelKr =
+      m.mode === 'followup' ? '팔로업' : m.mode === 'reply' ? '회신' : '전달'
+    return (
+      <div className="border rounded-lg p-3 bg-blue-50/40 dark:bg-blue-950/20">
+        <div className="flex items-start gap-2">
+          <ArrowUpRight className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-muted-foreground">{ts}</span>
+              <Badge variant="secondary" className="text-xs">
+                {modeLabelKr}
+              </Badge>
+              {m.bounced && (
+                <span className="inline-flex items-center gap-1 text-xs text-orange-600 dark:text-orange-400">
+                  <AlertTriangle className="w-3 h-3" />
+                  반송
+                </span>
+              )}
+              {!m.bounced && m.replied && (
+                <span className="inline-flex items-center gap-1 text-xs text-cyan-600 dark:text-cyan-400">
+                  <MessageCircle className="w-3 h-3" />
+                  회신 {m.reply_count}
+                </span>
+              )}
+            </div>
+            <div className="font-medium text-sm mt-0.5 truncate">
+              {m.subject || '(제목 없음)'}
+            </div>
+            {m.body_html && (
+              <button
+                type="button"
+                onClick={() => setExpanded((v) => !v)}
+                className="text-xs text-muted-foreground mt-1 hover:text-foreground"
+              >
+                {expanded ? '본문 접기' : '본문 보기'}
+              </button>
+            )}
+            {expanded && m.body_html && (
+              <div
+                className="prose prose-sm max-w-none dark:prose-invert mt-2 border-t pt-2"
+                dangerouslySetInnerHTML={{ __html: m.body_html }}
+              />
+            )}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // inbound
+  const m = item.row
+  return (
+    <div className="border rounded-lg p-3 bg-emerald-50/40 dark:bg-emerald-950/20">
+      <div className="flex items-start gap-2">
+        <ArrowDownLeft className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs text-muted-foreground">{ts}</span>
+            <span className="text-xs text-muted-foreground">
+              {m.from_name ? `${m.from_name} <${m.from_email}>` : m.from_email}
+            </span>
+          </div>
+          <div className="font-medium text-sm mt-0.5 truncate">
+            {m.subject || '(제목 없음)'}
+          </div>
+          {(m.body_text || m.snippet) && (
+            <>
+              <div className="text-xs text-muted-foreground mt-1 line-clamp-2 whitespace-pre-wrap">
+                {m.body_text || m.snippet}
+              </div>
+              {(m.body_text || m.body_html) && (
+                <button
+                  type="button"
+                  onClick={() => setExpanded((v) => !v)}
+                  className="text-xs text-muted-foreground mt-1 hover:text-foreground"
+                >
+                  {expanded ? '본문 접기' : '본문 보기'}
+                </button>
+              )}
+            </>
+          )}
+          {expanded && (
+            <div className="border-t pt-2 mt-2 text-sm whitespace-pre-wrap break-words">
+              {m.body_text || '(본문 없음)'}
+            </div>
+          )}
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => onReplyClick(m)}
+          className="shrink-0"
+        >
+          <Mail className="w-3.5 h-3.5 mr-1" />
+          회신
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function formatFromLabel(reply: InboundMessage): string {
+  if (reply.from_name && reply.from_email) return `${reply.from_name} <${reply.from_email}>`
+  return reply.from_email
+}

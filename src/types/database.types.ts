@@ -861,6 +861,47 @@ export interface Database {
         }
         Relationships: []
       }
+      // 056 — Inbound mail tracking (contact 가 우리에게 먼저 보낸 메일)
+      inbound_messages: {
+        Row: {
+          id: string
+          org_id: string
+          user_id: string | null
+          contact_id: string | null
+          gmail_message_id: string
+          gmail_thread_id: string | null
+          rfc_message_id: string | null
+          from_email: string
+          from_name: string | null
+          to_emails: string[]
+          subject: string | null
+          snippet: string | null
+          body_text: string | null
+          body_html: string | null
+          received_at: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          org_id: string
+          user_id?: string | null
+          contact_id?: string | null
+          gmail_message_id: string
+          gmail_thread_id?: string | null
+          rfc_message_id?: string | null
+          from_email: string
+          from_name?: string | null
+          to_emails?: string[]
+          subject?: string | null
+          snippet?: string | null
+          body_text?: string | null
+          body_html?: string | null
+          received_at?: string
+          created_at?: string
+        }
+        Update: Record<string, never>
+        Relationships: []
+      }
       followup_steps: {
         Row: {
           id: string
