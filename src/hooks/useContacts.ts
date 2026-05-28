@@ -343,23 +343,70 @@ export function useDeleteContacts() {
 
 export function useToggleUnsubscribe() {
   const qc = useQueryClient()
+  const { user } = useAuth()
 
   return useMutation({
     mutationFn: async ({ id, unsubscribe }: { id: string; unsubscribe: boolean }) => {
-      const { error } = await supabase
+      if (!user) throw new Error('로그인이 필요합니다.')
+      // contact 의 email + org_id 조회 — unsubscribes 테이블과 동기화하기 위함
+      const { data: contact, error: cErr } = await supabase
         .from('contacts')
-        .update({
-          is_unsubscribed: unsubscribe,
-          unsubscribed_at: unsubscribe ? new Date().toISOString() : null,
-        })
+        .select('email, org_id')
         .eq('id', id)
-      if (error) throw error
+        .maybeSingle()
+      if (cErr) throw cErr
+      if (!contact) throw new Error('연락처를 찾을 수 없습니다.')
+      const emailLower = contact.email.toLowerCase()
+
+      if (unsubscribe) {
+        // 활성화 — unsubscribes 에 INSERT (트리거가 contacts.is_unsubscribed=true 동기화).
+        // 이미 있으면 ON CONFLICT 무시. user_id 는 unsubscribes 스키마 NOT NULL.
+        const { error: insErr } = await supabase
+          .from('unsubscribes')
+          .upsert(
+            {
+              user_id: user.id,
+              org_id: contact.org_id,
+              email: emailLower,
+              reason: '수동 등록',
+            },
+            { onConflict: 'org_id,email', ignoreDuplicates: true },
+          )
+        if (insErr) throw insErr
+      } else {
+        // 해제 — unsubscribes 에서 DELETE (트리거가 contacts.is_unsubscribed=false 동기화).
+        // RLS 가 차단할 수 있어 count 검증.
+        const { error: delErr, count } = await supabase
+          .from('unsubscribes')
+          .delete({ count: 'exact' })
+          .eq('org_id', contact.org_id)
+          .eq('email', emailLower)
+        if (delErr) throw delErr
+        // unsubscribes 에 row 가 없었거나 RLS 가 막은 경우 — contacts 직접 UPDATE 도 시도.
+        // 둘 다 0건이면 사용자에게 명시적 안내.
+        const { error: updErr, count: updCount } = await supabase
+          .from('contacts')
+          .update(
+            { is_unsubscribed: false, unsubscribed_at: null },
+            { count: 'exact' },
+          )
+          .eq('id', id)
+          .eq('is_unsubscribed', true)
+        if (updErr) throw updErr
+        if ((count ?? 0) === 0 && (updCount ?? 0) === 0) {
+          throw new Error(
+            '해제 권한이 없거나 이미 해제 상태입니다. 새로고침 후 다시 시도해 주세요. (조직 관리자 권한 필요)',
+          )
+        }
+      }
     },
     onSuccess: (_data, { unsubscribe }) => {
       qc.invalidateQueries({ queryKey: [QUERY_KEY] })
       qc.invalidateQueries({ queryKey: [COMMON_QUERY_KEY] })
+      qc.invalidateQueries({ queryKey: ['unsubscribes'] })
       toast.success(unsubscribe ? '수신거부 처리되었습니다.' : '수신거부가 해제되었습니다.')
     },
+    onError: (e) => toast.error(e instanceof Error ? e.message : '처리 실패'),
   })
 }
 
