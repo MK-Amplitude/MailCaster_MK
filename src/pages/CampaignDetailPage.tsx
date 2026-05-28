@@ -37,6 +37,13 @@ import { useMemo, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -105,13 +112,44 @@ export default function CampaignDetailPage() {
     (campaign as any)?.signature_id ?? null
   )
   const { data: profile } = useProfile()
+
+  // 미리보기 수신자 선택 — 사용자가 어느 수신자 기준으로 변수 치환 결과를 볼지.
+  // 기본: 첫 번째 수신자. 변경 가능 (수신자 N명 캠페인에서 다른 수신자 결과도 확인).
+  const [previewRecipientId, setPreviewRecipientId] = useState<string | null>(null)
+  const previewRecipient = useMemo(() => {
+    if (recipients.length === 0) return null
+    const target = previewRecipientId
+      ? recipients.find((r) => r.id === previewRecipientId)
+      : null
+    return target ?? recipients[0]
+  }, [recipients, previewRecipientId])
+
+  // 변수 치환 — 미리보기 수신자의 variables 로 {{name}} 등 머지.
+  // recipients[0] 이 없는 경우 (draft 발송 전 일부 상태) 는 raw body 그대로.
+  const previewSubject = useMemo(() => {
+    const subj = campaign?.subject ?? ''
+    if (!previewRecipient || !subj) return subj
+    return renderTemplate(
+      subj,
+      (previewRecipient.variables ?? {}) as Record<string, string | null>,
+    )
+  }, [campaign?.subject, previewRecipient])
+
   const previewBodyHtml = useMemo(() => {
-    const body = campaign?.body_html ?? ''
+    let body = campaign?.body_html ?? ''
+    // 1) 변수 치환 — 첫 수신자 (또는 선택된 수신자) 의 variables 기준
+    if (previewRecipient && body) {
+      body = renderTemplate(
+        body,
+        (previewRecipient.variables ?? {}) as Record<string, string | null>,
+      )
+    }
+    // 2) 서명 append — body 에 이미 포함돼 있지 않을 때만
     const sigHtml = signature?.html ?? ''
     if (!sigHtml) return body
     if (body.includes(sigHtml)) return body
     return body ? `${body}<br/><br/>${sigHtml}` : sigHtml
-  }, [campaign?.body_html, signature?.html])
+  }, [campaign?.body_html, signature?.html, previewRecipient])
 
   // 답장이 있지만 reply_category 가 NULL 인 행 — 028 마이그레이션 이전 답장 또는
   // 분류 시점 예산 부족으로 누락된 케이스. "이전 답장 분류" 버튼이 이 수를 보고 표시.
@@ -569,10 +607,51 @@ export default function CampaignDetailPage() {
               </div>
             )}
             <div>
-              <Label>본문 미리보기</Label>
-              <div className="mt-1 border rounded bg-white dark:bg-gray-950">
+              <div className="flex items-center justify-between mb-1.5 gap-2">
+                <Label>본문 미리보기</Label>
+                {/* 수신자 선택 — 변수 치환 결과를 다른 수신자 기준으로도 확인 가능.
+                    1명이면 dropdown 숨김. 2+ 명이면 select 노출. */}
+                {recipients.length > 1 && previewRecipient && (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <span>수신자 기준:</span>
+                    <Select
+                      value={previewRecipient.id}
+                      onValueChange={setPreviewRecipientId}
+                    >
+                      <SelectTrigger className="h-7 w-48 text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {recipients.slice(0, 30).map((r) => (
+                          <SelectItem key={r.id} value={r.id} className="text-xs">
+                            {r.name || r.email}
+                          </SelectItem>
+                        ))}
+                        {recipients.length > 30 && (
+                          <div className="text-xs text-muted-foreground px-2 py-1">
+                            …외 {recipients.length - 30}명
+                          </div>
+                        )}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+              </div>
+              {/* 제목 — 변수 치환된 형태 */}
+              {campaign.subject && (
+                <div className="mb-2 px-3 py-2 border rounded bg-muted/30">
+                  <div className="text-xs text-muted-foreground mb-0.5">제목</div>
+                  <div className="text-sm font-medium">{previewSubject}</div>
+                </div>
+              )}
+              <div className="border rounded bg-white dark:bg-gray-950">
                 <SignaturePreview html={previewBodyHtml} />
               </div>
+              {previewRecipient && (
+                <div className="text-xs text-muted-foreground mt-1.5">
+                  {previewRecipient.name || previewRecipient.email} 님이 받게 될 메일 모습
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>
