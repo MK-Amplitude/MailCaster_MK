@@ -67,7 +67,10 @@ export default function ContactsPage() {
   const [formOpen, setFormOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [editContact, setEditContact] = useState<ContactWithGroups | null>(null)
-  const [detailContact, setDetailContact] = useState<ContactWithGroups | null>(null)
+  // detail sheet 는 id 만 보관하고 실제 데이터는 contacts 리스트에서 lookup.
+  // 그래야 invalidate / refetch 후 sheet 에 표시되는 데이터도 즉시 fresh — 자유 입력 후
+  // "반영 안 됨" 문제 차단.
+  const [detailContactId, setDetailContactId] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<ContactWithGroups | null>(null)
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
   const [addToGroupOpen, setAddToGroupOpen] = useState(false)
@@ -205,12 +208,20 @@ export default function ContactsPage() {
   const handleEdit = (contact: ContactWithGroups) => {
     setEditContact(contact)
     setFormOpen(true)
-    setDetailContact(null)
+    setDetailContactId(null)
   }
 
   const handleRowClick = (contact: ContactWithGroups) => {
-    setDetailContact(contact)
+    setDetailContactId(contact.id)
   }
+
+  // 실제 detail contact — contacts 리스트에서 매번 lookup (always fresh).
+  // 리스트 갱신 시 sheet 데이터도 자동 동기화.
+  const detailContact = useMemo(
+    () =>
+      detailContactId ? contacts.find((c) => c.id === detailContactId) ?? null : null,
+    [contacts, detailContactId],
+  )
 
   const handleDelete = async () => {
     if (deleteTarget) {
@@ -583,7 +594,7 @@ export default function ContactsPage() {
       <ContactDetailSheet
         contact={detailContact}
         open={!!detailContact}
-        onOpenChange={(v) => !v && setDetailContact(null)}
+        onOpenChange={(v) => !v && setDetailContactId(null)}
         onEdit={handleEdit}
         onToggleUnsubscribe={handleToggleUnsub}
       />
