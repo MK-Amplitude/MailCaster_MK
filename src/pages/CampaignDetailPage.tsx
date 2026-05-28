@@ -449,58 +449,64 @@ export default function CampaignDetailPage() {
           </Card>
         )}
 
-        {/* 진행 상태 */}
-        <Card>
-          <CardContent className="p-4">
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-3">
-              <Stat label="전체" value={campaign.total_count} icon={Mail} color="text-foreground" />
-              <Stat
-                label="성공"
-                value={campaign.sent_count}
-                icon={CheckCircle2}
-                color="text-green-600 dark:text-green-400"
-              />
-              <Stat
-                label="실패"
-                value={campaign.failed_count}
-                icon={XCircle}
-                color="text-red-600 dark:text-red-400"
-              />
-              <Stat
-                label="남음"
-                value={campaign.total_count - campaign.sent_count - campaign.failed_count}
-                icon={Clock}
-                color="text-amber-600 dark:text-amber-400"
-              />
-            </div>
-            {campaign.total_count > 0 && (
-              <div className="space-y-1">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-muted-foreground">진행률</span>
-                  <span className="font-medium">{progress}%</span>
-                </div>
-                <div className="h-2 bg-muted rounded-full overflow-hidden">
-                  <div
-                    className={`h-full transition-all ${
-                      campaign.status === 'sent'
-                        ? 'bg-green-500'
-                        : campaign.status === 'failed'
-                          ? 'bg-red-500'
-                          : 'bg-amber-500'
-                    }`}
-                    style={{ width: `${progress}%` }}
-                  />
-                </div>
+        {/* 진행 상태 — 1:1 발송 (total_count===1) 에선 마케팅 메트릭 의미 없으므로 숨김.
+            대신 1:1 모드에서는 ThreadMessagesSection 의 발송된 메시지와 회신/오픈 추적이
+            훨씬 actionable. */}
+        {campaign.total_count > 1 && (
+          <Card>
+            <CardContent className="p-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-3">
+                <Stat label="전체" value={campaign.total_count} icon={Mail} color="text-foreground" />
+                <Stat
+                  label="성공"
+                  value={campaign.sent_count}
+                  icon={CheckCircle2}
+                  color="text-green-600 dark:text-green-400"
+                />
+                <Stat
+                  label="실패"
+                  value={campaign.failed_count}
+                  icon={XCircle}
+                  color="text-red-600 dark:text-red-400"
+                />
+                <Stat
+                  label="남음"
+                  value={campaign.total_count - campaign.sent_count - campaign.failed_count}
+                  icon={Clock}
+                  color="text-amber-600 dark:text-amber-400"
+                />
               </div>
-            )}
-          </CardContent>
-        </Card>
+              {campaign.total_count > 0 && (
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-muted-foreground">진행률</span>
+                    <span className="font-medium">{progress}%</span>
+                  </div>
+                  <div className="h-2 bg-muted rounded-full overflow-hidden">
+                    <div
+                      className={`h-full transition-all ${
+                        campaign.status === 'sent'
+                          ? 'bg-green-500'
+                          : campaign.status === 'failed'
+                            ? 'bg-red-500'
+                            : 'bg-amber-500'
+                      }`}
+                      style={{ width: `${progress}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
-        {/* 분석 섹션 — recipients 가 0이면 내부에서 null 반환 */}
-        <CampaignAnalytics
-          recipients={recipients}
-          enableOpenTracking={campaign.enable_open_tracking}
-        />
+        {/* 분석 섹션 — 1:1 (total_count===1) 에선 비율/통계 의미 없어 숨김. */}
+        {campaign.total_count > 1 && (
+          <CampaignAnalytics
+            recipients={recipients}
+            enableOpenTracking={campaign.enable_open_tracking}
+          />
+        )}
 
         {/* 메일 내용 */}
         <Card>

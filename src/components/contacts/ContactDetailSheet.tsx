@@ -17,6 +17,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Pencil, UserX, UserCheck, Building2, Phone, Clock, FileText, Sparkles, User, History, Tag, Network, Plus, X, FolderPlus, Search, Activity, Mail } from 'lucide-react'
 import { ContactTimeline } from '@/components/engagement/ContactTimeline'
 import { ContactMailHistory } from '@/components/contacts/ContactMailHistory'
+import { useComposeLauncher } from '@/components/campaigns/ComposeLauncher'
 import {
   CUSTOMER_TYPE_OPTIONS,
   type ContactWithGroups,
@@ -48,6 +49,7 @@ export function ContactDetailSheet({
 }: ContactDetailSheetProps) {
   const { data: history = [] } = useContactHistory(contact?.id)
   const { user, isOrgAdmin } = useAuth()
+  const { openCompose } = useComposeLauncher()
   const updateContact = useUpdateContact()
   // 오너 또는 org admin 만 수정/수신거부 토글 가능 — RLS 와 일치
   const canMutate = !!contact && (contact.user_id === user?.id || isOrgAdmin)
@@ -84,6 +86,24 @@ export function ContactDetailSheet({
               </div>
               {canMutate && (
                 <div className="flex gap-1">
+                  {/* 1:1 메일 발송 — 가장 자주 쓸 액션이라 primary 위치에 배치 */}
+                  <Button
+                    variant="default"
+                    size="sm"
+                    className="h-8 gap-1.5"
+                    onClick={() =>
+                      openCompose({
+                        contactId: contact.id,
+                        email: contact.email,
+                        name: contact.name,
+                      })
+                    }
+                    title="이 사람에게 메일 보내기"
+                    disabled={contact.is_unsubscribed}
+                  >
+                    <Mail className="w-3.5 h-3.5" />
+                    메일 작성
+                  </Button>
                   <Button
                     variant="outline"
                     size="icon"

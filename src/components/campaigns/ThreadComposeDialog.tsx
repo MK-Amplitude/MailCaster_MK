@@ -34,7 +34,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Reply, ReplyAll, Forward, Loader2, Search } from 'lucide-react'
+import { Reply, ReplyAll, Forward, Loader2, Search, Mail } from 'lucide-react'
 import {
   Popover,
   PopoverContent,
@@ -97,12 +97,15 @@ export function ThreadComposeDialog({
     [signatures],
   )
 
-  // mode → 제목 prefix
-  const subjectPrefix = mode === 'forward' ? 'Fwd: ' : 'Re: '
+  // mode → 제목 prefix.
+  //   new      : prefix 없음, 사용자가 직접 입력
+  //   forward  : Fwd:
+  //   followup / reply : Re:
+  const subjectPrefix = mode === 'new' ? '' : mode === 'forward' ? 'Fwd: ' : 'Re: '
   const initialSubject = (() => {
+    if (mode === 'new') return original.subject ?? ''
     const base = original.subject ?? ''
     if (!base) return subjectPrefix
-    // 이미 Re:/Fwd: 시작이면 중복 prefix 방지
     if (/^(Re|RE|Fwd|FW|FWD):/i.test(base)) return base
     return `${subjectPrefix}${base}`
   })()
@@ -183,14 +186,14 @@ export function ThreadComposeDialog({
         subject,
         html: finalBodyHtml,
         // followup / reply: 같은 thread 안에 들어가야 함. forward: 새 thread.
-        threadId: mode === 'forward' ? null : original.gmailThreadId,
+        threadId: mode === 'forward' || mode === 'new' ? null : original.gmailThreadId,
         // followup 도 In-Reply-To 헤더 넣어 Gmail 이 "답장 chain" 으로 인식하게 함.
         // (Gmail 은 threadId 만으로도 묶지만, 표준 헤더를 같이 보내는 게 모든 클라이언트 호환)
         inReplyToGmailMessageId:
-          mode === 'forward' ? null : original.gmailMessageId,
+          mode === 'forward' || mode === 'new' ? null : original.gmailMessageId,
         // 이미 알고 있는 RFC Message-ID (thread_message_replies.rfc_message_id 등) — fetch 스킵용
         inReplyToRfcMessageId:
-          mode === 'forward' ? null : original.rfcMessageId ?? null,
+          mode === 'forward' || mode === 'new' ? null : original.rfcMessageId ?? null,
         campaignId: recipient.campaignId,
         recipientId: recipient.recipientId,
         contactId: recipient.contactId,
@@ -225,10 +228,10 @@ export function ThreadComposeDialog({
         </DialogHeader>
 
         <div className="space-y-3">
-          {/* 받는 사람 — forward 만 변경 가능 */}
+          {/* 받는 사람 — forward / new 는 변경 가능 (Contact 검색 + 직접 입력) */}
           <div className="space-y-1.5">
             <Label htmlFor="thread-to" className="text-xs">받는 사람</Label>
-            {mode === 'forward' ? (
+            {mode === 'forward' || mode === 'new' ? (
               <div className="flex items-center gap-2">
                 <Input
                   id="thread-to"
@@ -467,6 +470,14 @@ function getModeMeta(mode: ThreadMode) {
         modeLabel: 'Forward',
         description: '이 메일을 다른 사람에게 전달합니다 — 새 thread 가 시작됩니다.',
         sendLabel: '전달',
+      }
+    case 'new':
+      return {
+        icon: Mail,
+        title: '메일 작성',
+        modeLabel: '새 메일',
+        description: '새로운 1:1 메일을 작성합니다 — 받는 사람과의 새 대화가 시작됩니다.',
+        sendLabel: '발송',
       }
   }
 }

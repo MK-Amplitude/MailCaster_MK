@@ -26,7 +26,7 @@ const UPDATE_BACKOFF_BASE_MS = 500
 // migration 052 의 INTERVAL '10 minutes' + migration 055 의 cron */10 = 최대 20분 안내.
 const STALE_RECONCILE_NOTICE = '최대 20분 안에 자동 정정됩니다.'
 
-export type ThreadMode = 'followup' | 'reply' | 'forward'
+export type ThreadMode = 'followup' | 'reply' | 'forward' | 'new'
 
 export interface SendThreadInput {
   mode: ThreadMode
@@ -286,7 +286,13 @@ export function useSendThreadMessage() {
         qc.invalidateQueries({ queryKey: ['campaigns', 'recipients'] })
       }
       const label =
-        vars.mode === 'followup' ? '팔로업' : vars.mode === 'reply' ? '회신' : '전달'
+        vars.mode === 'followup'
+          ? '팔로업'
+          : vars.mode === 'reply'
+            ? '회신'
+            : vars.mode === 'forward'
+              ? '전달'
+              : '메일'
       toast.success(`${label} 발송 완료`)
     },
     onError: (e) => {

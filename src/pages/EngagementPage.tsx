@@ -21,7 +21,10 @@ import {
   AlertCircle,
   Zap,
   Layers,
+  Inbox,
 } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { useInboxStats } from '@/hooks/useInboxStats'
 import { cn } from '@/lib/utils'
 import { useContactEngagement } from '@/hooks/useContactEngagement'
 import { useCampaignEngagement } from '@/hooks/useCampaignEngagement'
@@ -75,6 +78,9 @@ export default function EngagementPage() {
     return acc
   }, [rows])
 
+  const navigate = useNavigate()
+  const inboxStats = useInboxStats()
+
   // 차트 클릭 — additive
   const pushPeopleFilter = (f: PeopleTabExternalFilter) => {
     setTab('people')
@@ -111,7 +117,22 @@ export default function EngagementPage() {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+          {/* 받은편지함 액션 카드 — 가장 actionable 한 정보를 첫 두 자리에 배치 */}
+          <KpiCard
+            icon={Inbox}
+            label="미응답 받은 메일"
+            value={inboxStats.unrepliedCount}
+            accent="text-orange-600 dark:text-orange-400"
+            onClick={() => navigate('/inbox')}
+          />
+          <KpiCard
+            icon={Mail}
+            label="오늘 받은 메일"
+            value={inboxStats.todayCount}
+            accent="text-cyan-600 dark:text-cyan-400"
+            onClick={() => navigate('/inbox')}
+          />
           <KpiCard
             icon={Users}
             label="총 연락처"

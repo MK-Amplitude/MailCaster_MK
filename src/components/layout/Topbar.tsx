@@ -9,14 +9,16 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { Moon, Sun, LogOut, Settings } from 'lucide-react'
+import { Moon, Sun, LogOut, Settings, Mail } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { OrgSwitcher } from './OrgSwitcher'
 import { PendingInvitesBanner } from './PendingInvitesBanner'
+import { useComposeLauncher } from '@/components/campaigns/ComposeLauncher'
 
 export function Topbar() {
   const { user, signOut } = useAuth()
   const navigate = useNavigate()
+  const { openCompose } = useComposeLauncher()
   const [dark, setDark] = useState(() =>
     document.documentElement.classList.contains('dark')
   )
@@ -42,6 +44,16 @@ export function Topbar() {
         <PendingInvitesBanner />
       </div>
       <div className="flex items-center gap-2">
+        {/* 글로벌 메일 작성 — 어느 페이지에서도 1:1 ad-hoc 발송 1 클릭 진입 */}
+        <Button
+          variant="default"
+          size="sm"
+          onClick={() => openCompose()}
+          className="h-8 gap-1.5"
+        >
+          <Mail className="w-3.5 h-3.5" />
+          메일 작성
+        </Button>
         <Button variant="ghost" size="icon" onClick={toggleDark} className="h-8 w-8">
           {dark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
         </Button>

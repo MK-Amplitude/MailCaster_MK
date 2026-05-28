@@ -44,13 +44,17 @@ export function ContactMailHistory({ contactId, contactName }: Props) {
   return (
     <>
       <div className="space-y-2">
-        {items.map((it, idx) => (
-          <MailHistoryRow
-            key={`${it.kind}-${it.row.id}-${idx}`}
-            item={it}
-            onReplyClick={(inb) => setReplyTo(inb)}
-          />
-        ))}
+        {items.map((it, idx) => {
+          const itemId =
+            it.kind === 'campaign' ? it.row.recipient.id : it.row.id
+          return (
+            <MailHistoryRow
+              key={`${it.kind}-${itemId}-${idx}`}
+              item={it}
+              onReplyClick={(inb) => setReplyTo(inb)}
+            />
+          )
+        })}
       </div>
 
       {replyTo && (
@@ -96,7 +100,13 @@ function MailHistoryRow({
   if (item.kind === 'outbound') {
     const m = item.row
     const modeLabelKr =
-      m.mode === 'followup' ? '팔로업' : m.mode === 'reply' ? '회신' : '전달'
+      m.mode === 'followup'
+        ? '팔로업'
+        : m.mode === 'reply'
+          ? '회신'
+          : m.mode === 'forward'
+            ? '전달'
+            : '새 메일'
     return (
       <div className="border rounded-lg p-3 bg-blue-50/40 dark:bg-blue-950/20">
         <div className="flex items-start gap-2">
@@ -136,6 +146,58 @@ function MailHistoryRow({
               <div
                 className="prose prose-sm max-w-none dark:prose-invert mt-2 border-t pt-2"
                 dangerouslySetInnerHTML={{ __html: m.body_html }}
+              />
+            )}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // campaign — 캠페인 본 발송 (recipients) — outbound 색조 유지하되 별도 라벨
+  if (item.kind === 'campaign') {
+    const r = item.row.recipient
+    const subject = item.row.campaignSubject
+    const bodyHtml = item.row.campaignBodyHtml
+    return (
+      <div className="border rounded-lg p-3 bg-blue-50/40 dark:bg-blue-950/20">
+        <div className="flex items-start gap-2">
+          <ArrowUpRight className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-muted-foreground">{ts}</span>
+              <Badge variant="secondary" className="text-xs">
+                캠페인 발송
+              </Badge>
+              {r.bounced && (
+                <span className="inline-flex items-center gap-1 text-xs text-orange-600 dark:text-orange-400">
+                  <AlertTriangle className="w-3 h-3" />
+                  반송
+                </span>
+              )}
+              {!r.bounced && r.replied && (
+                <span className="inline-flex items-center gap-1 text-xs text-cyan-600 dark:text-cyan-400">
+                  <MessageCircle className="w-3 h-3" />
+                  회신함
+                </span>
+              )}
+            </div>
+            <div className="font-medium text-sm mt-0.5 truncate">
+              {subject || '(제목 없음)'}
+            </div>
+            {bodyHtml && (
+              <button
+                type="button"
+                onClick={() => setExpanded((v) => !v)}
+                className="text-xs text-muted-foreground mt-1 hover:text-foreground"
+              >
+                {expanded ? '본문 접기' : '본문 보기'}
+              </button>
+            )}
+            {expanded && bodyHtml && (
+              <div
+                className="prose prose-sm max-w-none dark:prose-invert mt-2 border-t pt-2"
+                dangerouslySetInnerHTML={{ __html: bodyHtml }}
               />
             )}
           </div>

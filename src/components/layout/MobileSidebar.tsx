@@ -13,15 +13,24 @@ import {
   Ban,
   FileText,
   Paperclip,
+  Inbox,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-const navItems = [
+// 데스크톱 Sidebar 와 동일 IA: 고빈도 행위 상단, 자산 하단.
+type NavItem = {
+  to: string
+  icon: typeof Mail
+  label: string
+  end?: boolean
+}
+const navItems: NavItem[] = [
   { to: '/', icon: LayoutDashboard, label: '대시보드', end: true },
+  { to: '/inbox', icon: Inbox, label: '받은편지함' },
   { to: '/contacts', icon: Users, label: '연락처' },
-  { to: '/groups', icon: FolderOpen, label: '그룹' },
   { to: '/campaigns', icon: Mail, label: '메일 발송' },
   { to: '/templates', icon: FileText, label: '템플릿' },
+  { to: '/groups', icon: FolderOpen, label: '그룹' },
   { to: '/signatures', icon: PenLine, label: '서명' },
   { to: '/attachments', icon: Paperclip, label: '첨부 파일' },
   { to: '/unsubscribes', icon: Ban, label: '수신거부' },

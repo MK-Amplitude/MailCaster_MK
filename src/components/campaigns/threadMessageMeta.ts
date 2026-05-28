@@ -9,6 +9,7 @@ import {
   Reply,
   ReplyAll,
   Forward,
+  Mail,
   CheckCircle2,
   XCircle,
   Clock,
@@ -33,6 +34,11 @@ export const THREAD_MODE_META: Record<
     label: '전달',
     Icon: Forward,
     badgeClass: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300',
+  },
+  new: {
+    label: '새 메일',
+    Icon: Mail,
+    badgeClass: 'bg-gray-100 text-gray-700 dark:bg-gray-900/40 dark:text-gray-300',
   },
 }
 
