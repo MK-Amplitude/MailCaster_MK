@@ -484,6 +484,8 @@ export interface Database {
           // Phase 6 (migration 010) — 스케줄 발송 체크포인트
           sending_started_at: string | null
           last_processed_recipient_id: string | null
+          // 058 — broadcast (다중) vs one_to_one (1:1) 구분
+          kind: 'broadcast' | 'one_to_one'
         }
         Insert: {
           id?: string
@@ -514,6 +516,7 @@ export interface Database {
           send_mode?: DbSendMode
           sending_started_at?: string | null
           last_processed_recipient_id?: string | null
+          kind?: 'broadcast' | 'one_to_one'
         }
         Update: {
           name?: string
@@ -540,6 +543,7 @@ export interface Database {
           send_mode?: DbSendMode
           sending_started_at?: string | null
           last_processed_recipient_id?: string | null
+          kind?: 'broadcast' | 'one_to_one'
         }
         Relationships: []
       }

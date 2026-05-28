@@ -21,6 +21,7 @@ import NotFoundPage from '@/pages/NotFoundPage'
 //   - AttachmentsPage: 파서/스토리지 의존
 //   - SettingsPage / UnsubscribesPage: 자주 쓰지 않음
 const InboxPage = lazy(() => import('@/pages/InboxPage'))
+const ContactPage = lazy(() => import('@/pages/ContactPage'))
 const SignaturesPage = lazy(() => import('@/pages/SignaturesPage'))
 const TemplatesPage = lazy(() => import('@/pages/TemplatesPage'))
 const CampaignsPage = lazy(() => import('@/pages/CampaignsPage'))
@@ -89,6 +90,7 @@ export default function App() {
                   <Route path="engagement" element={<Navigate to="/" replace />} />
                   <Route path="inbox" element={<InboxPage />} />
                   <Route path="contacts" element={<ContactsPage />} />
+                  <Route path="contacts/:id" element={<ContactPage />} />
                   <Route path="groups" element={<GroupsPage />} />
                   <Route path="signatures" element={<SignaturesPage />} />
                   <Route path="templates" element={<TemplatesPage />} />
