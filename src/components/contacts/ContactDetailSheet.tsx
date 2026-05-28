@@ -580,8 +580,16 @@ function ParentGroupEditor({
           </div>
         </div>
       )}
+      {/* 신규 그룹사 등록 안내 — 사용자가 "리스트에 미리 추가해야 하나?" 헷갈림 방지 */}
+      {value.trim() &&
+        !options.includes(value.trim()) &&
+        similarSuggestions.length === 0 && (
+          <p className="text-[10px] text-emerald-700 dark:text-emerald-300">
+            ✓ &ldquo;{value.trim()}&rdquo; 을(를) 새 그룹사로 등록합니다 — 저장하면 다음부터 자동완성에 표시됩니다.
+          </p>
+        )}
       <p className="text-[10px] text-muted-foreground">
-        목록에서 선택하거나 새 그룹명을 직접 입력. Enter 또는 다른 곳 클릭 시 저장.
+        그룹사 이름을 직접 입력하세요 — 별도 등록 절차 없음. Enter 또는 다른 곳 클릭 시 저장.
       </p>
     </div>
   )
