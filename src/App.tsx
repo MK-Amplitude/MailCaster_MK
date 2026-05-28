@@ -20,6 +20,7 @@ import NotFoundPage from '@/pages/NotFoundPage'
 //   - TemplatesPage / SignaturesPage: TipTap 의존
 //   - AttachmentsPage: 파서/스토리지 의존
 //   - SettingsPage / UnsubscribesPage: 자주 쓰지 않음
+const InboxPage = lazy(() => import('@/pages/InboxPage'))
 const SignaturesPage = lazy(() => import('@/pages/SignaturesPage'))
 const TemplatesPage = lazy(() => import('@/pages/TemplatesPage'))
 const CampaignsPage = lazy(() => import('@/pages/CampaignsPage'))
@@ -86,6 +87,7 @@ export default function App() {
                   {/* "/" 가 곧 관계 관리 대시보드. /engagement 는 옛 북마크용 redirect. */}
                   <Route index element={<EngagementPage />} />
                   <Route path="engagement" element={<Navigate to="/" replace />} />
+                  <Route path="inbox" element={<InboxPage />} />
                   <Route path="contacts" element={<ContactsPage />} />
                   <Route path="groups" element={<GroupsPage />} />
                   <Route path="signatures" element={<SignaturesPage />} />

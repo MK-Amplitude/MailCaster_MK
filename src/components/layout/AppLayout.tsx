@@ -3,11 +3,15 @@ import { Sidebar } from './Sidebar'
 import { Topbar } from './Topbar'
 import { MobileSidebar } from './MobileSidebar'
 import { ErrorBoundary } from '@/components/common/ErrorBoundary'
+import { ComposeLauncherProvider } from '@/components/campaigns/ComposeLauncher'
 import { Mail } from 'lucide-react'
 
 export function AppLayout() {
+  // ComposeLauncherProvider — 전역 "+ 메일 작성" launcher 를 모든 페이지가 useComposeLauncher() 로 사용.
+  // ProtectedRoute 내부라 인증된 사용자만 활성화.
   return (
-    <div className="flex h-screen overflow-hidden bg-background">
+    <ComposeLauncherProvider>
+      <div className="flex h-screen overflow-hidden bg-background">
       <Sidebar />
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
         {/* 모바일 topbar
@@ -39,6 +43,7 @@ export function AppLayout() {
           </ErrorBoundary>
         </main>
       </div>
-    </div>
+      </div>
+    </ComposeLauncherProvider>
   )
 }

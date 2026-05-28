@@ -737,7 +737,7 @@ export interface Database {
           campaign_id: string | null
           recipient_id: string | null
           contact_id: string | null
-          mode: 'followup' | 'reply' | 'forward'
+          mode: 'followup' | 'reply' | 'forward' | 'new'
           to_email: string
           to_name: string | null
           cc: string[]
@@ -775,7 +775,7 @@ export interface Database {
           campaign_id?: string | null
           recipient_id?: string | null
           contact_id?: string | null
-          mode: 'followup' | 'reply' | 'forward'
+          mode: 'followup' | 'reply' | 'forward' | 'new'
           to_email: string
           to_name?: string | null
           cc?: string[]

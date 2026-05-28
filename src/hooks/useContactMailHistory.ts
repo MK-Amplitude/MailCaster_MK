@@ -10,21 +10,31 @@ import type { Database } from '@/types/database.types'
 export type InboundMessage = Database['mailcaster']['Tables']['inbound_messages']['Row']
 export type OutboundThreadMessage =
   Database['mailcaster']['Tables']['thread_messages']['Row']
+export type CampaignRecipientRow = Database['mailcaster']['Tables']['recipients']['Row']
+
+// 캠페인 발송 1건의 메일 히스토리 항목 — recipients + campaign 메타 join
+export interface CampaignMailRow {
+  recipient: CampaignRecipientRow
+  campaignSubject: string | null
+  campaignBodyHtml: string | null
+  campaignId: string
+}
 
 export type MailHistoryItem =
   | { kind: 'outbound'; ts: string; row: OutboundThreadMessage }
   | { kind: 'inbound'; ts: string; row: InboundMessage }
+  | { kind: 'campaign'; ts: string; row: CampaignMailRow }
 
 const QK = ['contact_mail_history']
 
-/** Contact 의 outbound + inbound 메일을 시간 역순으로 통합 */
+/** Contact 의 outbound thread_messages + inbound + 캠페인 발송 메일을 시간 역순으로 통합 */
 export function useContactMailHistory(contactId: string | undefined) {
   return useQuery({
     queryKey: [...QK, contactId],
     queryFn: async (): Promise<MailHistoryItem[]> => {
       if (!contactId) return []
 
-      // outbound — thread_messages.contact_id = contactId
+      // outbound thread_messages — 1:1 후속 (followup/reply/forward/new)
       const outboundP = supabase
         .from('thread_messages')
         .select('*')
@@ -32,7 +42,7 @@ export function useContactMailHistory(contactId: string | undefined) {
         .order('created_at', { ascending: false })
         .limit(100)
 
-      // inbound — inbound_messages.contact_id = contactId
+      // inbound — 받은 메일
       const inboundP = supabase
         .from('inbound_messages')
         .select('*')
@@ -40,9 +50,20 @@ export function useContactMailHistory(contactId: string | undefined) {
         .order('received_at', { ascending: false })
         .limit(100)
 
-      const [out, inb] = await Promise.all([outboundP, inboundP])
+      // 캠페인 발송 메일 — recipients + campaign 정보 join.
+      // 캠페인 본 발송도 Contact 의 첫 메일이라 history 에 포함되어야 함.
+      const campaignP = supabase
+        .from('recipients')
+        .select('*, campaigns!inner(id, subject, body_html)')
+        .eq('contact_id', contactId)
+        .in('status', ['sent', 'bounced', 'failed'])
+        .order('sent_at', { ascending: false, nullsFirst: false })
+        .limit(100)
+
+      const [out, inb, cam] = await Promise.all([outboundP, inboundP, campaignP])
       if (out.error) throw out.error
       if (inb.error) throw inb.error
+      if (cam.error) throw cam.error
 
       const items: MailHistoryItem[] = []
       for (const row of out.data ?? []) {
@@ -57,6 +78,24 @@ export function useContactMailHistory(contactId: string | undefined) {
           kind: 'inbound',
           ts: row.received_at,
           row: row as InboundMessage,
+        })
+      }
+      for (const row of cam.data ?? []) {
+        // campaigns join 결과는 단일 객체 또는 배열로 올 수 있음 (Supabase JS).
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const r = row as any
+        const camp = Array.isArray(r.campaigns) ? r.campaigns[0] : r.campaigns
+        if (!camp) continue
+        const ts = r.sent_at ?? r.created_at ?? new Date(0).toISOString()
+        items.push({
+          kind: 'campaign',
+          ts,
+          row: {
+            recipient: r as CampaignRecipientRow,
+            campaignSubject: camp.subject ?? null,
+            campaignBodyHtml: camp.body_html ?? null,
+            campaignId: camp.id,
+          },
         })
       }
       items.sort((a, b) => b.ts.localeCompare(a.ts))
