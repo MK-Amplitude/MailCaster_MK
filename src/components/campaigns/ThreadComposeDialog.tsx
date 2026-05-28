@@ -107,21 +107,29 @@ export function ThreadComposeDialog({
     return `${subjectPrefix}${base}`
   })()
 
-  // 본문 초기값 — 사용자 영역 (빈 div) + 시그니처 + 원본 인용 블록.
-  // followup 도 인용 포함: 발송자가 "내가 뭐 보냈더라" 를 보면서 쓸 수 있어야 하고,
-  // Gmail 답장 UX 와도 일관 (Gmail 은 같은 thread 안에서 인용을 자동 collapse).
-  // 사용자가 원하면 편집기에서 인용 블록을 지우고 보낼 수 있음.
+  // 본문 초기값 — 사용자가 작성하는 영역만 (빈 본문 + 시그니처).
+  // 인용 블록은 본문 외부 collapse 패널로 분리 (E1) → 시그니처가 본문과 인용에 동시에 보이는 중복 문제 해결.
+  // 발송 시 includeQuote=true 면 본문 끝에 인용을 합쳐 전송.
   const initialBody = (() => {
     const sigPart = defaultSig?.html ? `<br/><br/>${defaultSig.html}` : ''
-    const quote = original.bodyHtml ? buildQuoteBlock(original) : ''
-    return `<p></p>${sigPart}${quote}`
+    return `<p></p>${sigPart}`
   })()
+
+  // 발송 시 본문에 합쳐질 인용 블록 (defaults: 있으면 포함)
+  const quoteBlock = useMemo(
+    () => (original.bodyHtml ? buildQuoteBlock(original) : ''),
+    [original],
+  )
 
   // 폼 state
   const [subject, setSubject] = useState(initialSubject)
   const [body, setBody] = useState(initialBody)
   const [toEmail, setToEmail] = useState(recipient.email)
   const [toName, setToName] = useState(recipient.name ?? '')
+  // 인용 포함 여부 — 기본 true. 사용자가 끌 수 있음.
+  const [includeQuote, setIncludeQuote] = useState<boolean>(true)
+  // 미리보기 모드 — 발송 직전 최종 모습 (본문 + 인용) read-only 표시
+  const [showPreview, setShowPreview] = useState(false)
 
   // dialog 가 새로 열릴 때 (또는 mode/recipient 바뀔 때) 초기값으로 reset.
   useEffect(() => {
@@ -130,9 +138,16 @@ export function ThreadComposeDialog({
     setBody(initialBody)
     setToEmail(recipient.email)
     setToName(recipient.name ?? '')
+    setIncludeQuote(true)
+    setShowPreview(false)
   // initialSubject / initialBody 는 매 렌더 새로 계산되므로 deps 에서 제외 — open 만 핵심.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, mode, recipient.email])
+
+  // 발송될 최종 HTML — 본문 + (포함 여부에 따라) 인용 블록
+  const finalBodyHtml = useMemo(() => {
+    return includeQuote && quoteBlock ? `${body}${quoteBlock}` : body
+  }, [body, includeQuote, quoteBlock])
 
   // forward 모드의 To 변경용 — 연락처 검색 + 직접 입력
   const [toPickerOpen, setToPickerOpen] = useState(false)
@@ -166,7 +181,7 @@ export function ThreadComposeDialog({
         toEmail,
         toName,
         subject,
-        html: body,
+        html: finalBodyHtml,
         // followup / reply: 같은 thread 안에 들어가야 함. forward: 새 thread.
         threadId: mode === 'forward' ? null : original.gmailThreadId,
         // followup 도 In-Reply-To 헤더 넣어 Gmail 이 "답장 chain" 으로 인식하게 함.
@@ -298,13 +313,29 @@ export function ThreadComposeDialog({
               <Select
                 value={defaultSig?.id ?? ''}
                 onValueChange={(sigId) => {
-                  // 본문 끝의 기존 서명 (defaultSig) 을 선택된 서명으로 교체.
-                  // 단순 정책 — defaultSig.html 부분을 replace. 없으면 append.
+                  // 본문 끝의 기존 서명 을 선택된 서명으로 교체.
+                  // 정확한 정책 — TipTap 이 정규화한 HTML 매칭이 실패할 수 있으므로
+                  // (a) 직접 HTML 매칭 시도, (b) plain-text fragment 매칭 시도, (c) append.
+                  // 어느 케이스든 시그니처가 본문에 2개 들어가지 않음.
                   const sig = signatures.find((s) => s.id === sigId)
                   if (!sig) return
                   setBody((prev) => {
                     if (defaultSig?.html && prev.includes(defaultSig.html)) {
                       return prev.replace(defaultSig.html, sig.html)
+                    }
+                    // plain text fragment 로 위치 찾기 — TipTap 정규화로 HTML 이 달라져도 매칭
+                    if (defaultSig?.html) {
+                      const sigPlainFragment = defaultSig.html
+                        .replace(/<[^>]+>/g, ' ')
+                        .replace(/\s+/g, ' ')
+                        .trim()
+                        .slice(0, 60)
+                      const prevPlain = prev.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+                      if (sigPlainFragment && prevPlain.includes(sigPlainFragment)) {
+                        // 이미 비슷한 시그니처가 본문에 있음 — 새로 append 안 함 (중복 방지).
+                        // 사용자가 본문에서 시그니처를 수동 편집한 상황 → 그대로 둠.
+                        return prev
+                      }
                     }
                     return `${prev}<br/><br/>${sig.html}`
                   })
@@ -329,11 +360,58 @@ export function ThreadComposeDialog({
             </div>
           )}
 
-          {/* 본문 — TipTap */}
+          {/* 본문 — TipTap 또는 미리보기 토글 */}
           <div className="space-y-1.5">
-            <Label className="text-xs">본문</Label>
-            <TipTapEditor value={body} onChange={setBody} placeholder="본문을 입력하세요" />
+            <div className="flex items-center justify-between">
+              <Label className="text-xs">본문 {showPreview && <span className="text-muted-foreground">(미리보기 — 받는 사람이 볼 모습)</span>}</Label>
+              <button
+                type="button"
+                onClick={() => setShowPreview((v) => !v)}
+                className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+              >
+                {showPreview ? '편집으로 돌아가기' : '미리보기'}
+              </button>
+            </div>
+            {showPreview ? (
+              <div className="border rounded-md p-4 max-h-[400px] overflow-y-auto bg-white dark:bg-zinc-950">
+                <div
+                  className="prose prose-sm max-w-none dark:prose-invert"
+                  // 발송될 최종 HTML 그대로 — 본문 + (포함 옵션 시) 인용 블록
+                  dangerouslySetInnerHTML={{ __html: finalBodyHtml }}
+                />
+              </div>
+            ) : (
+              <TipTapEditor value={body} onChange={setBody} placeholder="본문을 입력하세요" />
+            )}
           </div>
+
+          {/* 이전 대화 인용 — 본문 외부의 collapse 패널 (Gmail 답장 UX 와 일관)
+              - 시그니처가 본문과 인용에 동시 표시되던 중복 문제를 분리로 해결
+              - 사용자가 "함께 보내기" 체크박스로 인용 포함 여부 토글 */}
+          {original.bodyHtml && !showPreview && (
+            <details className="border rounded-md group">
+              <summary className="cursor-pointer px-3 py-2 text-xs text-muted-foreground hover:text-foreground select-none flex items-center justify-between">
+                <span>이전 대화 보기 {includeQuote ? '— 함께 발송됩니다' : '— 발송에서 제외됨'}</span>
+                <span className="text-muted-foreground group-open:rotate-180 transition-transform">▾</span>
+              </summary>
+              <div className="border-t p-3 space-y-2">
+                <label className="flex items-center gap-2 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={includeQuote}
+                    onChange={(e) => setIncludeQuote(e.target.checked)}
+                    className="rounded"
+                  />
+                  <span>받는 사람에게 인용 함께 보내기</span>
+                </label>
+                <div
+                  className="prose prose-sm max-w-none dark:prose-invert max-h-60 overflow-y-auto text-muted-foreground"
+                  // 읽기 전용 미리보기 — 편집은 불가 (이전 대화이므로 수정할 일 없음)
+                  dangerouslySetInnerHTML={{ __html: original.bodyHtml ?? '' }}
+                />
+              </div>
+            </details>
+          )}
         </div>
 
         <DialogFooter>
