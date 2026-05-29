@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -501,6 +501,9 @@ function ParentGroupEditor({
   const qc = useQueryClient()
   const [value, setValue] = useState(contact.parent_group ?? '')
   const [aiPending, setAiPending] = useState(false)
+  // 자동 호출 attempted 추적 — 같은 session 에서 같은 contact 에 자동 호출 1회만.
+  // 사용자가 매번 sheet 열고 닫을 때마다 LLM 호출되는 걸 방지.
+  const autoTriedRef = useRef<Set<string>>(new Set())
 
   // AI 자동 분석 — 이메일 도메인 + 기존 회사명을 LLM 에 보내 그룹사 추론.
   // 도메인이 개인 메일 (gmail/naver 등) 이면 추론 불가.
@@ -561,6 +564,46 @@ function ParentGroupEditor({
   useEffect(() => {
     setValue(contact.parent_group ?? '')
   }, [contact.id, contact.parent_group])
+
+  // ✨ 자동 AI 분석 — 다음 조건 모두 충족 시 session 내 1회 자동 호출:
+  //   - parent_group 비어있음
+  //   - canMutate (수정 권한 있음)
+  //   - 회사 도메인 이메일 (gmail/naver 등 개인 메일 아님)
+  //   - 이미 분석 시도된 흔적 (lookup_status='resolved' but parent_group=null) → force_refresh
+  //     또는 아직 시도 안 됨 (lookup_status=null/pending) → 일반 호출
+  //   - 같은 session 에서 이 contact 자동 호출 안 됐음
+  useEffect(() => {
+    if (!canMutate) return
+    if (contact.parent_group) return
+    if (autoTriedRef.current.has(contact.id)) return
+    const emailDomain = contact.email?.split('@')[1]?.toLowerCase()
+    if (!emailDomain) return
+    // 개인 메일 도메인은 회사 식별 불가 → resolveCompanyForContact 가 어차피 no-op 반환하지만
+    // LLM 호출 자체를 회피하기 위해 클라이언트에서도 사전 차단.
+    if (isPersonalEmailDomain(emailDomain)) return
+
+    autoTriedRef.current.add(contact.id)
+    const status = contact.company_lookup_status
+    const shouldForce = status === 'resolved' || status === 'not_found'
+    setAiPending(true)
+    resolveCompanyForContact({
+      rawName: contact.company,
+      contactId: contact.id,
+      email: contact.email,
+      qc,
+      forceRefresh: shouldForce,
+    })
+      .then((result) => {
+        if (result?.parent_group) {
+          toast.success(`AI 가 그룹사를 채웠습니다 — ${result.parent_group}`)
+        }
+        // parent_group 이 null 결과면 silent — 사용자에게 거슬리지 않게.
+      })
+      .catch(() => {
+        /* silent — 수동 버튼이 있으니 fallback */
+      })
+      .finally(() => setAiPending(false))
+  }, [contact.id, contact.parent_group, contact.email, contact.company, contact.company_lookup_status, canMutate, qc])
 
   // 입력값과 비슷한 기존 그룹사 (정규화 후 substring/편집거리 기반).
   // 정확 일치는 제외 — 즉 입력값이 기존 옵션과 다르되 비슷할 때만 표시.
@@ -753,4 +796,25 @@ function HistoryEntry({ row }: { row: ContactHistoryRow }) {
       )}
     </div>
   )
+}
+
+// 회사 식별 불가능한 개인 메일 도메인 (resolveCompany.ts 와 동일 set — 사전 차단용)
+const PERSONAL_EMAIL_DOMAINS = new Set([
+  'gmail.com',
+  'naver.com',
+  'hanmail.net',
+  'daum.net',
+  'nate.com',
+  'yahoo.com',
+  'yahoo.co.kr',
+  'hotmail.com',
+  'outlook.com',
+  'icloud.com',
+  'me.com',
+  'kakao.com',
+  'protonmail.com',
+  'proton.me',
+])
+function isPersonalEmailDomain(domain: string): boolean {
+  return PERSONAL_EMAIL_DOMAINS.has(domain)
 }
