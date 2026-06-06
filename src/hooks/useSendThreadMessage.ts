@@ -288,11 +288,14 @@ export function useSendThreadMessage() {
       }
       // 발송 후 메일 히스토리 / 보낸편지함 / 받은편지함 / 대시보드 KPI 즉시 반영.
       // (특히 contact_mail_history 는 키 불일치 + 0건 폴링 미동작으로 영구 미반영되던 문제 — prefix invalidate)
-      // ['inbox'] — 회신은 보통 받은편지함에서 시작되므로 our-replies 갱신해 미응답 카운트 즉시 반영.
       qc.invalidateQueries({ queryKey: ['contact_mail_history'] })
       qc.invalidateQueries({ queryKey: ['outbound-feed'] })
       qc.invalidateQueries({ queryKey: ['inbox-stats'] })
       qc.invalidateQueries({ queryKey: ['inbox'] })
+      // 우리 발송이 thread_messages 에 추가되므로 our-replies 맵을 즉시 갱신해
+      // 받은편지함/대시보드의 "미응답" 카운트가 곧바로 줄어들게 한다.
+      // (독립 queryKey 라 ['inbox'] prefix 로는 안 잡힘 → 명시적 무효화 필요)
+      qc.invalidateQueries({ queryKey: ['our-replies-by-thread'] })
       // 토스트 라벨 — threadModeLabel 단일 출처 사용. 'new' 는 '새 메일' → "새 메일 발송 완료"
       toast.success(`${threadModeLabel(vars.mode)} 발송 완료`)
     },
