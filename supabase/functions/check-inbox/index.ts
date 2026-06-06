@@ -300,8 +300,9 @@ Deno.serve(async (req) => {
       }
 
       // cursor 갱신 — History 경로와 시간기반 경로 분기.
-      if (usedHistory) {
-        // History 경로: 변경분을 모두 처리했으므로 historyId 전진 + 폴백 시계도 now 로 맞춰둠.
+      const floorSecMs = (ms: number) => Math.floor(ms / 1000) * 1000
+      if (usedHistory && !windowFull) {
+        // History 경로 정상(변경분 100통 미만 = 전부 처리) → historyId 전진 + 폴백 시계 now.
         await supabase
           .schema('mailcaster')
           .from('profiles')
@@ -312,13 +313,31 @@ Deno.serve(async (req) => {
           .eq('id', profile.id)
         continue
       }
+      if (usedHistory && windowFull) {
+        // 변경분이 100통+ → 일부만 처리했고 historyId 를 전진시키면 나머지를 영구 유실(C2).
+        // History 커서를 내려놓고(null), 시간기반 retreat 으로 백로그를 드레인하게 한다.
+        // 하한을 "가장 오래된 처리분 -1s" 로 둬 다음 시간기반 tick 이 그 지점부터 이어받음
+        // (이미 처리한 건 UNIQUE(org_id, gmail_message_id) 가 중복 INSERT 차단).
+        const retreatMs =
+          oldestProcessedMs !== Number.MAX_SAFE_INTEGER
+            ? floorSecMs(oldestProcessedMs) - 1000
+            : floorSecMs(cursorMs)
+        await supabase
+          .schema('mailcaster')
+          .from('profiles')
+          .update({
+            last_history_id: null,
+            last_inbox_check_at: new Date(retreatMs).toISOString(),
+          })
+          .eq('id', profile.id)
+        continue
+      }
 
       // 시간기반 경로 (첫 실행/만료 폴백). 주의: Gmail `after:` 는 **초 단위**.
       // 후퇴 cursor 도 반드시 한 초 이상 줄어야 다음 tick 의 afterSec 가 실제로 달라짐.
       //   - 윈도우 안 가득 참 (전부 비움): 가장 늦은 처리분 +1s 로 전진 → 다음엔 새 메일만
       //   - 윈도우 가득 참 (더 오래된 미처리분 가능성): oldestProcessedMs 의 "초" 직전으로 후퇴
       //     이미 처리한 건 UNIQUE (org_id, gmail_message_id) 가 중복 INSERT 차단.
-      const floorSecMs = (ms: number) => Math.floor(ms / 1000) * 1000
       let nextCursorMs: number
       if (!windowFull) {
         nextCursorMs = floorSecMs(latestProcessedMs) + 1000
