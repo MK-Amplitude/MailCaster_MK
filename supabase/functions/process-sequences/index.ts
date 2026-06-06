@@ -149,7 +149,7 @@ Deno.serve(async (req) => {
       let accessToken: string
       try {
         accessToken = await refreshGoogleToken(profile.google_refresh_token as string)
-      } catch (_e) {
+      } catch {
         continue // 토큰 갱신 실패 — hold 후 재시도
       }
 
@@ -257,7 +257,7 @@ Deno.serve(async (req) => {
         let ownRfc: string | null = null
         try {
           ownRfc = await fetchMessageRfcId(accessToken, result.id)
-        } catch (_e) { /* best-effort */ }
+        } catch { /* best-effort */ }
 
         await supabase.schema('mailcaster').from('thread_messages')
           .update({
