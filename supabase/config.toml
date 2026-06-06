@@ -32,3 +32,7 @@ verify_jwt = false
 # pg_cron 이 Bearer <CRON_SECRET> 으로 자체 인증하므로 jwt 검증은 끈다.
 # (없으면 CRON_SECRET 이 유효 JWT 가 아니라 gateway 가 401 → inbound 폴링 cron 전체 미동작)
 verify_jwt = false
+
+[functions.process-sequences]
+# pg_cron 이 Bearer <CRON_SECRET> 으로 자체 인증. (시퀀스 자동 후속 발송 스케줄러)
+verify_jwt = false
