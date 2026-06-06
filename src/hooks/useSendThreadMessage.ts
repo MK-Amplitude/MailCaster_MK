@@ -16,6 +16,7 @@ import { sendGmail, fetchMessageRfcId } from '@/lib/gmail'
 import { getFreshGoogleToken } from '@/lib/googleToken'
 import { extractAndInlineImages } from '@/lib/inlineImages'
 import { buildThreadTrackingPixel, injectTrackingPixel } from './useSendCampaign'
+import { threadModeLabel } from '@/lib/threadLabels'
 import { toast } from 'sonner'
 
 // 발송 결과 기록 UPDATE 의 재시도 설정.
@@ -292,15 +293,8 @@ export function useSendThreadMessage() {
       qc.invalidateQueries({ queryKey: ['outbound-feed'] })
       qc.invalidateQueries({ queryKey: ['inbox-stats'] })
       qc.invalidateQueries({ queryKey: ['inbox'] })
-      const label =
-        vars.mode === 'followup'
-          ? '팔로업'
-          : vars.mode === 'reply'
-            ? '회신'
-            : vars.mode === 'forward'
-              ? '전달'
-              : '메일'
-      toast.success(`${label} 발송 완료`)
+      // 토스트 라벨 — threadModeLabel 단일 출처 사용. 'new' 는 '새 메일' → "새 메일 발송 완료"
+      toast.success(`${threadModeLabel(vars.mode)} 발송 완료`)
     },
     onError: (e) => {
       toast.error(e instanceof Error ? e.message : '발송 실패')

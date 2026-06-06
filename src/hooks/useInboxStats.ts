@@ -4,6 +4,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useMemo } from 'react'
 import { supabase } from '@/lib/supabase'
+import { useOurRepliesByThread } from './useOurRepliesByThread'
 
 interface InboxStats {
   total: number
@@ -73,25 +74,8 @@ export function useInboxStats(): InboxStats {
     refetchInterval: 60_000,
   })
 
-  const { data: ourSentByThread = {} } = useQuery({
-    queryKey: ['inbox-stats', 'our-sent-by-thread'],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from('thread_messages')
-        .select('gmail_thread_id, sent_at')
-        .eq('status', 'sent')
-        .not('gmail_thread_id', 'is', null)
-      if (error) throw error
-      const map: Record<string, string> = {}
-      for (const row of data ?? []) {
-        const tid = (row as { gmail_thread_id: string | null }).gmail_thread_id
-        const sentAt = (row as { sent_at: string | null }).sent_at
-        if (!tid || !sentAt) continue
-        if (!map[tid] || sentAt > map[tid]) map[tid] = sentAt
-      }
-      return map
-    },
-  })
+  // InboxPage 와 캐시 공유 — 중복 fetch 제거
+  const { data: ourSentByThread = {} } = useOurRepliesByThread()
 
   return useMemo(() => {
     const todayStart = new Date()
