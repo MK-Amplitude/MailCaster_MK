@@ -426,7 +426,11 @@ export function ThreadComposeDialog({
           >
             취소
           </Button>
-          <Button type="button" onClick={handleSend} disabled={send.isPending}>
+          <Button
+            type="button"
+            onClick={handleSend}
+            disabled={send.isPending || !toEmail.trim()}
+          >
             {send.isPending ? (
               <>
                 <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />

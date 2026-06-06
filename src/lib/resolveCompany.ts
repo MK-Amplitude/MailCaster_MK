@@ -98,14 +98,20 @@ export async function resolveCompanyForContact({
   }
 }
 
-// 배치용 — 여러 연락처를 순차 호출 (동시 호출로 rate limit 히트 방지)
+// 배치용 — 여러 연락처를 순차 호출 (동시 호출로 rate limit 히트 방지).
+// rawName 은 optional — 없으면 도메인 단독 모드로 묶음.
 export async function resolveCompaniesBatch(
-  items: Array<{ id: string; rawName: string; email?: string | null }>,
+  items: Array<{ id: string; rawName?: string | null; email?: string | null }>,
   qc?: QueryClient
 ): Promise<void> {
   const unique = new Map<string, typeof items>()
   for (const it of items) {
-    const key = it.rawName.trim().toLowerCase()
+    // dedupe 키 — server 의 company_cache query_key 와 동일 규칙:
+    //   회사명 있으면 회사명(lower/trim), 없으면 이메일 도메인.
+    // 둘 다 없으면 건너뜀 (호출 불가).
+    const name = it.rawName?.trim().toLowerCase()
+    const domain = extractDomain(it.email)
+    const key = name || domain
     if (!key) continue
     const arr = unique.get(key) ?? []
     arr.push(it)

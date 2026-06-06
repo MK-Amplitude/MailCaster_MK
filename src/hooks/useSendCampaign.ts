@@ -5,7 +5,7 @@ import { sendGmail, encodeAttachmentsForReuse, type MailAttachment } from '@/lib
 import { extractAndInlineImages } from '@/lib/inlineImages'
 import { getFreshGoogleToken, forceRefreshGoogleToken } from '@/lib/googleToken'
 import { downloadFile, getFileMeta, shareAsPublicLink } from '@/lib/drive'
-import { extractVariables, renderTemplate } from '@/lib/mailMerge'
+import { extractVariables, renderTemplate, bodyAlreadyContainsSignature } from '@/lib/mailMerge'
 import { escapeHtml, GMAIL_ATTACHMENT_SAFE_THRESHOLD, formatBytes } from '@/lib/utils'
 import { toast } from 'sonner'
 import type { Recipient } from '@/types/campaign'
@@ -27,27 +27,8 @@ function sleep(ms: number) {
  * 단순 HTML.includes() 는 TipTap 이 본문을 정규화 (속성 순서, 공백) 했을 때
  * false 가 떨어져 서명이 중복 append 되는 버그가 있었음.
  *
- * 정책: 서명의 plain text (태그 제거 + 공백 정규화) fragment 가 본문의
- * plain text 안에 있으면 "이미 있다" 고 판단. 서명에는 보통 이름/이메일/회사명
- * 등 식별성이 강한 텍스트가 있어 충돌 가능성 낮음.
+ * 정책: src/lib/mailMerge.ts 의 bodyAlreadyContainsSignature 로 추출됨 (미리보기와 공용).
  */
-function bodyAlreadyContainsSignature(bodyHtml: string, sigHtml: string): boolean {
-  const strip = (h: string) =>
-    h
-      .replace(/<style[\s\S]*?<\/style>/gi, '')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/&nbsp;/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-  const bodyPlain = strip(bodyHtml)
-  const sigPlain = strip(sigHtml)
-  if (!sigPlain) return true
-  // 서명이 너무 짧으면 (40자 미만) 정확히 포함되어야만 매칭 — 우연 충돌 회피.
-  if (sigPlain.length < 40) return bodyPlain.includes(sigPlain)
-  // 식별 fragment — 시그니처 앞부분 80자. 보통 이름/직책/회사명 등 충돌 가능성 낮은 영역.
-  const fragment = sigPlain.slice(0, 80)
-  return bodyPlain.includes(fragment)
-}
 
 /**
  * Google API 일시적 오류(429 rate limit, 5xx) exponential backoff 재시도.

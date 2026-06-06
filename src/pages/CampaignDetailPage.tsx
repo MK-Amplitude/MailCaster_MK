@@ -31,7 +31,7 @@ import { ContactDetailSheet } from '@/components/contacts/ContactDetailSheet'
 import { ContactFormDialog } from '@/components/contacts/ContactFormDialog'
 import type { ContactWithGroups } from '@/types/contact'
 import { formatBytes } from '@/lib/utils'
-import { renderTemplate } from '@/lib/mailMerge'
+import { renderTemplate, bodyAlreadyContainsSignature } from '@/lib/mailMerge'
 import { useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
@@ -136,19 +136,21 @@ export default function CampaignDetailPage() {
   }, [campaign?.subject, previewRecipient])
 
   const previewBodyHtml = useMemo(() => {
-    let body = campaign?.body_html ?? ''
-    // 1) 변수 치환 — 첫 수신자 (또는 선택된 수신자) 의 variables 기준
-    if (previewRecipient && body) {
-      body = renderTemplate(
-        body,
+    // 발송 경로 (useSendCampaign) 와 동일 순서로 합성 — 미리보기/실제 불일치 방지.
+    //   ① 본문 + (이미 포함 안 됐으면) 시그니처 append  ② 그 후 전체 변수 치환
+    // 이렇게 해야 (a) 시그니처 내 {{변수}} 도 치환되고 (b) fuzzy 매칭으로 시그니처 중복 안 됨.
+    let finalBody = campaign?.body_html ?? ''
+    const sigHtml = signature?.html ?? ''
+    if (sigHtml && !bodyAlreadyContainsSignature(finalBody, sigHtml)) {
+      finalBody = finalBody ? `${finalBody}<br/><br/>${sigHtml}` : sigHtml
+    }
+    if (previewRecipient && finalBody) {
+      finalBody = renderTemplate(
+        finalBody,
         (previewRecipient.variables ?? {}) as Record<string, string | null>,
       )
     }
-    // 2) 서명 append — body 에 이미 포함돼 있지 않을 때만
-    const sigHtml = signature?.html ?? ''
-    if (!sigHtml) return body
-    if (body.includes(sigHtml)) return body
-    return body ? `${body}<br/><br/>${sigHtml}` : sigHtml
+    return finalBody
   }, [campaign?.body_html, signature?.html, previewRecipient])
 
   // 답장이 있지만 reply_category 가 NULL 인 행 — 028 마이그레이션 이전 답장 또는

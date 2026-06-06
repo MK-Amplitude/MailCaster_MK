@@ -17,6 +17,7 @@ interface BulkAction {
   icon?: React.ReactNode
   onClick?: () => void
   variant?: 'default' | 'destructive' | 'outline'
+  disabled?: boolean
   /** 커스텀 노드 (예: DropdownMenu wrapper). 제공되면 onClick/variant 등 표준 Button 렌더링을 대체. */
   node?: React.ReactNode
 }
@@ -47,6 +48,7 @@ export function BulkActionBar({ selectedCount, actions, onClear }: BulkActionBar
               variant={action.variant ?? 'outline'}
               size="sm"
               onClick={action.onClick}
+              disabled={action.disabled}
               className="h-9 md:h-7 text-xs rounded-full shrink-0"
             >
               {action.icon}
