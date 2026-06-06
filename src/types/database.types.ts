@@ -1395,6 +1395,17 @@ export interface Database {
         Args: { p_org_id: string; p_contact_ids: string[]; p_customer_type: string }
         Returns: number
       }
+      // RPC — 받은편지함 KPI 집계 (060)
+      inbox_stats: {
+        Args: { p_since: string; p_today_start: string }
+        Returns: {
+          total: number
+          today_count: number
+          unreplied_count: number
+          outbound_sent: number
+          outbound_opened: number
+        }[]
+      }
     }
     Enums: Record<string, never>
     CompositeTypes: Record<string, never>

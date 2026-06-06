@@ -1,10 +1,9 @@
 // 받은편지함 통계 — 대시보드 KPI 카드용.
-// InboxPage 와 동일 쿼리를 사용하므로 React Query 캐시 공유로 중복 fetch 없음.
+// 단일 집계 RPC(inbox_stats)로 DB 에서 계산 — 기존엔 30일치 전량을 클라로 가져와
+// JS 루프로 집계했으나, 페이로드·확장성 문제로 SQL 집계로 이관 (고도화 QW2).
 
 import { useQuery } from '@tanstack/react-query'
-import { useMemo } from 'react'
 import { supabase } from '@/lib/supabase'
-import { useOurRepliesByThread, isInboundUnreplied } from './useOurRepliesByThread'
 
 interface InboxStats {
   total: number
@@ -16,84 +15,43 @@ interface InboxStats {
   outboundUnopenedCount: number
 }
 
+const EMPTY: InboxStats = {
+  total: 0,
+  todayCount: 0,
+  unrepliedCount: 0,
+  outboundSentCount: 0,
+  outboundOpenedCount: 0,
+  outboundUnopenedCount: 0,
+}
+
 export function useInboxStats(): InboxStats {
-  // 최근 30일 inbound 만 — 더 오래된 건 통계에서 제외 (성능 + 의미)
-  const sinceIso = useMemo(
-    () => new Date(Date.now() - 30 * 24 * 3600_000).toISOString(),
-    [],
-  )
-
-  const { data: inbound = [] } = useQuery({
-    queryKey: ['inbox-stats', 'inbound', sinceIso],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from('inbound_messages')
-        .select('id, gmail_thread_id, received_at')
-        .gte('received_at', sinceIso)
+  const { data } = useQuery({
+    queryKey: ['inbox-stats'],
+    queryFn: async (): Promise<InboxStats> => {
+      // 최근 30일 윈도 + "오늘" 경계(로컬 자정)는 매 호출 시 계산 → 60초 refetch 마다 갱신.
+      const sinceIso = new Date(Date.now() - 30 * 24 * 3600_000).toISOString()
+      const todayStart = new Date()
+      todayStart.setHours(0, 0, 0, 0)
+      const { data, error } = await supabase.rpc('inbox_stats', {
+        p_since: sinceIso,
+        p_today_start: todayStart.toISOString(),
+      })
       if (error) throw error
-      return (data ?? []) as Array<{
-        id: string
-        gmail_thread_id: string | null
-        received_at: string
-      }>
+      const row = (data ?? [])[0]
+      if (!row) return EMPTY
+      const sent = Number(row.outbound_sent) || 0
+      const opened = Number(row.outbound_opened) || 0
+      return {
+        total: Number(row.total) || 0,
+        todayCount: Number(row.today_count) || 0,
+        unrepliedCount: Number(row.unreplied_count) || 0,
+        outboundSentCount: sent,
+        outboundOpenedCount: opened,
+        outboundUnopenedCount: Math.max(0, sent - opened),
+      }
     },
     refetchInterval: 60_000,
   })
 
-  // 최근 30일 outbound 통계 — thread_messages + recipients 합산.
-  const { data: outboundStats = { sent: 0, opened: 0 } } = useQuery({
-    queryKey: ['inbox-stats', 'outbound', sinceIso],
-    queryFn: async () => {
-      const threadP = supabase
-        .from('thread_messages')
-        .select('opened, bounced, status')
-        .eq('status', 'sent')
-        .gte('sent_at', sinceIso)
-      const recP = supabase
-        .from('recipients')
-        .select('opened, bounced, status')
-        .in('status', ['sent', 'bounced'])
-        .gte('sent_at', sinceIso)
-      const [t, r] = await Promise.all([threadP, recP])
-      let sent = 0
-      let opened = 0
-      for (const row of t.data ?? []) {
-        const rr = row as { opened?: boolean; bounced?: boolean }
-        if (rr.bounced) continue
-        sent++
-        if (rr.opened) opened++
-      }
-      for (const row of r.data ?? []) {
-        const rr = row as { opened?: boolean; bounced?: boolean }
-        if (rr.bounced) continue
-        sent++
-        if (rr.opened) opened++
-      }
-      return { sent, opened }
-    },
-    refetchInterval: 60_000,
-  })
-
-  // InboxPage 와 캐시 공유 — 중복 fetch 제거
-  const { data: ourSentByThread = {} } = useOurRepliesByThread()
-
-  return useMemo(() => {
-    const todayStart = new Date()
-    todayStart.setHours(0, 0, 0, 0)
-    const todayStartMs = todayStart.getTime()
-    let todayCount = 0
-    let unrepliedCount = 0
-    for (const m of inbound) {
-      if (new Date(m.received_at).getTime() >= todayStartMs) todayCount++
-      if (isInboundUnreplied(m, ourSentByThread)) unrepliedCount++
-    }
-    return {
-      total: inbound.length,
-      todayCount,
-      unrepliedCount,
-      outboundSentCount: outboundStats.sent,
-      outboundOpenedCount: outboundStats.opened,
-      outboundUnopenedCount: Math.max(0, outboundStats.sent - outboundStats.opened),
-    }
-  }, [inbound, ourSentByThread, outboundStats])
+  return data ?? EMPTY
 }
