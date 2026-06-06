@@ -1,7 +1,8 @@
-// 답장 자동 분류 — recipients.reply_category (migration 028)
+// 답장 자동 분류 — recipients.reply_category (migration 028, 'unsubscribe' 추가 061)
 //
 // LLM 이 답장 본문 톤을 분류해 영업 우선순위를 판단하기 쉽게 한다.
-// 5종 + null(미분류). 새 답장은 check-replies edge function 이 자동 분류.
+// 6종 + null(미분류). 새 답장은 check-replies edge function 이 자동 분류.
+// 'unsubscribe' 는 명시적 수신거부 의사 — check-replies 가 자동으로 unsubscribes 등록.
 
 export type ReplyCategory =
   | 'interested'
@@ -9,6 +10,7 @@ export type ReplyCategory =
   | 'question'
   | 'out_of_office'
   | 'unclear'
+  | 'unsubscribe'
 
 export interface ReplyCategoryOption {
   value: ReplyCategory
@@ -48,19 +50,27 @@ export const REPLY_CATEGORY_OPTIONS: ReplyCategoryOption[] = [
     priority: 2,
   },
   {
+    value: 'unsubscribe',
+    label: '수신거부',
+    hint: '명시적 수신거부 요청 — 자동으로 수신거부 등록됨 (이후 발송 제외)',
+    className:
+      'bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 border-zinc-300 dark:border-zinc-700',
+    priority: 3,
+  },
+  {
     value: 'out_of_office',
     label: '부재중',
     hint: '자동응답·휴가 — 인간 액션 불필요',
     className:
       'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300 border-amber-200 dark:border-amber-800',
-    priority: 3,
+    priority: 4,
   },
   {
     value: 'unclear',
     label: '분류 불가',
     hint: '톤이 모호하거나 분류 신뢰도 낮음 — 직접 확인',
     className: 'bg-muted text-muted-foreground border-border',
-    priority: 4,
+    priority: 5,
   },
 ]
 

@@ -78,6 +78,7 @@ type ReplyCategory =
   | 'question'
   | 'out_of_office'
   | 'unclear'
+  | 'unsubscribe'
 
 const VALID_CATEGORIES = new Set<ReplyCategory>([
   'interested',
@@ -85,6 +86,7 @@ const VALID_CATEGORIES = new Set<ReplyCategory>([
   'question',
   'out_of_office',
   'unclear',
+  'unsubscribe',
 ])
 
 const corsHeaders = {
@@ -157,6 +159,7 @@ Deno.serve(async (req) => {
       id: string
       repliedAtIso: string
       cid: string
+      email: string
       category: ReplyCategory
       meta: ThreadMeta
     }> = []
@@ -258,6 +261,7 @@ Deno.serve(async (req) => {
               id: r.id,
               repliedAtIso: result.repliedAtIso,
               cid: r.campaign_id,
+              email: r.email,
               category,
               meta: result.meta,
             })
@@ -299,6 +303,22 @@ Deno.serve(async (req) => {
         })
         .eq('id', info.id)
       if (error) console.warn('[check-replies] markReplied fail', info.id, error.message)
+    }
+
+    // 4-1b) 명시적 수신거부 의사('unsubscribe') → 자동 unsubscribes 등록.
+    //  RPC record_reply_optout 이 캠페인에서 org/user 역추적 후 등록(트리거가 contacts 동기화).
+    //  ON CONFLICT DO NOTHING 으로 중복 안전. 실패해도 답장 기록 자체는 보존.
+    const optOuts = repliedInfos.filter((i) => i.category === 'unsubscribe')
+    for (const o of optOuts) {
+      const { data: didOptOut, error: optErr } = await supabase
+        .schema('mailcaster')
+        .rpc('record_reply_optout', {
+          p_email: o.email,
+          p_source_campaign_id: o.cid,
+          p_reason: '답장에서 수신거부 의사 자동 감지',
+        })
+      if (optErr) console.warn('[check-replies] optout fail', o.email, optErr.message)
+      else if (didOptOut) console.log('[check-replies] auto-unsubscribed', o.email)
     }
 
     // 4-2) 답장 없음 — 한 번에 rotate
@@ -929,7 +949,7 @@ async function classifyReply(
   const trimmed = stripQuotedAndSignature(text).slice(0, REPLY_BODY_MAX_CHARS)
   if (!trimmed.trim()) return 'unclear'
 
-  const systemPrompt = `당신은 한국어 B2B 영업 답장의 톤을 5가지로 분류합니다.
+  const systemPrompt = `당신은 한국어 B2B 영업 답장의 톤을 6가지로 분류합니다.
 입력은 답장 본문(인용/서명 제거됨). 출력은 JSON: {"category": "..."}.
 
 분류 (보수적으로 — 애매하면 unclear):
@@ -944,14 +964,21 @@ async function classifyReply(
 - not_interested  : 정중한 거절·관심 없음·이미 충분함·다음 기회·예산 없음
 - question        : 구체적 질문·자료 요청·가격·기능 문의 (미팅 약속은 아님)
 - out_of_office   : 자동응답·휴가·부재중·자리 비움·자동 회신
+- unsubscribe     : 명시적으로 "메일 발송을 중단/수신거부" 를 요청.
+                    예) "수신거부", "메일 그만 보내주세요", "더 이상 연락하지 마세요",
+                         "발송 중단해주세요", "unsubscribe", "remove me", "stop emailing".
+                    주의: 발송 중단 요청이 명확할 때만. 단순 거절("관심 없습니다")은
+                    not_interested 이지 unsubscribe 가 아님. 수신거부 링크 문의·오류
+                    질문은 question 또는 unclear (수신거부 요청 아님).
 - unclear         : 위에 안 맞거나 톤이 모호 — 단순 회신·인사·"알겠습니다" 류 포함
 
 규칙:
-1) 반드시 위 5개 중 하나.
+1) 반드시 위 6개 중 하나.
 2) interested 는 보수적으로 — 약속·동의·구체적 액션이 명확할 때만.
-3) JSON 외 다른 출력 금지.`
+3) unsubscribe 는 발송 중단 요청이 명시적일 때만 (자동 수신거부 처리됨).
+4) JSON 외 다른 출력 금지.`
 
-  const userPrompt = `답장 본문:\n"""\n${trimmed}\n"""\n\n위 5개 중 하나로 분류:`
+  const userPrompt = `답장 본문:\n"""\n${trimmed}\n"""\n\n위 6개 중 하나로 분류:`
 
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
