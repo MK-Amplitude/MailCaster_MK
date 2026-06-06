@@ -1017,6 +1017,44 @@ export interface Database {
         }
         Relationships: []
       }
+      org_send_settings: {
+        Row: {
+          org_id: string
+          daily_send_limit: number
+          window_start_hour: number
+          window_end_hour: number
+          send_on_weekends: boolean
+          timezone: string
+          warmup_start: number
+          warmup_per_day: number
+          warmup_started_at: string | null
+          updated_at: string
+        }
+        Insert: {
+          org_id: string
+          daily_send_limit?: number
+          window_start_hour?: number
+          window_end_hour?: number
+          send_on_weekends?: boolean
+          timezone?: string
+          warmup_start?: number
+          warmup_per_day?: number
+          warmup_started_at?: string | null
+          updated_at?: string
+        }
+        Update: {
+          daily_send_limit?: number
+          window_start_hour?: number
+          window_end_hour?: number
+          send_on_weekends?: boolean
+          timezone?: string
+          warmup_start?: number
+          warmup_per_day?: number
+          warmup_started_at?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
       followup_steps: {
         Row: {
           id: string

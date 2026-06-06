@@ -82,6 +82,17 @@ Deno.serve(async (req) => {
   let sent = 0
   let stopped = 0
   let failed = 0
+  let deferred = 0
+
+  // org 별 발송 가드(설정 + rolling 24h 발송 수) 캐시 — 같은 org 반복 조회 방지.
+  const orgGuards = new Map<string, OrgGuard>()
+  async function guardFor(orgId: string): Promise<OrgGuard> {
+    const cached = orgGuards.get(orgId)
+    if (cached) return cached
+    const g = await loadOrgGuard(supabase, orgId)
+    orgGuards.set(orgId, g)
+    return g
+  }
 
   try {
     // 1) due enrollment 원자적 클레임
@@ -191,6 +202,25 @@ Deno.serve(async (req) => {
           continue
         }
 
+        // Tier 2 가드레일 — 업무시간 발송창 + 일일 한도/워밍업.
+        const guard = await guardFor(claim.org_id)
+        if (!isWithinSendWindow(guard)) {
+          // 창 밖 — 다음 시간대까지 미룸(60분).
+          await supabase.schema('mailcaster').rpc('defer_enrollment', {
+            p_enrollment_id: claim.enrollment_id, p_minutes: 60,
+          })
+          deferred++
+          continue
+        }
+        if (guard.sentToday >= effectiveDailyLimit(guard)) {
+          // 일일 한도 소진 — 다음 날 창까지 미룸(6시간 후 재평가).
+          await supabase.schema('mailcaster').rpc('defer_enrollment', {
+            p_enrollment_id: claim.enrollment_id, p_minutes: 360,
+          })
+          deferred++
+          continue
+        }
+
         // thread 미시작이면 첫 메일(new), 있으면 후속(followup)
         const isFirst = !claim.last_thread_id
         const mode = isFirst ? 'new' : 'followup'
@@ -269,6 +299,7 @@ Deno.serve(async (req) => {
           })
           .eq('id', tmId)
 
+        guard.sentToday++ // 일일 한도 로컬 카운트 증가
         // enrollment 진행 — 다음 스텝 예약 / 완료
         await supabase.schema('mailcaster').rpc('advance_enrollment', {
           p_enrollment_id: claim.enrollment_id,
@@ -280,7 +311,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    return json({ ok: true, claimed, sent, stopped, failed, ms: Date.now() - runStart })
+    return json({ ok: true, claimed, sent, stopped, failed, deferred, ms: Date.now() - runStart })
   } catch (e) {
     console.error('[process-sequences] fatal', e)
     return json({ error: e instanceof Error ? e.message : String(e) }, 500)
@@ -297,6 +328,72 @@ async function terminate(
   await supabase.schema('mailcaster').from('sequence_enrollments')
     .update({ status, stopped_reason: status, last_error: reason.slice(0, 500), next_run_at: null })
     .eq('id', enrollmentId)
+}
+
+// ---- Tier 2 발송 가드레일 (org_send_settings) ----
+interface OrgGuard {
+  sentToday: number       // rolling 24h org 발송 수
+  dailyLimit: number
+  windowStart: number     // 발송창 시작 시(포함)
+  windowEnd: number       // 발송창 끝 시(미포함)
+  sendOnWeekends: boolean
+  timezone: string
+  warmupStart: number
+  warmupPerDay: number
+  warmupStartedAt: string | null
+}
+
+async function loadOrgGuard(
+  supabase: ReturnType<typeof createClient>,
+  orgId: string,
+): Promise<OrgGuard> {
+  const { data: s } = await supabase
+    .schema('mailcaster').from('org_send_settings')
+    .select('*').eq('org_id', orgId).maybeSingle()
+  const since = new Date(Date.now() - 24 * 3600_000).toISOString()
+  const { count } = await supabase
+    .schema('mailcaster').from('thread_messages')
+    .select('id', { count: 'exact', head: true })
+    .eq('org_id', orgId).eq('status', 'sent').gte('sent_at', since)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const row = s as any
+  return {
+    sentToday: count ?? 0,
+    dailyLimit: row?.daily_send_limit ?? 100,
+    windowStart: row?.window_start_hour ?? 8,
+    windowEnd: row?.window_end_hour ?? 18,
+    sendOnWeekends: row?.send_on_weekends ?? false,
+    timezone: row?.timezone ?? 'Asia/Seoul',
+    warmupStart: row?.warmup_start ?? 0,
+    warmupPerDay: row?.warmup_per_day ?? 20,
+    warmupStartedAt: row?.warmup_started_at ?? null,
+  }
+}
+
+function effectiveDailyLimit(g: OrgGuard): number {
+  if (g.warmupStart > 0 && g.warmupStartedAt) {
+    const startMs = Date.parse(`${g.warmupStartedAt}T00:00:00Z`)
+    if (!Number.isNaN(startMs)) {
+      const days = Math.max(0, Math.floor((Date.now() - startMs) / 86400_000))
+      return Math.min(g.dailyLimit, g.warmupStart + g.warmupPerDay * days)
+    }
+  }
+  return g.dailyLimit
+}
+
+function isWithinSendWindow(g: OrgGuard): boolean {
+  try {
+    const now = new Date()
+    const hour = parseInt(
+      new Intl.DateTimeFormat('en-US', { timeZone: g.timezone, hour: '2-digit', hourCycle: 'h23' }).format(now),
+      10,
+    )
+    const weekday = new Intl.DateTimeFormat('en-US', { timeZone: g.timezone, weekday: 'short' }).format(now)
+    if ((weekday === 'Sat' || weekday === 'Sun') && !g.sendOnWeekends) return false
+    return hour >= g.windowStart && hour < g.windowEnd
+  } catch {
+    return true // timezone 파싱 실패 시 보수적으로 허용 (발송이 영구 막히는 것 방지)
+  }
 }
 
 function buildContactVariables(c: ContactRow): Record<string, string> {
