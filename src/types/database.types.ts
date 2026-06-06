@@ -1561,6 +1561,16 @@ export interface Database {
         Args: { p_enrollment_id: string; p_reason?: string }
         Returns: boolean
       }
+      // RPC — outbound 퍼널 집계 (066)
+      outbound_funnel: {
+        Args: { p_since: string }
+        Returns: { sent: number; opened: number; replied: number }[]
+      }
+      // RPC — 세그먼트별 성과 집계 (066)
+      reply_rate_by_segment: {
+        Args: { p_since: string; p_dim: string }
+        Returns: { segment: string; sent: number; opened: number; replied: number }[]
+      }
     }
     Enums: Record<string, never>
     CompositeTypes: Record<string, never>
