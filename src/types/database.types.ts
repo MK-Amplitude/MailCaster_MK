@@ -910,6 +910,113 @@ export interface Database {
         Update: Record<string, never>
         Relationships: []
       }
+      sequences: {
+        Row: {
+          id: string
+          org_id: string
+          user_id: string
+          name: string
+          description: string | null
+          status: string
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          org_id: string
+          user_id: string
+          name: string
+          description?: string | null
+          status?: string
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          name?: string
+          description?: string | null
+          status?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      sequence_steps: {
+        Row: {
+          id: string
+          sequence_id: string
+          step_order: number
+          wait_days: number
+          subject: string
+          body_html: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          sequence_id: string
+          step_order: number
+          wait_days?: number
+          subject: string
+          body_html?: string
+          created_at?: string
+        }
+        Update: {
+          step_order?: number
+          wait_days?: number
+          subject?: string
+          body_html?: string
+        }
+        Relationships: []
+      }
+      sequence_enrollments: {
+        Row: {
+          id: string
+          org_id: string
+          sequence_id: string
+          contact_id: string
+          status: string
+          current_step_order: number
+          next_step_order: number
+          next_run_at: string | null
+          stopped_reason: string | null
+          last_thread_id: string | null
+          last_rfc_message_id: string | null
+          last_error: string | null
+          enrolled_by: string | null
+          enrolled_at: string
+          completed_at: string | null
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          org_id: string
+          sequence_id: string
+          contact_id: string
+          status?: string
+          current_step_order?: number
+          next_step_order?: number
+          next_run_at?: string | null
+          stopped_reason?: string | null
+          last_thread_id?: string | null
+          last_rfc_message_id?: string | null
+          last_error?: string | null
+          enrolled_by?: string | null
+          enrolled_at?: string
+          completed_at?: string | null
+          updated_at?: string
+        }
+        Update: {
+          status?: string
+          current_step_order?: number
+          next_step_order?: number
+          next_run_at?: string | null
+          stopped_reason?: string | null
+          last_thread_id?: string | null
+          last_rfc_message_id?: string | null
+          last_error?: string | null
+          completed_at?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
       followup_steps: {
         Row: {
           id: string
@@ -1405,6 +1512,16 @@ export interface Database {
           outbound_sent: number
           outbound_opened: number
         }[]
+      }
+      // RPC — 시퀀스 등록 (062)
+      enroll_contacts_in_sequence: {
+        Args: { p_sequence_id: string; p_contact_ids: string[] }
+        Returns: number
+      }
+      // RPC — 시퀀스 등록 중단 (062)
+      stop_enrollment: {
+        Args: { p_enrollment_id: string; p_reason?: string }
+        Returns: boolean
       }
     }
     Enums: Record<string, never>
