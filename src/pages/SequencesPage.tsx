@@ -8,6 +8,7 @@ import {
   useSequences,
   useSequence,
   useSequenceEnrollments,
+  useSequenceStepFunnel,
   useCreateSequence,
   useUpdateSequence,
   useSaveSequenceSteps,
@@ -47,6 +48,11 @@ function enrollmentStatusLabel(status: string, reason: string | null): string {
       }
     default: return status
   }
+}
+
+function pctStr(n: number, d: number): string {
+  if (d <= 0) return '—'
+  return `${Math.round((n / d) * 1000) / 10}%`
 }
 
 function statusBadgeClass(status: string): string {
@@ -178,6 +184,7 @@ function SequenceBuilderSheet({
 }: { sequenceId: string; open: boolean; onOpenChange: (o: boolean) => void }) {
   const { data, isLoading } = useSequence(sequenceId)
   const { data: enrollments = [] } = useSequenceEnrollments(sequenceId)
+  const { data: funnel = [] } = useSequenceStepFunnel(sequenceId)
   const saveSteps = useSaveSequenceSteps()
   const updateSeq = useUpdateSequence()
   const stopEnr = useStopEnrollment()
@@ -280,6 +287,36 @@ function SequenceBuilderSheet({
                 </Button>
               </div>
             </section>
+
+            {/* 스텝별 전환 퍼널 */}
+            {funnel.length > 0 && (
+              <section className="space-y-3 border-t pt-4">
+                <h3 className="font-semibold text-sm">스텝별 성과</h3>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>스텝</TableHead>
+                      <TableHead className="text-right">발송</TableHead>
+                      <TableHead className="text-right">오픈율</TableHead>
+                      <TableHead className="text-right">회신율</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {funnel.map((f) => (
+                      <TableRow key={f.step_order}>
+                        <TableCell>스텝 {f.step_order}</TableCell>
+                        <TableCell className="text-right text-muted-foreground">{f.sent}</TableCell>
+                        <TableCell className="text-right">{pctStr(f.opened, f.sent)}</TableCell>
+                        <TableCell className="text-right font-medium">{pctStr(f.replied, f.sent)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+                <p className="text-xs text-muted-foreground">
+                  회신율이 급감하는 스텝이 있으면 그 스텝의 메시지를 개선해 보세요.
+                </p>
+              </section>
+            )}
 
             {/* 등록 */}
             <section className="space-y-3 border-t pt-4">

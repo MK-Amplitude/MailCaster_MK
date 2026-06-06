@@ -779,6 +779,9 @@ export interface Database {
           bounced: boolean
           bounced_at: string | null
           bounce_reason: string | null
+          // 068 — 시퀀스 링크 (스텝 퍼널)
+          sequence_id: string | null
+          sequence_step_order: number | null
         }
         Insert: {
           id?: string
@@ -813,6 +816,8 @@ export interface Database {
           bounced?: boolean
           bounced_at?: string | null
           bounce_reason?: string | null
+          sequence_id?: string | null
+          sequence_step_order?: number | null
         }
         Update: {
           gmail_thread_id?: string | null
@@ -1574,6 +1579,11 @@ export interface Database {
       reply_rate_by_segment: {
         Args: { p_since: string; p_dim: string }
         Returns: { segment: string; sent: number; opened: number; replied: number }[]
+      }
+      // RPC — 시퀀스 스텝별 퍼널 (068)
+      sequence_step_funnel: {
+        Args: { p_sequence_id: string }
+        Returns: { step_order: number; sent: number; opened: number; replied: number }[]
       }
     }
     Enums: Record<string, never>

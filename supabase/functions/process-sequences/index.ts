@@ -243,6 +243,8 @@ Deno.serve(async (req) => {
             gmail_thread_id: claim.last_thread_id,
             in_reply_to_message_id: claim.last_rfc_message_id,
             status: 'pending',
+            sequence_id: claim.sequence_id,
+            sequence_step_order: claim.step_order,
           })
           .select('id')
           .single()
