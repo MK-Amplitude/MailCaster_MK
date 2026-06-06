@@ -59,6 +59,8 @@ export interface Database {
           google_contacts_auto_sync: boolean
           // 056 — check-inbox cron 의 incremental 폴링 cursor
           last_inbox_check_at: string | null
+          // 067 — check-inbox Gmail History API 커서
+          last_history_id: string | null
           created_at: string
         }
         Insert: {
@@ -86,6 +88,7 @@ export interface Database {
           google_contacts_last_sync_at?: string | null
           google_contacts_auto_sync?: boolean
           last_inbox_check_at?: string | null
+          last_history_id?: string | null
           created_at?: string
         }
         Update: {
@@ -113,6 +116,7 @@ export interface Database {
           google_contacts_last_sync_at?: string | null
           google_contacts_auto_sync?: boolean
           last_inbox_check_at?: string | null
+          last_history_id?: string | null
         }
         Relationships: []
       }

@@ -79,7 +79,7 @@ Deno.serve(async (req) => {
     const { data: profiles, error: pErr } = await supabase
       .schema('mailcaster')
       .from('profiles')
-      .select('id, email, google_refresh_token, last_inbox_check_at, default_org_id')
+      .select('id, email, google_refresh_token, last_inbox_check_at, last_history_id, default_org_id')
       .not('google_refresh_token', 'is', null)
 
     if (pErr) throw pErr
@@ -88,6 +88,7 @@ Deno.serve(async (req) => {
       email: string
       google_refresh_token: string
       last_inbox_check_at: string | null
+      last_history_id: string | null
       default_org_id: string | null
     }>
 
@@ -128,25 +129,66 @@ Deno.serve(async (req) => {
       const afterSec = Math.floor(cursorMs / 1000)
       const userEmailLower = profile.email.toLowerCase()
 
+      // 메시지 발견: History API 우선(델타), 실패/미보유 시 시간기반 폴백.
+      //   - usedHistory=true  → listIds 는 history.list 의 messageAdded. newHistoryId 갱신.
+      //   - usedHistory=false → 기존 after:<sec> 전체 스캔 (첫 실행/만료 폴백).
+      // 처리 로직(아래) 과 cursor 갱신만 분기될 뿐, per-message 처리는 동일.
       let listIds: string[] = []
-      try {
-        listIds = await fetchInboxMessageIds(accessToken, afterSec, PER_USER_MAX_MESSAGES)
-      } catch (e) {
-        gmailErrors++
-        console.warn(
-          '[check-inbox] list fail uid=',
-          profile.id,
-          e instanceof Error ? e.message : e,
-        )
-        continue
+      let usedHistory = false
+      let newHistoryId: string | null = null
+      if (profile.last_history_id) {
+        try {
+          const hist = await fetchHistoryMessageIds(
+            accessToken,
+            profile.last_history_id,
+            PER_USER_MAX_MESSAGES,
+          )
+          listIds = hist.ids
+          newHistoryId = hist.historyId
+          usedHistory = true
+        } catch (e) {
+          // 404(historyId 만료) 또는 기타 오류 → 이번 tick 은 시간기반 폴백.
+          console.warn(
+            '[check-inbox] history fallback uid=',
+            profile.id,
+            e instanceof Error ? e.message : e,
+          )
+          usedHistory = false
+        }
+      }
+      if (!usedHistory) {
+        try {
+          listIds = await fetchInboxMessageIds(accessToken, afterSec, PER_USER_MAX_MESSAGES)
+        } catch (e) {
+          gmailErrors++
+          console.warn(
+            '[check-inbox] list fail uid=',
+            profile.id,
+            e instanceof Error ? e.message : e,
+          )
+          continue
+        }
       }
 
       if (listIds.length === 0) {
-        // 새 메시지 없음 — cursor 만 회전
+        // 새 메시지 없음 — cursor 회전 + History 커서 갱신.
+        const upd: { last_inbox_check_at: string; last_history_id?: string } = {
+          last_inbox_check_at: new Date().toISOString(),
+        }
+        if (usedHistory && newHistoryId) {
+          upd.last_history_id = newHistoryId
+        } else if (!usedHistory) {
+          // 시간기반인데 새 메일 0건 = 백로그 없음 → 다음 tick 부터 History API 사용하도록 현재 historyId 저장.
+          try {
+            upd.last_history_id = await fetchCurrentHistoryId(accessToken)
+          } catch {
+            /* 실패해도 다음 tick 에 재시도 */
+          }
+        }
         await supabase
           .schema('mailcaster')
           .from('profiles')
-          .update({ last_inbox_check_at: new Date().toISOString() })
+          .update(upd)
           .eq('id', profile.id)
         continue
       }
@@ -257,36 +299,54 @@ Deno.serve(async (req) => {
         }
       }
 
-      // cursor 갱신. 주의: Gmail `after:` 는 **초 단위** (afterSec = floor(cursorMs/1000)).
-      // 따라서 후퇴 cursor 도 반드시 한 초 이상 줄어야 다음 tick 의 afterSec 가 실제로 달라짐
-      // (ms 후퇴는 같은 초로 floor 되어 무효 → 같은 30통 윈도우에 갇힘).
+      // cursor 갱신 — History 경로와 시간기반 경로 분기.
+      if (usedHistory) {
+        // History 경로: 변경분을 모두 처리했으므로 historyId 전진 + 폴백 시계도 now 로 맞춰둠.
+        await supabase
+          .schema('mailcaster')
+          .from('profiles')
+          .update({
+            last_history_id: newHistoryId,
+            last_inbox_check_at: new Date().toISOString(),
+          })
+          .eq('id', profile.id)
+        continue
+      }
+
+      // 시간기반 경로 (첫 실행/만료 폴백). 주의: Gmail `after:` 는 **초 단위**.
+      // 후퇴 cursor 도 반드시 한 초 이상 줄어야 다음 tick 의 afterSec 가 실제로 달라짐.
       //   - 윈도우 안 가득 참 (전부 비움): 가장 늦은 처리분 +1s 로 전진 → 다음엔 새 메일만
       //   - 윈도우 가득 참 (더 오래된 미처리분 가능성): oldestProcessedMs 의 "초" 직전으로 후퇴
-      //     → 다음 tick 의 afterSec 가 최소 1초 작아져 더 오래된 메시지를 이어받음.
       //     이미 처리한 건 UNIQUE (org_id, gmail_message_id) 가 중복 INSERT 차단.
       const floorSecMs = (ms: number) => Math.floor(ms / 1000) * 1000
       let nextCursorMs: number
       if (!windowFull) {
-        // 전부 비움 — 처리한 가장 늦은 메시지의 초 +1초 (그 초의 메시지는 다 봤으니)
         nextCursorMs = floorSecMs(latestProcessedMs) + 1000
       } else if (
         oldestProcessedMs !== Number.MAX_SAFE_INTEGER &&
         floorSecMs(oldestProcessedMs) > floorSecMs(cursorMs)
       ) {
-        // 후퇴 — oldest 의 초 직전 (1초 빼서 그 이전 메시지부터). cursor 보다 확실히 큰 초일 때만.
         nextCursorMs = floorSecMs(oldestProcessedMs) - 1000
       } else {
-        // oldest 가 cursor 와 같은 초이거나 처리분 없음 — 후퇴해도 진전 없음 (라이브락).
-        // 라이브락 방지를 위해 한 초 전진. 같은 초 내 윈도우 밖 메시지는 유실되나,
-        // 한 초에 PER_USER_MAX_MESSAGES(100)통+ 받는 극단 케이스라 실무 영향 낮음.
+        // 라이브락 방지를 위해 한 초 전진.
         nextCursorMs = floorSecMs(cursorMs) + 1000
+      }
+      const upd: { last_inbox_check_at: string; last_history_id?: string } = {
+        last_inbox_check_at: new Date(nextCursorMs).toISOString(),
+      }
+      // 백로그를 다 비웠으면(!windowFull) 다음 tick 부터 History API 사용하도록 현재 historyId 저장.
+      // 아직 가득 차 있으면(windowFull) 시간기반으로 backlog 를 계속 비운다 (history 로 전환하면 backlog skip 위험).
+      if (!windowFull) {
+        try {
+          upd.last_history_id = await fetchCurrentHistoryId(accessToken)
+        } catch {
+          /* 실패해도 다음 tick 에 재시도 */
+        }
       }
       await supabase
         .schema('mailcaster')
         .from('profiles')
-        .update({
-          last_inbox_check_at: new Date(nextCursorMs).toISOString(),
-        })
+        .update(upd)
         .eq('id', profile.id)
     }
 
@@ -322,6 +382,61 @@ async function fetchInboxMessageIds(
   }
   const data = (await res.json()) as { messages?: Array<{ id: string }> }
   return (data.messages ?? []).map((m) => m.id)
+}
+
+// History API: startHistoryId 이후 INBOX 에 추가된(messageAdded) 메시지 id 델타.
+// 반환 historyId 는 다음 tick 의 startHistoryId 로 저장. 404(만료)면 throw → 시간기반 폴백.
+// 페이지네이션은 maxResults 한도까지만 (budget 보호). dedup 적용.
+async function fetchHistoryMessageIds(
+  accessToken: string,
+  startHistoryId: string,
+  maxResults: number,
+): Promise<{ ids: string[]; historyId: string }> {
+  const ids = new Set<string>()
+  let pageToken: string | undefined
+  let latestHistoryId = startHistoryId
+  for (let page = 0; page < 10; page++) {
+    const params = new URLSearchParams({
+      startHistoryId,
+      historyTypes: 'messageAdded',
+      labelId: 'INBOX',
+      maxResults: '500',
+    })
+    if (pageToken) params.set('pageToken', pageToken)
+    const url = `https://gmail.googleapis.com/gmail/v1/users/me/history?${params.toString()}`
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } })
+    if (!res.ok) {
+      const body = await res.text().catch(() => '')
+      // 404 = startHistoryId 만료(가지치기됨). 호출자가 시간기반으로 폴백.
+      throw new Error(`Gmail history ${res.status}: ${body.slice(0, 150)}`)
+    }
+    const data = (await res.json()) as {
+      history?: Array<{ messagesAdded?: Array<{ message?: { id?: string } }> }>
+      historyId?: string
+      nextPageToken?: string
+    }
+    if (data.historyId) latestHistoryId = data.historyId
+    for (const h of data.history ?? []) {
+      for (const ma of h.messagesAdded ?? []) {
+        const id = ma.message?.id
+        if (id) ids.add(id)
+      }
+    }
+    if (ids.size >= maxResults || !data.nextPageToken) break
+    pageToken = data.nextPageToken
+  }
+  return { ids: Array.from(ids).slice(0, maxResults), historyId: latestHistoryId }
+}
+
+// 현재 mailbox 의 historyId — 시간기반 폴백 후 History 경로로 전환하기 위한 시드.
+async function fetchCurrentHistoryId(accessToken: string): Promise<string> {
+  const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/profile', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  if (!res.ok) throw new Error(`Gmail getProfile ${res.status}`)
+  const data = (await res.json()) as { historyId?: string }
+  if (!data.historyId) throw new Error('no historyId in profile')
+  return data.historyId
 }
 
 async function fetchMessageMeta(
