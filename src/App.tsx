@@ -25,6 +25,7 @@ const ContactPage = lazy(() => import('@/pages/ContactPage'))
 const SignaturesPage = lazy(() => import('@/pages/SignaturesPage'))
 const TemplatesPage = lazy(() => import('@/pages/TemplatesPage'))
 const CampaignsPage = lazy(() => import('@/pages/CampaignsPage'))
+const SequencesPage = lazy(() => import('@/pages/SequencesPage'))
 const CampaignWizardPage = lazy(() => import('@/pages/CampaignWizardPage'))
 const CampaignDetailPage = lazy(() => import('@/pages/CampaignDetailPage'))
 const AttachmentsPage = lazy(() => import('@/pages/AttachmentsPage'))
@@ -95,6 +96,7 @@ export default function App() {
                   <Route path="signatures" element={<SignaturesPage />} />
                   <Route path="templates" element={<TemplatesPage />} />
                   <Route path="campaigns" element={<CampaignsPage />} />
+                  <Route path="sequences" element={<SequencesPage />} />
                   <Route path="campaigns/new" element={<CampaignWizardPage />} />
                   <Route path="campaigns/:id" element={<CampaignDetailPage />} />
                   <Route path="attachments" element={<AttachmentsPage />} />

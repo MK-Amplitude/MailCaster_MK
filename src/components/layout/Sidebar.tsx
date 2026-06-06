@@ -10,6 +10,7 @@ import {
   FileText,
   Paperclip,
   Inbox,
+  Workflow,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -20,6 +21,7 @@ const primaryNav = [
   { to: '/inbox', icon: Inbox, label: '받은편지함' },
   { to: '/contacts', icon: Users, label: '연락처' },
   { to: '/campaigns', icon: Mail, label: '메일 발송' },
+  { to: '/sequences', icon: Workflow, label: '시퀀스' },
   { to: '/templates', icon: FileText, label: '템플릿' },
 ]
 const secondaryNav = [
