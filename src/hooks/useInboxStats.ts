@@ -4,7 +4,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useMemo } from 'react'
 import { supabase } from '@/lib/supabase'
-import { useOurRepliesByThread } from './useOurRepliesByThread'
+import { useOurRepliesByThread, isInboundUnreplied } from './useOurRepliesByThread'
 
 interface InboxStats {
   total: number
@@ -85,12 +85,7 @@ export function useInboxStats(): InboxStats {
     let unrepliedCount = 0
     for (const m of inbound) {
       if (new Date(m.received_at).getTime() >= todayStartMs) todayCount++
-      if (!m.gmail_thread_id) {
-        unrepliedCount++
-        continue
-      }
-      const ourLast = ourSentByThread[m.gmail_thread_id]
-      if (!ourLast || ourLast < m.received_at) unrepliedCount++
+      if (isInboundUnreplied(m, ourSentByThread)) unrepliedCount++
     }
     return {
       total: inbound.length,
