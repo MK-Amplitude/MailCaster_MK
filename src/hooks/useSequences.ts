@@ -210,6 +210,33 @@ export function useEnrollContacts() {
   })
 }
 
+export interface StepFunnelRow {
+  step_order: number
+  sent: number
+  opened: number
+  replied: number
+}
+
+// 스텝별 전환 퍼널 — 발송/오픈/회신 (Tier3-b)
+export function useSequenceStepFunnel(sequenceId: string | undefined) {
+  return useQuery({
+    queryKey: [QK, 'funnel', sequenceId],
+    queryFn: async (): Promise<StepFunnelRow[]> => {
+      const { data, error } = await supabase.rpc('sequence_step_funnel', {
+        p_sequence_id: sequenceId!,
+      })
+      if (error) throw error
+      return ((data ?? []) as StepFunnelRow[]).map((r) => ({
+        step_order: Number(r.step_order),
+        sent: Number(r.sent) || 0,
+        opened: Number(r.opened) || 0,
+        replied: Number(r.replied) || 0,
+      }))
+    },
+    enabled: !!sequenceId,
+  })
+}
+
 export function useStopEnrollment() {
   const qc = useQueryClient()
   return useMutation({
