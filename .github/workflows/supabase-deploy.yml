@@ -1,0 +1,68 @@
+# ============================================================
+# Supabase 배포 워크플로우 (마이그레이션 + 엣지함수)
+# ------------------------------------------------------------
+# 목적:
+#   그동안 Mac 에서 수동으로 하던 `supabase db push` / `supabase functions deploy` 를
+#   GitHub Actions 로 옮겨, main 에 supabase 변경이 머지되면 자동 배포되게 한다.
+#   → 폰(Claude Code 웹/모바일)에서 PR 머지만 해도 끝까지 자동화.
+#
+# 트리거:
+#   - main 에 push 되고, 그 변경이 supabase/ 하위(마이그레이션/함수/config)일 때만
+#   - Actions 탭에서 수동 실행(workflow_dispatch) — 한 번에 현재 상태 강제 배포할 때
+#
+# 사전 준비 (레포 Settings > Secrets and variables > Actions > New repository secret):
+#   - SUPABASE_ACCESS_TOKEN : https://supabase.com/dashboard/account/tokens 에서 생성
+#   - SUPABASE_DB_PASSWORD  : 대시보드 > Project Settings > Database > Database password
+#   (project ref 는 공개 URL 의 일부라 비밀이 아니므로 아래 env 에 평문으로 둔다)
+#
+# 주의:
+#   - 위 두 시크릿은 프로젝트를 변경할 수 있는 강력한 자격증명. 레포 관리자만 관리하고
+#     로그에 echo 하지 말 것 (Actions 는 시크릿을 자동 마스킹하지만 습관적으로 주의).
+#   - 시크릿이 없으면 이 워크플로우는 link 단계에서 실패한다 (부분 배포는 일어나지 않음).
+#   - 프론트엔드(GitHub Pages)는 기존 deploy.yml 이 모든 push 에서 별도 처리.
+# ============================================================
+
+name: Deploy Supabase
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/migrations/**'
+      - 'supabase/functions/**'
+      - 'supabase/config.toml'
+  workflow_dispatch:
+
+# 동시 배포 1건 제한 — 연속 머지 시 줄세움(앞 배포를 취소하지 않음).
+concurrency:
+  group: supabase-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Push migrations + deploy functions
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      SUPABASE_PROJECT_REF: kvgpoqrzwfdpacmljbrm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Link project
+        run: supabase link --project-ref "$SUPABASE_PROJECT_REF"
+
+      - name: Push database migrations
+        # 적용 안 된 마이그레이션만 반영. 모든 마이그레이션이 멱등이라 재실행도 안전.
+        run: supabase db push
+
+      - name: Deploy edge functions
+        # 인자 없이 호출하면 supabase/functions/ 하위 전체를 배포.
+        # 시크릿(CRON_SECRET 등)은 프로젝트에 유지되므로 deploy 가 건드리지 않음.
+        run: supabase functions deploy --project-ref "$SUPABASE_PROJECT_REF"
