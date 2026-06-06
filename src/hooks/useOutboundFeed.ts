@@ -6,6 +6,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import type { Database } from '@/types/database.types'
+import { threadModeLabel } from '@/lib/threadLabels'
 
 type ThreadRow = Database['mailcaster']['Tables']['thread_messages']['Row']
 type RecipientRow = Database['mailcaster']['Tables']['recipients']['Row']
@@ -88,7 +89,7 @@ export function useOutboundFeed(limit = 100) {
           toLabel: row.to_name ?? row.to_email,
           toEmail: row.to_email,
           subject: row.subject,
-          modeLabel: modeLabelKr(row.mode),
+          modeLabel: threadModeLabel(row.mode),
           status: row.status,
           opened: row.opened,
           openCount: row.open_count,
@@ -140,17 +141,4 @@ export function useOutboundFeed(limit = 100) {
     },
     refetchInterval: 60_000,
   })
-}
-
-function modeLabelKr(mode: ThreadRow['mode']): string {
-  switch (mode) {
-    case 'followup':
-      return '팔로업'
-    case 'reply':
-      return '회신'
-    case 'forward':
-      return '전달'
-    case 'new':
-      return '새 메일'
-  }
 }

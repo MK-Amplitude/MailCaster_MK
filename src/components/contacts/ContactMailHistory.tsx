@@ -19,6 +19,7 @@ import {
 } from '@/hooks/useContactMailHistory'
 import { ThreadComposeDialog } from '@/components/campaigns/ThreadComposeDialog'
 import { escapeHtml } from '@/lib/utils'
+import { threadModeLabel, formatSenderLabel } from '@/lib/threadLabels'
 
 interface Props {
   contactId: string
@@ -73,7 +74,7 @@ export function ContactMailHistory({ contactId, contactName }: Props) {
             bodyHtml: `<pre style="white-space: pre-wrap; font-family: inherit;">${escapeHtml(
               replyTo.body_text || replyTo.snippet || '',
             )}</pre>`,
-            fromLabel: formatFromLabel(replyTo),
+            fromLabel: formatSenderLabel(replyTo),
             sentAt: replyTo.received_at,
           }}
           recipient={{
@@ -101,14 +102,7 @@ function MailHistoryRow({
 
   if (item.kind === 'outbound') {
     const m = item.row
-    const modeLabelKr =
-      m.mode === 'followup'
-        ? '팔로업'
-        : m.mode === 'reply'
-          ? '회신'
-          : m.mode === 'forward'
-            ? '전달'
-            : '새 메일'
+    const modeLabelKr = threadModeLabel(m.mode)
     return (
       <div className="border rounded-lg p-3 bg-blue-50/40 dark:bg-blue-950/20">
         <div className="flex items-start gap-2">
@@ -268,11 +262,6 @@ function MailHistoryRow({
       </div>
     </div>
   )
-}
-
-function formatFromLabel(reply: InboundMessage): string {
-  if (reply.from_name && reply.from_email) return `${reply.from_name} <${reply.from_email}>`
-  return reply.from_email
 }
 
 /** 발송된 메일의 오픈 추적 표시 — 1통이든 다수든 일관된 형태. 보내진 모든 메일에 사용. */

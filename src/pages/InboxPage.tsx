@@ -32,6 +32,8 @@ import { ThreadComposeDialog } from '@/components/campaigns/ThreadComposeDialog'
 import { useOutboundFeed, type OutboundItem } from '@/hooks/useOutboundFeed'
 import type { Database } from '@/types/database.types'
 import { escapeHtml } from '@/lib/utils'
+import { formatSenderLabel } from '@/lib/threadLabels'
+import { useOurRepliesByThread, isInboundUnreplied } from '@/hooks/useOurRepliesByThread'
 
 type InboundRow = Database['mailcaster']['Tables']['inbound_messages']['Row']
 
@@ -59,46 +61,20 @@ export default function InboxPage() {
     refetchInterval: 60_000,
   })
 
-  const { data: ourReplies = {} } = useQuery({
-    queryKey: [...QK, 'our-replies'],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from('thread_messages')
-        .select('gmail_thread_id, sent_at')
-        .eq('status', 'sent')
-        .not('gmail_thread_id', 'is', null)
-      if (error) throw error
-      const map: Record<string, string> = {}
-      for (const row of data ?? []) {
-        const tid = (row as { gmail_thread_id: string | null }).gmail_thread_id
-        const sentAt = (row as { sent_at: string | null }).sent_at
-        if (!tid || !sentAt) continue
-        if (!map[tid] || sentAt > map[tid]) map[tid] = sentAt
-      }
-      return map
-    },
-  })
+  // 공용 hook — useInboxStats 와 캐시 공유 (중복 fetch 제거)
+  const { data: ourReplies = {} } = useOurRepliesByThread()
 
   const inboundItems = useMemo(() => {
     if (filter === 'unreplied') {
-      return rawInbound.filter((m) => {
-        if (!m.gmail_thread_id) return true
-        const ourLast = ourReplies[m.gmail_thread_id]
-        if (!ourLast) return true
-        return ourLast < m.received_at
-      })
+      return rawInbound.filter((m) => isInboundUnreplied(m, ourReplies))
     }
     return rawInbound
   }, [rawInbound, ourReplies, filter])
 
-  const unrepliedCount = useMemo(() => {
-    return rawInbound.filter((m) => {
-      if (!m.gmail_thread_id) return true
-      const ourLast = ourReplies[m.gmail_thread_id]
-      if (!ourLast) return true
-      return ourLast < m.received_at
-    }).length
-  }, [rawInbound, ourReplies])
+  const unrepliedCount = useMemo(
+    () => rawInbound.filter((m) => isInboundUnreplied(m, ourReplies)).length,
+    [rawInbound, ourReplies],
+  )
 
   // ─── Outbound ────────────────────────────────────────────────
   const { data: outboundFeed = [], isLoading: outboundLoading } = useOutboundFeed(PAGE_SIZE)
@@ -262,9 +238,7 @@ export default function InboxPage() {
             bodyHtml: `<pre style="white-space: pre-wrap; font-family: inherit;">${escapeHtml(
               replyTo.body_text || replyTo.snippet || '',
             )}</pre>`,
-            fromLabel: replyTo.from_name
-              ? `${replyTo.from_name} <${replyTo.from_email}>`
-              : replyTo.from_email,
+            fromLabel: formatSenderLabel(replyTo),
             sentAt: replyTo.received_at,
           }}
           recipient={{

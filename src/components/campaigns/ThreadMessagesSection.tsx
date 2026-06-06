@@ -26,6 +26,7 @@ import { format } from 'date-fns'
 import { ko } from 'date-fns/locale'
 import { Reply, Eye, EyeOff, MessageCircle, AlertTriangle } from 'lucide-react'
 import { THREAD_MODE_META, THREAD_STATUS_META } from './threadMessageMeta'
+import { formatSenderLabel } from '@/lib/threadLabels'
 
 interface Props {
   campaignId: string
@@ -223,7 +224,7 @@ export function ThreadMessagesSection({ campaignId }: Props) {
             bodyHtml: replyCompose.reply.body_text
               ? `<pre style="white-space: pre-wrap; font-family: inherit;">${escapeHtml(replyCompose.reply.body_text)}</pre>`
               : null,
-            fromLabel: formatFromLabel(replyCompose.reply),
+            fromLabel: formatSenderLabel(replyCompose.reply),
             sentAt: replyCompose.reply.received_at,
           }}
           recipient={{
@@ -238,12 +239,5 @@ export function ThreadMessagesSection({ campaignId }: Props) {
       )}
     </>
   )
-}
-
-// "이름 <email>" 형식. 둘 다 없으면 "발신자"
-function formatFromLabel(reply: ThreadMessageReply): string {
-  if (reply.from_name && reply.from_email) return `${reply.from_name} <${reply.from_email}>`
-  if (reply.from_email) return reply.from_email
-  return reply.from_name ?? '발신자'
 }
 

@@ -15,28 +15,29 @@ import {
   Clock,
 } from 'lucide-react'
 import type { ThreadMessageRow } from '@/hooks/useThreadMessages'
+import { threadModeLabel } from '@/lib/threadLabels'
 
 export const THREAD_MODE_META: Record<
   ThreadMessageRow['mode'],
   { label: string; Icon: typeof Reply; badgeClass: string }
 > = {
   followup: {
-    label: '팔로업',
+    label: threadModeLabel('followup'),
     Icon: Reply,
     badgeClass: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
   },
   reply: {
-    label: '회신',
+    label: threadModeLabel('reply'),
     Icon: ReplyAll,
     badgeClass: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300',
   },
   forward: {
-    label: '전달',
+    label: threadModeLabel('forward'),
     Icon: Forward,
     badgeClass: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300',
   },
   new: {
-    label: '새 메일',
+    label: threadModeLabel('new'),
     Icon: Mail,
     badgeClass: 'bg-gray-100 text-gray-700 dark:bg-gray-900/40 dark:text-gray-300',
   },
