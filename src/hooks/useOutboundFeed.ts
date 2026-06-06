@@ -78,7 +78,6 @@ export function useOutboundFeed(limit = 100) {
           campaignsMap.set(c.id, c)
         }
       }
-      const ca = { data: rec.data, error: null as null }
 
       const items: OutboundItem[] = []
       for (const row of (th.data ?? []) as ThreadRow[]) {
@@ -105,7 +104,7 @@ export function useOutboundFeed(limit = 100) {
           rfcMessageId: row.rfc_message_id,
         })
       }
-      for (const row of (ca.data ?? []) as RecipientRow[]) {
+      for (const row of (rec.data ?? []) as RecipientRow[]) {
         const camp = row.campaign_id ? campaignsMap.get(row.campaign_id) : null
         if (!camp) continue
         items.push({

@@ -237,7 +237,9 @@ function MailHistoryRow({
               <div className="text-xs text-muted-foreground mt-1 line-clamp-2 whitespace-pre-wrap">
                 {m.body_text || m.snippet}
               </div>
-              {(m.body_text || m.body_html) && (
+              {/* "본문 보기" 는 펼침 뷰가 body_text 만 표시하므로 body_text 가 있을 때만.
+                  (body_html 만 있는 경우 보안상 raw 렌더 안 하고 snippet 으로 충분히 보임) */}
+              {m.body_text && m.body_text.length > 120 && (
                 <button
                   type="button"
                   onClick={() => setExpanded((v) => !v)}
@@ -248,9 +250,9 @@ function MailHistoryRow({
               )}
             </>
           )}
-          {expanded && (
+          {expanded && m.body_text && (
             <div className="border-t pt-2 mt-2 text-sm whitespace-pre-wrap break-words">
-              {m.body_text || '(본문 없음)'}
+              {m.body_text}
             </div>
           )}
         </div>
