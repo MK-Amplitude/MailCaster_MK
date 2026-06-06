@@ -221,6 +221,30 @@ Deno.serve(async (req) => {
           continue
         }
 
+        // C1 멱등 가드 — 이 (시퀀스, contact, 스텝) 발송이 이미 존재하면 재발송 금지.
+        // (이전 run 에서 Gmail 발송 성공 후 advance_enrollment 실패/크래시 시, 클레임의 15분 hold 가
+        //  만료되면 같은 스텝을 또 보낼 위험 → DB 에 sent/pending 흔적이 있으면 enrollment 만 진행시켜 복구.)
+        const { data: existingTm } = await supabase
+          .schema('mailcaster').from('thread_messages')
+          .select('id, gmail_thread_id, rfc_message_id')
+          .eq('sequence_id', claim.sequence_id)
+          .eq('contact_id', claim.contact_id)
+          .eq('sequence_step_order', claim.step_order)
+          .in('status', ['sent', 'pending'])
+          .limit(1)
+          .maybeSingle()
+        if (existingTm) {
+          const ex = existingTm as { gmail_thread_id: string | null; rfc_message_id: string | null }
+          const { error: advErr } = await supabase.schema('mailcaster').rpc('advance_enrollment', {
+            p_enrollment_id: claim.enrollment_id,
+            p_sent_step_order: claim.step_order,
+            p_thread_id: ex.gmail_thread_id ?? claim.last_thread_id,
+            p_rfc_message_id: ex.rfc_message_id ?? claim.last_rfc_message_id,
+          })
+          if (advErr) console.warn('[process-sequences] recover advance fail', claim.enrollment_id, advErr.message)
+          continue
+        }
+
         // thread 미시작이면 첫 메일(new), 있으면 후속(followup)
         const isFirst = !claim.last_thread_id
         const mode = isFirst ? 'new' : 'followup'
@@ -302,13 +326,18 @@ Deno.serve(async (req) => {
           .eq('id', tmId)
 
         guard.sentToday++ // 일일 한도 로컬 카운트 증가
-        // enrollment 진행 — 다음 스텝 예약 / 완료
-        await supabase.schema('mailcaster').rpc('advance_enrollment', {
+        // enrollment 진행 — 다음 스텝 예약 / 완료.
+        // 실패 시 로그만 — 발송된 thread_messages(sent) 흔적이 남아 다음 tick 의 C1 멱등 가드가
+        // 재발송 없이 복구(advance)한다.
+        const { error: advErr } = await supabase.schema('mailcaster').rpc('advance_enrollment', {
           p_enrollment_id: claim.enrollment_id,
           p_sent_step_order: claim.step_order,
           p_thread_id: result.threadId,
           p_rfc_message_id: ownRfc,
         })
+        if (advErr) {
+          console.warn('[process-sequences] advance fail (멱등 가드가 다음 tick 에 복구)', claim.enrollment_id, advErr.message)
+        }
         sent++
       }
     }
