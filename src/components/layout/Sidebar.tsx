@@ -11,6 +11,7 @@ import {
   Paperclip,
   Inbox,
   Workflow,
+  BarChart3,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -25,6 +26,7 @@ const primaryNav = [
   { to: '/templates', icon: FileText, label: '템플릿' },
 ]
 const secondaryNav = [
+  { to: '/analytics', icon: BarChart3, label: '분석' },
   { to: '/groups', icon: FolderOpen, label: '그룹' },
   { to: '/signatures', icon: PenLine, label: '서명' },
   { to: '/attachments', icon: Paperclip, label: '첨부 파일' },
