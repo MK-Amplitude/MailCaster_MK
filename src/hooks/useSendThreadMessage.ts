@@ -285,6 +285,11 @@ export function useSendThreadMessage() {
       if (vars.recipientId) {
         qc.invalidateQueries({ queryKey: ['campaigns', 'recipients'] })
       }
+      // 발송 후 메일 히스토리 / 보낸편지함 / 대시보드 KPI 즉시 반영.
+      // (특히 contact_mail_history 는 키 불일치 + 0건 폴링 미동작으로 영구 미반영되던 문제 — prefix invalidate)
+      qc.invalidateQueries({ queryKey: ['contact_mail_history'] })
+      qc.invalidateQueries({ queryKey: ['outbound-feed'] })
+      qc.invalidateQueries({ queryKey: ['inbox-stats'] })
       const label =
         vars.mode === 'followup'
           ? '팔로업'

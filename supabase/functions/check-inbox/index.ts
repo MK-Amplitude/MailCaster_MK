@@ -263,7 +263,7 @@ Deno.serve(async (req) => {
       } else {
         // oldest 가 cursor 와 같은 초이거나 처리분 없음 — 후퇴해도 진전 없음 (라이브락).
         // 라이브락 방지를 위해 한 초 전진. 같은 초 내 윈도우 밖 메시지는 유실되나,
-        // 한 초에 30통+ 받는 극단 케이스라 실무 영향 낮음.
+        // 한 초에 PER_USER_MAX_MESSAGES(100)통+ 받는 극단 케이스라 실무 영향 낮음.
         nextCursorMs = floorSecMs(cursorMs) + 1000
       }
       await supabase
