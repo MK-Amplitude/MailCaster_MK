@@ -86,6 +86,8 @@ interface Campaign {
   last_processed_recipient_id: string | null
   // Phase 6 (C) — 오픈 추적 on/off
   enable_open_tracking: boolean | null
+  // 069 — 발송 완료 후 수신자를 등록할 후속 시퀀스
+  followup_sequence_id: string | null
 }
 
 interface DriveAttachmentRow {
@@ -136,7 +138,7 @@ Deno.serve(async (req) => {
       .schema('mailcaster')
       .from('campaigns')
       .select(
-        'id, user_id, name, subject, body_html, signature_id, send_delay_seconds, cc, bcc, send_mode, scheduled_at, status, sending_started_at, last_processed_recipient_id, enable_open_tracking'
+        'id, user_id, name, subject, body_html, signature_id, send_delay_seconds, cc, bcc, send_mode, scheduled_at, status, sending_started_at, last_processed_recipient_id, enable_open_tracking, followup_sequence_id'
       )
       .or(
         `and(status.eq.scheduled,scheduled_at.lte.${nowIso}),and(status.eq.sending,sending_started_at.not.is.null)`
@@ -592,6 +594,10 @@ async function processCampaign(
         inlineImages: inlineImages.length > 0 ? inlineImages : undefined,
       })
       const sentAt = new Date().toISOString()
+      // 후속 시퀀스가 붙었으면 RFC Message-ID 조회 — bulk 는 1통이므로 공통 rfc.
+      const bulkRfc = c.followup_sequence_id
+        ? await fetchMessageRfcId(accessToken, result.id)
+        : null
       await supabase
         .schema('mailcaster')
         .from('recipients')
@@ -600,6 +606,7 @@ async function processCampaign(
           sent_at: sentAt,
           gmail_message_id: result.id,
           gmail_thread_id: result.threadId,
+          rfc_message_id: bulkRfc,
           error_message: null,
         })
         .eq('campaign_id', c.id)
@@ -621,6 +628,8 @@ async function processCampaign(
         prepared,
         deliveryMode,
       )
+      // 후속 시퀀스 등록 (발송 완료 시)
+      await enrollFollowupSequence(supabase, c)
       return { sent: validRecipients.length, failed: invalidRecipients.length }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -734,6 +743,10 @@ async function processCampaign(
         attachments: mailAttachments,
         inlineImages: inlineImages.length > 0 ? inlineImages : undefined,
       })
+      // 후속 시퀀스가 붙었으면 RFC Message-ID 조회 — followup In-Reply-To 용.
+      const rfcMessageId = c.followup_sequence_id
+        ? await fetchMessageRfcId(accessToken, result.id)
+        : null
       await supabase
         .schema('mailcaster')
         .from('recipients')
@@ -742,6 +755,7 @@ async function processCampaign(
           sent_at: new Date().toISOString(),
           gmail_message_id: result.id,
           gmail_thread_id: result.threadId,
+          rfc_message_id: rfcMessageId,
           error_message: null,
         })
         .eq('id', r.id)
@@ -831,6 +845,9 @@ async function processCampaign(
     .from('campaigns')
     .update({ status: finalStatus, sent_count: sentTotal, failed_count: failedTotal })
     .eq('id', c.id)
+
+  // 후속 시퀀스 등록 (개별 발송 완료 시 — paused 가 아니라 실제 완료된 경우만 여기 도달)
+  await enrollFollowupSequence(supabase, c)
 
   return { sent, failed }
 }
@@ -1004,6 +1021,47 @@ async function recordRecipientAttachments(
     .insert(rows)
   if (error) {
     console.warn('[send-scheduled] recipient_attachments insert failed:', error.message)
+  }
+}
+
+// ------------------------------------------------------------
+// 069 — 발송 완료 후 후속 시퀀스 등록 (service_role). best-effort.
+//   RPC enroll_campaign_recipients 가 'sent' 수신자를 캠페인 스레드 followup 으로 등록.
+//   recipients.rfc_message_id 는 발송 시점에 채워둠(즉시·예약 동일) → followup In-Reply-To 연결.
+// ------------------------------------------------------------
+async function enrollFollowupSequence(
+  // deno-lint-ignore no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any,
+  campaign: Campaign,
+): Promise<void> {
+  if (!campaign.followup_sequence_id) return
+  const { data, error } = await supabase
+    .schema('mailcaster')
+    .rpc('enroll_campaign_recipients', { p_campaign_id: campaign.id })
+  if (error) {
+    console.warn(`[send-scheduled] follow-up enroll failed for ${campaign.id}:`, error.message)
+  } else if (data) {
+    console.log(`[send-scheduled] campaign ${campaign.id} enrolled ${data} into follow-up sequence`)
+  }
+}
+
+// 069 — 발송한 메일의 RFC822 Message-ID 조회 (후속 시퀀스 In-Reply-To/References 용).
+//   best-effort — 실패 시 null (gmail_thread_id 만으로도 Gmail 스레드는 묶임).
+//   후속 시퀀스가 붙은 캠페인에서만 호출해 평상시 발송엔 추가 API 비용이 없게 한다.
+async function fetchMessageRfcId(accessToken: string, gmailMessageId: string): Promise<string | null> {
+  try {
+    const res = await fetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(gmailMessageId)}?format=metadata&metadataHeaders=Message-ID`,
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    )
+    if (!res.ok) return null
+    const data = await res.json()
+    const headers = data.payload?.headers ?? []
+    const found = headers.find((h: { name: string }) => h.name.toLowerCase() === 'message-id')
+    return found?.value ?? null
+  } catch {
+    return null
   }
 }
 
