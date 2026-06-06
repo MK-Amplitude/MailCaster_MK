@@ -27,3 +27,8 @@ verify_jwt = false
 [functions.track-open]
 # 이메일 클라이언트의 단순 GET 픽셀 요청이므로 jwt 검증 불가.
 verify_jwt = false
+
+[functions.check-inbox]
+# pg_cron 이 Bearer <CRON_SECRET> 으로 자체 인증하므로 jwt 검증은 끈다.
+# (없으면 CRON_SECRET 이 유효 JWT 가 아니라 gateway 가 401 → inbound 폴링 cron 전체 미동작)
+verify_jwt = false

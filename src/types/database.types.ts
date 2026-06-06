@@ -57,6 +57,8 @@ export interface Database {
           google_contacts_sync_token: string | null
           google_contacts_last_sync_at: string | null
           google_contacts_auto_sync: boolean
+          // 056 — check-inbox cron 의 incremental 폴링 cursor
+          last_inbox_check_at: string | null
           created_at: string
         }
         Insert: {
@@ -83,6 +85,7 @@ export interface Database {
           google_contacts_sync_token?: string | null
           google_contacts_last_sync_at?: string | null
           google_contacts_auto_sync?: boolean
+          last_inbox_check_at?: string | null
           created_at?: string
         }
         Update: {
@@ -109,6 +112,7 @@ export interface Database {
           google_contacts_sync_token?: string | null
           google_contacts_last_sync_at?: string | null
           google_contacts_auto_sync?: boolean
+          last_inbox_check_at?: string | null
         }
         Relationships: []
       }
