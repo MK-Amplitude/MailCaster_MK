@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -501,9 +501,6 @@ function ParentGroupEditor({
   const qc = useQueryClient()
   const [value, setValue] = useState(contact.parent_group ?? '')
   const [aiPending, setAiPending] = useState(false)
-  // 자동 호출 attempted 추적 — 같은 session 에서 같은 contact 에 자동 호출 1회만.
-  // 사용자가 매번 sheet 열고 닫을 때마다 LLM 호출되는 걸 방지.
-  const autoTriedRef = useRef<Set<string>>(new Set())
 
   // AI 자동 분석 — 이메일 도메인 + 기존 회사명을 LLM 에 보내 그룹사 추론.
   // 도메인이 개인 메일 (gmail/naver 등) 이면 추론 불가.
@@ -575,14 +572,24 @@ function ParentGroupEditor({
   useEffect(() => {
     if (!canMutate) return
     if (contact.parent_group) return
-    if (autoTriedRef.current.has(contact.id)) return
+    // 모듈 스코프 Set — sheet unmount/remount 와 무관하게 영속.
+    // 같은 contact 를 닫았다 다시 열어도 자동 LLM 재호출 안 됨 (B-M1 fix).
+    if (autoResolveAttempted.has(contact.id)) return
     const emailDomain = contact.email?.split('@')[1]?.toLowerCase()
     if (!emailDomain) return
-    // 개인 메일 도메인은 회사 식별 불가 → resolveCompanyForContact 가 어차피 no-op 반환하지만
-    // LLM 호출 자체를 회피하기 위해 클라이언트에서도 사전 차단.
+    // 개인 메일 도메인은 회사 식별 불가 → 클라이언트에서 사전 차단 (LLM 호출 회피).
     if (isPersonalEmailDomain(emailDomain)) return
+    // 최근 (24h 내) 분석된 적 있으면 자동 재호출 안 함 — 그룹 미소속 (parent_group=null)
+    // contact 를 매번 force_refresh 로 재과금하는 것 방지. 수동 버튼은 그대로 사용 가능.
+    if (contact.company_lookup_at) {
+      const lookupMs = new Date(contact.company_lookup_at).getTime()
+      if (Date.now() - lookupMs < 24 * 60 * 60 * 1000) {
+        autoResolveAttempted.add(contact.id)
+        return
+      }
+    }
 
-    autoTriedRef.current.add(contact.id)
+    autoResolveAttempted.add(contact.id)
     const status = contact.company_lookup_status
     const shouldForce = status === 'resolved' || status === 'not_found'
     setAiPending(true)
@@ -603,7 +610,7 @@ function ParentGroupEditor({
         /* silent — 수동 버튼이 있으니 fallback */
       })
       .finally(() => setAiPending(false))
-  }, [contact.id, contact.parent_group, contact.email, contact.company, contact.company_lookup_status, canMutate, qc])
+  }, [contact.id, contact.parent_group, contact.email, contact.company, contact.company_lookup_status, contact.company_lookup_at, canMutate, qc])
 
   // 입력값과 비슷한 기존 그룹사 (정규화 후 substring/편집거리 기반).
   // 정확 일치는 제외 — 즉 입력값이 기존 옵션과 다르되 비슷할 때만 표시.
@@ -818,3 +825,7 @@ const PERSONAL_EMAIL_DOMAINS = new Set([
 function isPersonalEmailDomain(domain: string): boolean {
   return PERSONAL_EMAIL_DOMAINS.has(domain)
 }
+
+// 자동 AI 그룹사 분석 attempted 추적 — 모듈 스코프라 sheet unmount/remount 와 무관하게 영속.
+// 페이지 새로고침 (모듈 재로드) 시 초기화되어 다시 시도 가능. session 동안 contact 당 1회만 자동 호출.
+const autoResolveAttempted = new Set<string>()

@@ -81,7 +81,8 @@ export function findSimilarGroups(
   for (const cand of existing) {
     if (cand === input) continue // 정확 일치는 제외 (이미 같은 거니까)
     const candNorm = normalizeCompanyName(cand)
-    if (!candNorm || candNorm === inputNorm) {
+    if (!candNorm) continue // 후보가 정규화 후 빈 문자열 (예: "(주)") — 비교 불가, skip
+    if (candNorm === inputNorm) {
       // 정규화 후 동일 = 표기만 다른 케이스 — 가장 강력한 신호
       scored.push({ name: cand, score: 1 })
       continue

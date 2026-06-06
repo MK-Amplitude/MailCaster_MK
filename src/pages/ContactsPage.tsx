@@ -40,7 +40,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { UserPlus, Upload, Users, Search, UserX, Trash2, FolderPlus, Tag, Wand2, ScanLine, Loader2, Archive, ArchiveRestore, RotateCcw, Sparkles } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
-import { resolveCompanyForContact } from '@/lib/resolveCompany'
+import { resolveCompaniesBatch } from '@/lib/resolveCompany'
 import { PersonalizedSendDialog } from '@/components/campaigns/PersonalizedSendDialog'
 import { useOcrBusinessCard, type OcrFields } from '@/hooks/useOcrBusinessCard'
 import { toast } from 'sonner'
@@ -255,9 +255,10 @@ export default function ContactsPage() {
     toggleUnsub.mutate({ id: contact.id, unsubscribe: !contact.is_unsubscribed })
   }
 
-  // 일괄 AI 그룹사 분석 — 선택된 contact 중 그룹사가 비어있고 유효한 회사 도메인 있는 것만.
-  // 같은 도메인은 dedupe (한 도메인당 1번만 LLM 호출, 나머지는 캐시 활용).
-  // 진행 중 toast 로 진행률 표시.
+  // 일괄 AI 그룹사 분석 — 선택된 contact 중 그룹사가 비어있고 이메일 있는 것만.
+  // resolveCompaniesBatch 가 (회사명 또는 도메인) 키로 dedupe → 키별 1회만 LLM 호출,
+  // 나머지는 company_cache 활용. 1000명이라도 unique 회사명/도메인 수만큼만 과금.
+  const [bulkAiPending, setBulkAiPending] = useState(false)
   const handleBulkAiResolve = async () => {
     const ids = scope === 'common' ? expandedCommonContactIds : [...selectedIds]
     const targets = contacts.filter(
@@ -267,44 +268,24 @@ export default function ContactsPage() {
       toast.info('AI 분석 대상이 없습니다 — 선택한 연락처에 그룹사가 이미 채워져 있거나 이메일이 없습니다.')
       return
     }
-    // dedupe by domain — 회사명 단독 + 도메인 단독 두 케이스 모두 cover
-    const seenDomains = new Set<string>()
-    const tasks: Array<{ id: string; rawName: string | null; email: string }> = []
-    for (const c of targets) {
-      const domain = c.email.split('@')[1]?.toLowerCase()
-      if (!domain) continue
-      // 같은 도메인이라도 회사명이 다르면 결과가 다를 수 있어 별도 호출 (cache_key 가 query_key 라).
-      // 단순화: 모두 호출하되 server-side cache 가 중복 LLM 호출 차단.
-      seenDomains.add(domain)
-      tasks.push({ id: c.id, rawName: c.company_raw ?? c.company ?? null, email: c.email })
+    setBulkAiPending(true)
+    toast.info(`AI 그룹사 분석 시작 — ${targets.length}건 (중복 회사/도메인은 캐시 재사용)`)
+    try {
+      await resolveCompaniesBatch(
+        targets.map((c) => ({
+          id: c.id,
+          rawName: c.company_raw ?? c.company ?? null,
+          email: c.email,
+        })),
+        qc,
+      )
+      toast.success(`AI 그룹사 분석 완료 — ${targets.length}건 처리`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'AI 분석 중 오류')
+    } finally {
+      setBulkAiPending(false)
+      clearSelection()
     }
-    if (tasks.length === 0) {
-      toast.info('AI 분석 가능한 도메인이 없습니다 (개인 메일 제외).')
-      return
-    }
-    toast.info(`AI 분석 시작 — ${tasks.length}건 (도메인 ${seenDomains.size}개)`)
-    let done = 0
-    // 같은 도메인이 캐시에 이미 있으면 cache hit. 그러나 사용자가 일괄 backfill 을 실행한다는 건
-    // "전에 분석 안 된 contact 들" 대상이라 보통 cache miss. 첫 호출만 LLM, 나머지는 캐시 활용 (도메인 단위).
-    for (const t of tasks) {
-      try {
-        await resolveCompanyForContact({
-          rawName: t.rawName,
-          contactId: t.id,
-          email: t.email,
-          qc,
-        })
-      } catch {
-        // 개별 실패는 무시 — 나머지 계속
-      }
-      done++
-      // 매 10건마다 진행 알림
-      if (done % 10 === 0 && done < tasks.length) {
-        toast.info(`AI 분석 진행 중... ${done} / ${tasks.length}`)
-      }
-    }
-    toast.success(`AI 그룹사 분석 완료 — ${tasks.length}건 처리`)
-    clearSelection()
   }
 
   const openNewForm = () => {
@@ -560,9 +541,10 @@ export default function ContactsPage() {
             onClick: () => setPersonalizeOpen(true),
           },
           {
-            label: 'AI 그룹사 분석',
+            label: bulkAiPending ? 'AI 분석 중...' : 'AI 그룹사 분석',
             icon: <Sparkles className="w-3.5 h-3.5 mr-1" />,
             onClick: handleBulkAiResolve,
+            disabled: bulkAiPending,
           },
           {
             label: '그룹에 추가',

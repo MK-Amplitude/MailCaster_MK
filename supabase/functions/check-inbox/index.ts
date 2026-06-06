@@ -150,8 +150,16 @@ Deno.serve(async (req) => {
         continue
       }
 
-      // 3) 각 메시지 fetch + 처리. 가장 늦은 internalDate 를 cursor 후보로.
+      // 윈도우가 가득 찼는지 — Gmail list 는 newest-first 라, 정확히 limit 개가 왔으면
+      // 그 30통 밖에 더 오래된 미처리 메시지가 남아있을 수 있음 (after:<cursor> 범위 내).
+      const windowFull = listIds.length >= PER_USER_MAX_MESSAGES
+
+      // 3) 각 메시지 fetch + 처리.
+      //   - latestProcessedMs: 처리한 가장 늦은 시각 (윈도우가 다 비워졌을 때 cursor 전진용)
+      //   - oldestProcessedMs: 처리한 가장 이른 시각 (윈도우 가득 찼을 때 cursor 를 여기로 후퇴 →
+      //     다음 tick 이 그 이전(더 오래된)부터 이어받음. UNIQUE 가 중복 INSERT 차단하므로 안전)
       let latestProcessedMs = cursorMs
+      let oldestProcessedMs = Number.MAX_SAFE_INTEGER
 
       for (const msgId of listIds) {
         if (Date.now() - runStartedAt > RUN_BUDGET_MS - MESSAGE_FETCH_BUDGET_MS) break userLoop
@@ -220,6 +228,7 @@ Deno.serve(async (req) => {
           if (result?.contact_created) totalContactsCreated++
 
           if (ts > latestProcessedMs) latestProcessedMs = ts
+          if (ts < oldestProcessedMs) oldestProcessedMs = ts
         } catch (e) {
           gmailErrors++
           console.warn(
@@ -232,12 +241,27 @@ Deno.serve(async (req) => {
         }
       }
 
-      // cursor 갱신 — 가장 늦게 처리된 메시지 + 1ms (다음 cron 이 같은 메시지 재폴링 안 하도록)
+      // cursor 갱신:
+      //   - 윈도우 안 가득 참 (전부 비움): 가장 늦은 처리분 +1ms 로 전진 → 다음엔 새 메일만
+      //   - 윈도우 가득 참 (더 오래된 미처리분 가능성): oldestProcessedMs - 1ms 로 두어
+      //     다음 tick 이 그 시각 이하 (더 오래된) 메시지부터 다시 폴링. 이미 처리한 건 UNIQUE 차단.
+      //     단, 모든 메시지 internalDate 가 동일한 극단 케이스에서 oldest==cursor 면 진전이 없어
+      //     라이브락 위험 → 그 경우 강제로 +1ms 전진 (해당 tick 에 처리한 만큼은 보존됨).
+      let nextCursorMs: number
+      if (!windowFull) {
+        nextCursorMs = latestProcessedMs + 1
+      } else if (oldestProcessedMs > cursorMs && oldestProcessedMs !== Number.MAX_SAFE_INTEGER) {
+        // 더 오래된 미처리분이 cursorMs ~ oldestProcessedMs 사이에 있을 수 있음 → 그 직전까지 후퇴
+        nextCursorMs = oldestProcessedMs - 1
+      } else {
+        // oldest 가 cursor 이하거나 처리분 없음 — 진전 위해 latest 로 전진 (유실 방지보다 라이브락 방지 우선)
+        nextCursorMs = latestProcessedMs + 1
+      }
       await supabase
         .schema('mailcaster')
         .from('profiles')
         .update({
-          last_inbox_check_at: new Date(latestProcessedMs + 1).toISOString(),
+          last_inbox_check_at: new Date(nextCursorMs).toISOString(),
         })
         .eq('id', profile.id)
     }

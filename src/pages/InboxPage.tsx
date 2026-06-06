@@ -125,7 +125,15 @@ export default function InboxPage() {
         </div>
       </div>
 
-      <Tabs value={tab} onValueChange={(v) => setTab(v as 'inbound' | 'outbound')}>
+      <Tabs
+        value={tab}
+        onValueChange={(v) => {
+          setTab(v as 'inbound' | 'outbound')
+          // 탭 전환 시 filter 리셋 — 한 탭의 filter 값 (unreplied/unopened) 이 다른 탭으로
+          // 넘어가면 두 버튼 다 비활성 표시되는 글리치 방지.
+          setFilter('all')
+        }}
+      >
         <TabsList className="mb-4">
           <TabsTrigger value="inbound" className="gap-2">
             <Inbox className="w-3.5 h-3.5" />
