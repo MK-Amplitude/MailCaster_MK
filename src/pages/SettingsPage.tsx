@@ -85,10 +85,11 @@ export default function SettingsPage() {
   const { data: profile, isLoading } = useProfile()
   const updateMut = useUpdateProfile()
 
-  // ?tab=organization 으로 딥링크 지원 (OrgSwitcher 에서 호출)
+  // ?tab=organization|sending|audit 딥링크 지원 (OrgSwitcher 등에서 호출)
   const [searchParams, setSearchParams] = useSearchParams()
   const rawTab = searchParams.get('tab')
-  const activeTab = rawTab === 'organization' ? 'organization' : 'profile'
+  const VALID_TABS = ['profile', 'organization', 'sending', 'audit']
+  const activeTab = VALID_TABS.includes(rawTab ?? '') ? (rawTab as string) : 'profile'
   const setActiveTab = (value: string) => {
     const next = new URLSearchParams(searchParams)
     if (value === 'profile') next.delete('tab')
