@@ -21,3 +21,6 @@ dist-ssr
 # TypeScript
 *.tsbuildinfo
 .claude/worktrees/
+
+# Supabase CLI local cache
+supabase/.temp/
