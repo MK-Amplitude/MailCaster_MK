@@ -285,11 +285,13 @@ export function useSendThreadMessage() {
       if (vars.recipientId) {
         qc.invalidateQueries({ queryKey: ['campaigns', 'recipients'] })
       }
-      // 발송 후 메일 히스토리 / 보낸편지함 / 대시보드 KPI 즉시 반영.
+      // 발송 후 메일 히스토리 / 보낸편지함 / 받은편지함 / 대시보드 KPI 즉시 반영.
       // (특히 contact_mail_history 는 키 불일치 + 0건 폴링 미동작으로 영구 미반영되던 문제 — prefix invalidate)
+      // ['inbox'] — 회신은 보통 받은편지함에서 시작되므로 our-replies 갱신해 미응답 카운트 즉시 반영.
       qc.invalidateQueries({ queryKey: ['contact_mail_history'] })
       qc.invalidateQueries({ queryKey: ['outbound-feed'] })
       qc.invalidateQueries({ queryKey: ['inbox-stats'] })
+      qc.invalidateQueries({ queryKey: ['inbox'] })
       const label =
         vars.mode === 'followup'
           ? '팔로업'
