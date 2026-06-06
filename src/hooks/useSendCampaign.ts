@@ -866,6 +866,13 @@ export function useSendCampaign() {
     },
     onSuccess: ({ sent, failed, total, deliveryMode }) => {
       qc.invalidateQueries({ queryKey: ['campaigns'] })
+      // 캠페인 발송 결과 (recipients) 를 공유하는 뷰들 즉시 갱신 — thread 발송 (useSendThreadMessage)
+      // 과 동일 패턴. 누락 시 contact 메일 히스토리 / 보낸편지함 / 대시보드 오픈 KPI / 타임라인이
+      // 폴링 (또는 0건이면 영구) 으로만 갱신되어 stale.
+      qc.invalidateQueries({ queryKey: ['contact_mail_history'] })
+      qc.invalidateQueries({ queryKey: ['outbound-feed'] })
+      qc.invalidateQueries({ queryKey: ['inbox-stats'] })
+      qc.invalidateQueries({ queryKey: ['contact-send-history'] })
       const modeSuffix = deliveryMode === 'link' ? ' (Drive 링크 전송)' : ''
       if (failed === 0) {
         toast.success(`발송 완료: ${sent}/${total}${modeSuffix}`)
