@@ -14,7 +14,7 @@
 //   reply / forward 는 원본 HTML 을 quoted block 으로 자동 첨부.
 //   사용자가 본문 위쪽에 작성하고, 아래 quote 는 접혀있거나 그대로.
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Dialog,
   DialogContent,
@@ -34,7 +34,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Reply, ReplyAll, Forward, Loader2, Search, Mail } from 'lucide-react'
+import { Reply, ReplyAll, Forward, Loader2, Search, Mail, Paperclip, X } from 'lucide-react'
 import {
   Popover,
   PopoverContent,
@@ -133,6 +133,14 @@ export function ThreadComposeDialog({
   const [includeQuote, setIncludeQuote] = useState<boolean>(true)
   // 미리보기 모드 — 발송 직전 최종 모습 (본문 + 인용) read-only 표시
   const [showPreview, setShowPreview] = useState(false)
+  // 첨부 파일 (로컬). Gmail 메시지 한도(~25MB) 고려해 합계 20MB 가드.
+  const [attachments, setAttachments] = useState<File[]>([])
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const totalAttachBytes = useMemo(
+    () => attachments.reduce((sum, f) => sum + f.size, 0),
+    [attachments],
+  )
+  const attachOversize = totalAttachBytes > MAX_ATTACH_BYTES
 
   // dialog 가 새로 열릴 때 (또는 mode/recipient 바뀔 때) 초기값으로 reset.
   useEffect(() => {
@@ -143,6 +151,7 @@ export function ThreadComposeDialog({
     setToName(recipient.name ?? '')
     setIncludeQuote(true)
     setShowPreview(false)
+    setAttachments([])
   // initialSubject / initialBody 는 매 렌더 새로 계산되므로 deps 에서 제외 — open 만 핵심.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, mode, recipient.email])
@@ -197,10 +206,28 @@ export function ThreadComposeDialog({
         campaignId: recipient.campaignId,
         recipientId: recipient.recipientId,
         contactId: recipient.contactId,
+        attachments: attachments.length > 0 ? attachments : undefined,
       })
     } finally {
       onOpenChange(false)
     }
+  }
+
+  function handleFilesPicked(e: React.ChangeEvent<HTMLInputElement>) {
+    const picked = Array.from(e.target.files ?? [])
+    if (picked.length > 0) {
+      // 이름+크기 기준 중복 제외하고 추가
+      setAttachments((prev) => {
+        const seen = new Set(prev.map((f) => `${f.name}:${f.size}`))
+        return [...prev, ...picked.filter((f) => !seen.has(`${f.name}:${f.size}`))]
+      })
+    }
+    // 같은 파일 재선택 가능하도록 input 초기화
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  function removeAttachment(idx: number) {
+    setAttachments((prev) => prev.filter((_, i) => i !== idx))
   }
 
   const modeMeta = getModeMeta(mode)
@@ -388,6 +415,57 @@ export function ThreadComposeDialog({
             )}
           </div>
 
+          {/* 첨부 파일 */}
+          <div className="space-y-1.5">
+            <Label className="text-xs">첨부 파일</Label>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={handleFilesPicked}
+            />
+            <div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <Paperclip className="w-3.5 h-3.5 mr-1" />
+                파일 추가
+              </Button>
+            </div>
+            {attachments.length > 0 && (
+              <ul className="space-y-1">
+                {attachments.map((f, i) => (
+                  <li
+                    key={`${f.name}:${f.size}:${i}`}
+                    className="flex items-center gap-2 text-xs bg-muted/40 rounded px-2 py-1"
+                  >
+                    <Paperclip className="w-3 h-3 text-muted-foreground shrink-0" />
+                    <span className="truncate flex-1">{f.name}</span>
+                    <span className="text-muted-foreground shrink-0">{formatBytes(f.size)}</span>
+                    <button
+                      type="button"
+                      onClick={() => removeAttachment(i)}
+                      className="text-muted-foreground hover:text-foreground shrink-0"
+                      aria-label="첨부 제거"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {attachOversize && (
+              <p className="text-xs text-rose-600">
+                첨부 합계가 20MB 를 초과했습니다 ({formatBytes(totalAttachBytes)}). 파일을 줄여주세요.
+              </p>
+            )}
+          </div>
+
           {/* 이전 대화 인용 — 본문 외부의 collapse 패널 (Gmail 답장 UX 와 일관)
               - 시그니처가 본문과 인용에 동시 표시되던 중복 문제를 분리로 해결
               - 사용자가 "함께 보내기" 체크박스로 인용 포함 여부 토글 */}
@@ -429,7 +507,7 @@ export function ThreadComposeDialog({
           <Button
             type="button"
             onClick={handleSend}
-            disabled={send.isPending || !toEmail.trim()}
+            disabled={send.isPending || !toEmail.trim() || attachOversize}
           >
             {send.isPending ? (
               <>
@@ -447,6 +525,15 @@ export function ThreadComposeDialog({
       </DialogContent>
     </Dialog>
   )
+}
+
+// Gmail 메시지 한도(~25MB)를 고려한 첨부 합계 상한 (base64 인코딩 여유 포함 보수적 20MB).
+const MAX_ATTACH_BYTES = 20 * 1024 * 1024
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`
 }
 
 function getModeMeta(mode: ThreadMode) {

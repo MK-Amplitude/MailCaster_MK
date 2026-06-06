@@ -53,6 +53,8 @@ export interface SendThreadInput {
   contactId?: string | null
   cc?: string[]
   bcc?: string[]
+  /** 첨부 파일 — 사용자가 선택한 로컬 파일. Gmail MIME 의 attachment 파트로 전송. */
+  attachments?: File[]
 }
 
 export function useSendThreadMessage() {
@@ -190,6 +192,15 @@ export function useSendThreadMessage() {
           threadId: input.threadId ?? undefined,
           inReplyTo: inReplyTo ?? undefined,
           inlineImages: inlineImages.length > 0 ? inlineImages : undefined,
+          // 로컬 첨부 파일 — File 은 Blob 이므로 그대로 data 로 전달 (buildMime 이 base64 인코딩).
+          attachments:
+            input.attachments && input.attachments.length > 0
+              ? input.attachments.map((f) => ({
+                  filename: f.name,
+                  mimeType: f.type || 'application/octet-stream',
+                  data: f,
+                }))
+              : undefined,
         })
 
         // 발송 성공 — 즉시 gmail_message_id / gmail_thread_id 부터 먼저 UPDATE.
