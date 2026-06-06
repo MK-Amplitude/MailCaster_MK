@@ -228,6 +228,21 @@ Deno.serve(async (req) => {
           if (result?.inserted) totalRecorded++
           if (result?.contact_created) totalContactsCreated++
 
+          // Tier1-C — 시퀀스 자동 정지: contact 가 새로 회신/연락해오면(새 inbound)
+          // 진행 중 시퀀스를 중단해 사람이 인계하게 한다. (idempotent — active 만 영향)
+          if (result?.inserted && result?.contact_id) {
+            const { error: stopErr } = await supabase
+              .schema('mailcaster')
+              .rpc('stop_active_enrollments_for_contact', {
+                p_org_id: orgId,
+                p_contact_id: result.contact_id,
+                p_reason: 'replied',
+              })
+            if (stopErr) {
+              console.warn('[check-inbox] seq stop fail', result.contact_id, stopErr.message)
+            }
+          }
+
           if (ts > latestProcessedMs) latestProcessedMs = ts
           if (ts < oldestProcessedMs) oldestProcessedMs = ts
         } catch (e) {
