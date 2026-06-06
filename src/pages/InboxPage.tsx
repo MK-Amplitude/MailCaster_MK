@@ -258,9 +258,10 @@ export default function InboxPage() {
             gmailMessageId: replyTo.gmail_message_id,
             rfcMessageId: replyTo.rfc_message_id,
             subject: replyTo.subject,
-            bodyHtml: replyTo.body_text
-              ? `<pre style="white-space: pre-wrap; font-family: inherit;">${escapeHtml(replyTo.body_text)}</pre>`
-              : replyTo.body_html,
+            // 외부 발신자 HTML XSS 방지 — body_html raw fallback 제거, escape 된 text 만.
+            bodyHtml: `<pre style="white-space: pre-wrap; font-family: inherit;">${escapeHtml(
+              replyTo.body_text || replyTo.snippet || '',
+            )}</pre>`,
             fromLabel: replyTo.from_name
               ? `${replyTo.from_name} <${replyTo.from_email}>`
               : replyTo.from_email,

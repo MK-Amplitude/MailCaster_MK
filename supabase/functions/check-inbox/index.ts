@@ -31,8 +31,9 @@ const GOOGLE_CLIENT_SECRET = Deno.env.get('GOOGLE_CLIENT_SECRET')!
 
 // 한 tick 최대 실행 시간 (ms). pg_cron 55s 컷 직전 자진 종료.
 const RUN_BUDGET_MS = 50_000
-// 사용자당 최대 처리 메시지 수 — 폭발 방지 (대형 inbox 의 backlog 는 cron 여러 tick 으로 나눔)
-const PER_USER_MAX_MESSAGES = 30
+// 사용자당 최대 처리 메시지 수 — 폭발 방지 (대형 inbox 의 backlog 는 cron 여러 tick 으로 나눔).
+// 100 으로 둠: 한 초에 윈도우가 가득 차 cursor 후퇴가 무효화되는 극단 케이스 (A-1) 완화.
+const PER_USER_MAX_MESSAGES = 100
 // 처음 실행 (last_inbox_check_at NULL) 시 최근 N 시간만 폴링 — 과거 모든 메일 backfill 방지
 const INITIAL_LOOKBACK_HOURS = 24
 // 한 메시지 fetch 평균 예산
@@ -241,21 +242,29 @@ Deno.serve(async (req) => {
         }
       }
 
-      // cursor 갱신:
-      //   - 윈도우 안 가득 참 (전부 비움): 가장 늦은 처리분 +1ms 로 전진 → 다음엔 새 메일만
-      //   - 윈도우 가득 참 (더 오래된 미처리분 가능성): oldestProcessedMs - 1ms 로 두어
-      //     다음 tick 이 그 시각 이하 (더 오래된) 메시지부터 다시 폴링. 이미 처리한 건 UNIQUE 차단.
-      //     단, 모든 메시지 internalDate 가 동일한 극단 케이스에서 oldest==cursor 면 진전이 없어
-      //     라이브락 위험 → 그 경우 강제로 +1ms 전진 (해당 tick 에 처리한 만큼은 보존됨).
+      // cursor 갱신. 주의: Gmail `after:` 는 **초 단위** (afterSec = floor(cursorMs/1000)).
+      // 따라서 후퇴 cursor 도 반드시 한 초 이상 줄어야 다음 tick 의 afterSec 가 실제로 달라짐
+      // (ms 후퇴는 같은 초로 floor 되어 무효 → 같은 30통 윈도우에 갇힘).
+      //   - 윈도우 안 가득 참 (전부 비움): 가장 늦은 처리분 +1s 로 전진 → 다음엔 새 메일만
+      //   - 윈도우 가득 참 (더 오래된 미처리분 가능성): oldestProcessedMs 의 "초" 직전으로 후퇴
+      //     → 다음 tick 의 afterSec 가 최소 1초 작아져 더 오래된 메시지를 이어받음.
+      //     이미 처리한 건 UNIQUE (org_id, gmail_message_id) 가 중복 INSERT 차단.
+      const floorSecMs = (ms: number) => Math.floor(ms / 1000) * 1000
       let nextCursorMs: number
       if (!windowFull) {
-        nextCursorMs = latestProcessedMs + 1
-      } else if (oldestProcessedMs > cursorMs && oldestProcessedMs !== Number.MAX_SAFE_INTEGER) {
-        // 더 오래된 미처리분이 cursorMs ~ oldestProcessedMs 사이에 있을 수 있음 → 그 직전까지 후퇴
-        nextCursorMs = oldestProcessedMs - 1
+        // 전부 비움 — 처리한 가장 늦은 메시지의 초 +1초 (그 초의 메시지는 다 봤으니)
+        nextCursorMs = floorSecMs(latestProcessedMs) + 1000
+      } else if (
+        oldestProcessedMs !== Number.MAX_SAFE_INTEGER &&
+        floorSecMs(oldestProcessedMs) > floorSecMs(cursorMs)
+      ) {
+        // 후퇴 — oldest 의 초 직전 (1초 빼서 그 이전 메시지부터). cursor 보다 확실히 큰 초일 때만.
+        nextCursorMs = floorSecMs(oldestProcessedMs) - 1000
       } else {
-        // oldest 가 cursor 이하거나 처리분 없음 — 진전 위해 latest 로 전진 (유실 방지보다 라이브락 방지 우선)
-        nextCursorMs = latestProcessedMs + 1
+        // oldest 가 cursor 와 같은 초이거나 처리분 없음 — 후퇴해도 진전 없음 (라이브락).
+        // 라이브락 방지를 위해 한 초 전진. 같은 초 내 윈도우 밖 메시지는 유실되나,
+        // 한 초에 30통+ 받는 극단 케이스라 실무 영향 낮음.
+        nextCursorMs = floorSecMs(cursorMs) + 1000
       }
       await supabase
         .schema('mailcaster')

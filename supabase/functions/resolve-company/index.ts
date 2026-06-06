@@ -7,8 +7,10 @@ import { createClient } from 'jsr:@supabase/supabase-js@2'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+const ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY')!
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY')!
 const OPENAI_MODEL = Deno.env.get('OPENAI_MODEL') ?? 'gpt-4o-mini'
+const CRON_SECRET = Deno.env.get('CRON_SECRET') ?? ''
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -42,6 +44,41 @@ Deno.serve(async (req) => {
   }
 
   try {
+    // ── 인증 ───────────────────────────────────────────────
+    // verify_jwt=false 이므로 함수 내부에서 직접 검증.
+    //   1) Bearer <CRON_SECRET> — pg_cron / 내부 호출
+    //   2) 사용자 JWT — 클라이언트 (resolveCompany.ts 가 세션 토큰 전달)
+    // 인증 실패 시 401. 이 검증 이전엔 OpenAI / DB 접근 없음 (비용 남용 + IDOR 차단).
+    const authHeader = req.headers.get('Authorization') ?? ''
+    const isCron = !!CRON_SECRET && authHeader === `Bearer ${CRON_SECRET}`
+    let callerOrgIds: Set<string> | null = null // null = cron (org 무제한)
+
+    if (!isCron) {
+      const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : ''
+      if (!token) return json({ error: '인증이 필요합니다.' }, 401)
+      // 사용자 JWT 검증 — anon key 클라이언트로 getUser
+      const authClient = createClient(SUPABASE_URL, ANON_KEY, {
+        global: { headers: { Authorization: authHeader } },
+        auth: { persistSession: false },
+      })
+      const { data: userData, error: userErr } = await authClient.auth.getUser(token)
+      if (userErr || !userData?.user) {
+        return json({ error: '유효하지 않은 세션입니다.' }, 401)
+      }
+      // 이 사용자가 속한 org 목록 — contact_id 의 org 격리 검증에 사용
+      const svc = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
+        auth: { persistSession: false },
+      })
+      const { data: memberships } = await svc
+        .schema('mailcaster')
+        .from('org_members')
+        .select('org_id')
+        .eq('user_id', userData.user.id)
+      callerOrgIds = new Set(
+        (memberships ?? []).map((m: { org_id: string }) => m.org_id),
+      )
+    }
+
     const { raw_name, contact_id, email_domain, force_refresh }: ResolveInput = await req.json()
     // raw_name 또는 email_domain (또는 contact_id 로부터 도메인 추출 가능) 중 하나는 필수.
     // 도메인 단독 모드 — 회사명 없이 이메일 도메인만으로 그룹사 추론.
@@ -59,15 +96,35 @@ Deno.serve(async (req) => {
       auth: { persistSession: false },
     })
 
+    // contact_id org 격리 — 사용자 호출이면 자기 org 의 contact 만 허용 (IDOR 차단).
+    // 도메인 힌트 결정 시 + 결과 update 시 모두 이 검증된 contact_id 만 사용.
+    let safeContactId: string | null = null
+    if (contact_id) {
+      const { data: contactRow } = await supabase
+        .schema('mailcaster')
+        .from('contacts')
+        .select('email, org_id')
+        .eq('id', contact_id)
+        .maybeSingle()
+      if (contactRow) {
+        // cron 이면 무제한, 사용자면 자기 org 의 contact 만
+        if (callerOrgIds === null || callerOrgIds.has(contactRow.org_id)) {
+          safeContactId = contact_id
+        } else {
+          return json({ error: '해당 연락처에 대한 권한이 없습니다.' }, 403)
+        }
+      }
+    }
+
     // 도메인 힌트 결정 — 클라이언트가 명시적으로 보낸 값 우선.
-    // 값이 없고 contact_id 가 있으면 DB 에서 email 조회해 도메인 추출.
+    // 값이 없고 (검증된) contact_id 가 있으면 DB 에서 email 조회해 도메인 추출.
     let domainHint = normalizeDomain(email_domain)
-    if (!domainHint && contact_id) {
+    if (!domainHint && safeContactId) {
       const { data: contactRow } = await supabase
         .schema('mailcaster')
         .from('contacts')
         .select('email')
-        .eq('id', contact_id)
+        .eq('id', safeContactId)
         .maybeSingle()
       if (contactRow?.email) {
         domainHint = extractDomain(contactRow.email)
@@ -130,8 +187,8 @@ Deno.serve(async (req) => {
       }
     }
 
-    // 4) contact row 업데이트
-    if (contact_id) {
+    // 4) contact row 업데이트 — org 검증된 safeContactId 만 (IDOR 차단)
+    if (safeContactId) {
       const status =
         result.name_ko || result.name_en ? 'resolved' : 'not_found'
 
@@ -152,7 +209,7 @@ Deno.serve(async (req) => {
           .schema('mailcaster')
           .from('contacts')
           .select('department, company, company_raw')
-          .eq('id', contact_id)
+          .eq('id', safeContactId)
           .maybeSingle()
 
         // 기존 department 가 비어있으면 분리된 부서로 채움
@@ -174,7 +231,7 @@ Deno.serve(async (req) => {
         .schema('mailcaster')
         .from('contacts')
         .update(updates)
-        .eq('id', contact_id)
+        .eq('id', safeContactId)
       if (upErr) console.error('[resolve-company] contact update failed:', upErr)
     }
 
