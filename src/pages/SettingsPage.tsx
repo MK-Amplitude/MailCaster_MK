@@ -41,6 +41,7 @@ import {
   History,
   RefreshCcw,
   Contact as ContactIcon,
+  ShieldCheck,
 } from 'lucide-react'
 import { Switch } from '@/components/ui/switch'
 import { useAuditLog } from '@/hooks/useAuditLog'
@@ -54,6 +55,7 @@ import { ko } from 'date-fns/locale'
 import { toast } from 'sonner'
 import { formatDate } from '@/lib/utils'
 import { OrganizationSettings } from '@/components/settings/OrganizationSettings'
+import { SendSettingsCard } from '@/components/settings/SendSettingsCard'
 
 // UI state 의 타입. 폼은 모두 string 으로 다루고, 저장 시점에 number 로 변환.
 interface FormState {
@@ -164,6 +166,10 @@ export default function SettingsPage() {
               <TabsTrigger value="organization">
                 <Building2 className="w-3.5 h-3.5 mr-1.5" />
                 조직
+              </TabsTrigger>
+              <TabsTrigger value="sending">
+                <ShieldCheck className="w-3.5 h-3.5 mr-1.5" />
+                발송 안전
               </TabsTrigger>
               <TabsTrigger value="audit">
                 <History className="w-3.5 h-3.5 mr-1.5" />
@@ -386,6 +392,9 @@ export default function SettingsPage() {
 
             <TabsContent value="organization" className="mt-4">
               <OrganizationSettings />
+            </TabsContent>
+            <TabsContent value="sending" className="mt-4">
+              <SendSettingsCard />
             </TabsContent>
             <TabsContent value="audit" className="mt-4">
               <AuditLogSection />
