@@ -384,6 +384,23 @@ async function processCampaign(
     throw new Error('발송할 본문이 비어있습니다')
   }
 
+  // 3.4) 시그니처 fallback — body_html 이 채워져 있어도 시그니처가 빠진 경우 (위저드에서
+  //      본문 인라인 편집으로 시그니처를 지운 캠페인) 즉시 발송 (useSendCampaign) 과 동일하게 append.
+  //      이게 없으면 같은 캠페인이 발송 경로 (즉시 vs 예약) 에 따라 시그니처 유무가 달라짐.
+  //      bodyAlreadyContainsSignature 와 동일한 plain-text fragment 매칭 사용.
+  if (c.signature_id) {
+    const { data: sig } = await supabase
+      .schema('mailcaster')
+      .from('signatures')
+      .select('html')
+      .eq('id', c.signature_id)
+      .single()
+    const sigHtml = sig?.html ?? ''
+    if (sigHtml && !bodyContainsSignature(finalBody, sigHtml)) {
+      finalBody = `${finalBody}<br/><br/>${sigHtml}`
+    }
+  }
+
   // 3.5) Inline 이미지 추출 — 본문의 <img src="..."> 를 fetch 해서 base64 로 메일에
   //      박는다. 결과: html 의 src 가 cid:xxx 로 치환됨 + inlineImages 배열.
   //      메일 자체가 자기완결적 — Storage URL 이 사라져도 발송된 메일은 영구 표시.
@@ -1402,6 +1419,26 @@ function joinAddressList(list: string[] | undefined): string | undefined {
     .map((a) => encodeAddressHeader(stripCRLF(a).trim()))
     .filter(Boolean)
   return cleaned.length > 0 ? cleaned.join(', ') : undefined
+}
+
+/**
+ * 본문에 시그니처가 이미 포함됐는지 plain-text fragment 로 판정.
+ * src/lib/mailMerge.ts 의 bodyAlreadyContainsSignature 와 동일 정책 (즉시/예약 발송 일치).
+ * (edge 런타임이라 lib import 불가 — 포트.)
+ */
+function bodyContainsSignature(bodyHtml: string, sigHtml: string): boolean {
+  const strip = (h: string) =>
+    h
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+  const bodyPlain = strip(bodyHtml)
+  const sigPlain = strip(sigHtml)
+  if (!sigPlain) return true
+  if (sigPlain.length < 40) return bodyPlain.includes(sigPlain)
+  return bodyPlain.includes(sigPlain.slice(0, 80))
 }
 
 /**

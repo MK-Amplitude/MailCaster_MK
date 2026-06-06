@@ -74,6 +74,14 @@ export async function resolveCompanyForContact({
   if (!name && !emailDomain) return null
 
   try {
+    // 세션 JWT 를 명시 전달 — resolve-company 가 함수 내부에서 사용자 인증 + org 격리 검증.
+    // (publishable anon key 는 JWT 형식 아니라 서버 getUser 가 거부)
+    const { data: sessionData } = await supabase.auth.getSession()
+    const accessToken = sessionData.session?.access_token
+    if (!accessToken) {
+      console.warn('[resolve-company] no session — skip')
+      return null
+    }
     const { data, error } = await supabase.functions.invoke('resolve-company', {
       body: {
         // raw_name 이 비어있으면 서버가 도메인 단독 모드로 처리
@@ -82,12 +90,12 @@ export async function resolveCompanyForContact({
         ...(emailDomain ? { email_domain: emailDomain } : {}),
         ...(forceRefresh ? { force_refresh: true } : {}),
       },
+      headers: { Authorization: `Bearer ${accessToken}` },
     })
     if (error) {
       console.warn('[resolve-company] invoke failed:', error.message)
       return null
     }
-    console.log('[resolve-company] result:', data)
     if (qc) {
       qc.invalidateQueries({ queryKey: ['contacts'] })
     }

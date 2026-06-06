@@ -68,9 +68,11 @@ export function ContactMailHistory({ contactId, contactName }: Props) {
             gmailMessageId: replyTo.gmail_message_id,
             rfcMessageId: replyTo.rfc_message_id,
             subject: replyTo.subject,
-            bodyHtml: replyTo.body_text
-              ? `<pre style="white-space: pre-wrap; font-family: inherit;">${escapeHtml(replyTo.body_text)}</pre>`
-              : replyTo.body_html,
+            // 인용 본문 — 외부 발신자 HTML 은 XSS 위험이라 절대 raw 로 렌더하지 않음.
+            // body_text (또는 snippet) 만 escape 해서 안전하게 표시. body_html fallback 제거.
+            bodyHtml: `<pre style="white-space: pre-wrap; font-family: inherit;">${escapeHtml(
+              replyTo.body_text || replyTo.snippet || '',
+            )}</pre>`,
             fromLabel: formatFromLabel(replyTo),
             sentAt: replyTo.received_at,
           }}
