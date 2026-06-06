@@ -194,7 +194,7 @@ Deno.serve(async (req) => {
       }
 
       // 윈도우가 가득 찼는지 — Gmail list 는 newest-first 라, 정확히 limit 개가 왔으면
-      // 그 30통 밖에 더 오래된 미처리 메시지가 남아있을 수 있음 (after:<cursor> 범위 내).
+      // 그 PER_USER_MAX_MESSAGES 통 밖에 더 오래된 미처리 메시지가 남아있을 수 있음 (after:<cursor> 범위 내).
       const windowFull = listIds.length >= PER_USER_MAX_MESSAGES
 
       // 3) 각 메시지 fetch + 처리.
