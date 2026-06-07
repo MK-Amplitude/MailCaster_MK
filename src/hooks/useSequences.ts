@@ -191,9 +191,14 @@ export function useDeleteSequence() {
     mutationFn: async (id: string) => {
       const { error } = await supabase.from('sequences').delete().eq('id', id)
       if (error) throw error
+      return id
     },
-    onSuccess: () => {
+    onSuccess: (id) => {
       qc.invalidateQueries({ queryKey: [QK] })
+      // 삭제된 시퀀스의 상세/등록/퍼널 캐시도 정리 (sibling 뮤테이션과 일관)
+      qc.removeQueries({ queryKey: [QK, 'detail', id] })
+      qc.removeQueries({ queryKey: [QK, 'enrollments', id] })
+      qc.removeQueries({ queryKey: [QK, 'funnel', id] })
       toast.success('시퀀스를 삭제했습니다.')
     },
     onError: (e: Error) => toast.error(e.message || '시퀀스 삭제 실패'),
