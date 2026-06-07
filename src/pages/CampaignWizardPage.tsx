@@ -44,6 +44,7 @@ import type { Database } from '@/types/database.types'
 type DriveAttachmentRow = Database['mailcaster']['Tables']['drive_attachments']['Row']
 import {
   ArrowLeft,
+  ArrowRight,
   Check,
   Users,
   Send,
@@ -59,9 +60,10 @@ import {
   Pencil,
   Undo2,
 } from 'lucide-react'
-import { formatBytes, GMAIL_ATTACHMENT_SAFE_THRESHOLD } from '@/lib/utils'
+import { useSidebar } from '@/contexts/SidebarContext'
+import { GMAIL_ATTACHMENT_SAFE_THRESHOLD } from '@/lib/utils'
 import { dedupeEmails, isMissingTableError } from './campaign-wizard/helpers'
-// StepIndicator 제거 — 새 캠페인도 한 페이지 편집으로 전환
+import { StepIndicator, type Step } from './campaign-wizard/StepIndicator'
 import { VariableDropdown } from './campaign-wizard/VariableDropdown'
 import { ScheduleSection } from './campaign-wizard/ScheduleSection'
 
@@ -242,6 +244,13 @@ export default function CampaignWizardPage() {
   const { user } = useAuth()
   const qc = useQueryClient()
 
+  // Auto-hide sidebar for maximum workspace
+  const { setOpen: setSidebarOpen } = useSidebar()
+  useEffect(() => {
+    setSidebarOpen(false)
+    return () => setSidebarOpen(true)
+  }, [setSidebarOpen])
+
   const [searchParams, setSearchParams] = useSearchParams()
   const reuseFrom = searchParams.get('from')
   const reuseMode = searchParams.get('mode') as ReuseMode | null
@@ -257,6 +266,7 @@ export default function CampaignWizardPage() {
     return raw.filter((v): v is string => typeof v === 'string')
   }, [location.state])
 
+  const [step, setStep] = useState<Step>(1)
   const [submitting, setSubmitting] = useState(false)
 
   const [name, setName] = useState('')
@@ -1017,6 +1027,14 @@ export default function CampaignWizardPage() {
     }
   }, [subject, effectiveBody, previewContacts])
 
+  // 검증
+  // Phase 5: 개별 연락처만 담아도 진행 가능하도록 — 그룹 / 연락처 중 하나라도 있으면 OK
+  const canNextFromStep1 =
+    !!name.trim() &&
+    previewContacts.length > 0 &&
+    (fixedRecipients !== null || selectedGroupIds.length > 0 || selectedContactIds.length > 0)
+  const canNextFromStep2 = subject.trim() && blocks.length > 0
+
   const insertVariableIntoSubject = (key: string) => setSubject((s) => s + `{{${key}}}`)
 
   const addBlock = (templateId: string) => {
@@ -1502,6 +1520,12 @@ export default function CampaignWizardPage() {
     }
   }
 
+  // Lifted from Step3 (now inlined in right pane)
+  const [editingBody, setEditingBody] = useState(false)
+  const [validation, setValidation] = useState<ValidationResult | null>(null)
+  const validateEmails = useValidateEmails()
+  const { data: sequenceOptions = [] } = useSequenceOptions()
+
   return (
     <div className="flex flex-col h-full">
       <div className="px-4 sm:px-6 py-4 border-b">
@@ -1524,117 +1548,346 @@ export default function CampaignWizardPage() {
             </Badge>
           )}
         </div>
-        <p className="text-xs text-muted-foreground mt-2">
-          수신자·콘텐츠·발송 설정을 한 페이지에서 작성할 수 있습니다. 미리보기는 변수({'{{name}}'}, {'{{company}}'} 등)를 첫 수신자 정보로 실시간 치환합니다.
-        </p>
+        {!isEditMode && <StepIndicator step={step} />}
+        {isEditMode && (
+          <p className="text-xs text-muted-foreground mt-2">
+            한 페이지에서 모두 편집할 수 있고, 아래쪽 미리보기는 변수 ({'{{name}}'}, {'{{company}}'} 등)
+            를 첫 수신자 정보 (없으면 샘플) 로 치환해 실시간 표시됩니다.
+          </p>
+        )}
       </div>
 
-      <div className="flex-1 overflow-y-auto">
-        <div className="max-w-3xl mx-auto p-4 sm:p-6 space-y-4">
-          {reuseLoading && (
-            <div className="space-y-3">
-              <Skeleton className="h-10 w-full" />
-              <Skeleton className="h-32 w-full" />
-              <Skeleton className="h-24 w-full" />
-            </div>
-          )}
-          {/* 모든 모드(신규·편집·재사용)에서 한 페이지에 수신자·콘텐츠·발송 설정을 표시 */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* ── LEFT: Form pane ── */}
+        <div className="flex-1 overflow-y-auto">
+          <div className="max-w-[600px] mx-auto p-4 sm:p-6 space-y-8">
+            {reuseLoading && (
+              <div className="space-y-3">
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-32 w-full" />
+                <Skeleton className="h-24 w-full" />
+              </div>
+            )}
+            {!reuseLoading && (
+              <>
+                {/* 수신자 */}
+                <Step1
+                  name={name}
+                  setName={setName}
+                  groups={groups}
+                  selectedGroupIds={selectedGroupIds}
+                  setSelectedGroupIds={setSelectedGroupIds}
+                  selectedContactIds={selectedContactIds}
+                  setSelectedContactIds={setSelectedContactIds}
+                  previewContacts={previewContacts}
+                  loadingPreview={loadingPreview}
+                  fixedRecipients={fixedRecipients}
+                  excludedContactIds={excludedContactIds}
+                  setExcludedContactIds={setExcludedContactIds}
+                  excludedMeta={excludedMeta}
+                />
+
+                {/* 콘텐츠 */}
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground shrink-0">콘텐츠</span>
+                    <div className="flex-1 h-px bg-border" />
+                  </div>
+                  <Step2
+                    templates={templates}
+                    signatures={signatures}
+                    signatureId={signatureId}
+                    setSignatureId={setSignatureId}
+                    subject={subject}
+                    setSubject={setSubject}
+                    blocks={blocks}
+                    templateById={templateById}
+                    onAddBlock={addBlock}
+                    onRemoveBlock={removeBlock}
+                    onMoveBlock={moveBlock}
+                    insertSubject={insertVariableIntoSubject}
+                    usedVariables={usedVariables}
+                    composedHtml={effectiveBody}
+                    attachments={attachments}
+                    setAttachments={setAttachments}
+                    groups={groups}
+                    ccEmails={ccEmails}
+                    setCcEmails={setCcEmails}
+                    ccGroupIds={ccGroupIds}
+                    setCcGroupIds={setCcGroupIds}
+                    ccContactIds={ccContactIds}
+                    setCcContactIds={setCcContactIds}
+                    resolvedCcEmails={resolvedCcEmails}
+                    loadingCcBasket={loadingCcBasket}
+                    bccEmails={bccEmails}
+                    setBccEmails={setBccEmails}
+                    bccGroupIds={bccGroupIds}
+                    setBccGroupIds={setBccGroupIds}
+                    bccContactIds={bccContactIds}
+                    setBccContactIds={setBccContactIds}
+                    resolvedBccEmails={resolvedBccEmails}
+                    loadingBccBasket={loadingBccBasket}
+                    recipientEmails={previewContacts.map((c) => c.email)}
+                    sendMode={sendMode}
+                    setSendMode={setSendMode}
+                    recipientCount={previewContacts.length}
+                    bodyOverridden={bodyOverride !== null}
+                    onResetBody={() => setBodyOverride(null)}
+                    hideComposedPreview
+                  />
+                </div>
+
+                {/* 발송 설정 */}
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground shrink-0">발송 설정</span>
+                    <div className="flex-1 h-px bg-border" />
+                  </div>
+
+                  {sendMode === 'individual' && (
+                    <div className="space-y-1.5">
+                      <Label>발송 간격 (초)</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        max={60}
+                        value={delaySeconds}
+                        onChange={(e) => setDelaySeconds(Math.max(0, Number(e.target.value) || 0))}
+                        className="max-w-[120px]"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Gmail 일일 한도 초과를 방지하기 위해 메일 간 지연 시간을 설정합니다.
+                      </p>
+                    </div>
+                  )}
+
+                  <ScheduleSection
+                    scheduledAt={scheduledAt}
+                    setScheduledAt={setScheduledAt}
+                    hasAttachments={attachments.length > 0}
+                  />
+
+                  <div className="space-y-1.5">
+                    <Label className="flex items-center gap-1.5">
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      후속 시퀀스 <span className="text-xs font-normal text-muted-foreground">(선택)</span>
+                    </Label>
+                    <Select
+                      value={followupSequenceId ?? '__none__'}
+                      onValueChange={(v) => setFollowupSequenceId(v === '__none__' ? null : v)}
+                    >
+                      <SelectTrigger className="max-w-[360px]">
+                        <SelectValue placeholder="후속 없음" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__">후속 없음</SelectItem>
+                        {sequenceOptions.map((s) => (
+                          <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground leading-relaxed">
+                      발송 후, 회신·수신거부·반송이 없는 수신자에게 이 시퀀스가 같은 메일 스레드로 자동 후속 발송합니다.
+                      {sequenceOptions.length === 0 && ' (활성 시퀀스가 없습니다 — 시퀀스 메뉴에서 먼저 만들어주세요.)'}
+                    </p>
+                  </div>
+                </div>
+
+                {/* 편집 모드: 최종 수신자 검토 */}
+                {isEditMode && (
+                  <FinalRecipientReview
+                    previewContacts={previewContacts.map((c) => ({
+                      id: c.id,
+                      email: c.email,
+                      name: c.name,
+                      company: c.company,
+                      job_title: c.job_title,
+                      department: c.department,
+                    }))}
+                    excludedContactIds={excludedContactIds}
+                    setExcludedContactIds={setExcludedContactIds}
+                    selectedContactIds={selectedContactIds}
+                    setSelectedContactIds={setSelectedContactIds}
+                  />
+                )}
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* ── RIGHT: Preview pane (desktop only) ── */}
+        <div className="hidden lg:flex flex-col w-[420px] xl:w-[480px] shrink-0 overflow-y-auto border-l bg-muted/20">
           {!reuseLoading && (
-            <>
-              <Step1
-                name={name}
-                setName={setName}
-                groups={groups}
-                selectedGroupIds={selectedGroupIds}
-                setSelectedGroupIds={setSelectedGroupIds}
-                selectedContactIds={selectedContactIds}
-                setSelectedContactIds={setSelectedContactIds}
-                previewContacts={previewContacts}
-                loadingPreview={loadingPreview}
-                fixedRecipients={fixedRecipients}
-                excludedContactIds={excludedContactIds}
-                setExcludedContactIds={setExcludedContactIds}
-                excludedMeta={excludedMeta}
-              />
-              <Step2
-                templates={templates}
-                signatures={signatures}
-                signatureId={signatureId}
-                setSignatureId={setSignatureId}
-                subject={subject}
-                setSubject={setSubject}
-                blocks={blocks}
-                templateById={templateById}
-                onAddBlock={addBlock}
-                onRemoveBlock={removeBlock}
-                onMoveBlock={moveBlock}
-                insertSubject={insertVariableIntoSubject}
-                usedVariables={usedVariables}
-                composedHtml={effectiveBody}
-                attachments={attachments}
-                setAttachments={setAttachments}
-                groups={groups}
-                ccEmails={ccEmails}
-                setCcEmails={setCcEmails}
-                ccGroupIds={ccGroupIds}
-                setCcGroupIds={setCcGroupIds}
-                ccContactIds={ccContactIds}
-                setCcContactIds={setCcContactIds}
-                resolvedCcEmails={resolvedCcEmails}
-                loadingCcBasket={loadingCcBasket}
-                bccEmails={bccEmails}
-                setBccEmails={setBccEmails}
-                bccGroupIds={bccGroupIds}
-                setBccGroupIds={setBccGroupIds}
-                bccContactIds={bccContactIds}
-                setBccContactIds={setBccContactIds}
-                resolvedBccEmails={resolvedBccEmails}
-                loadingBccBasket={loadingBccBasket}
-                recipientEmails={previewContacts.map((c) => c.email)}
-                sendMode={sendMode}
-                setSendMode={setSendMode}
-                recipientCount={previewContacts.length}
-                bodyOverridden={bodyOverride !== null}
-                onResetBody={() => setBodyOverride(null)}
-                hideComposedPreview
-              />
-              <Step3
-                name={name}
-                totalCount={previewContacts.length}
-                preview={previewRendered}
-                delaySeconds={delaySeconds}
-                setDelaySeconds={setDelaySeconds}
-                usedVariables={usedVariables}
-                blockCount={blocks.length}
-                attachments={attachments}
-                subject={subject}
-                setSubject={setSubject}
-                effectiveBody={effectiveBody}
-                bodyOverridden={bodyOverride !== null}
-                onBodyChange={(html) => {
-                  setBodyOverride(html)
-                  bodyOverrideOriginRef.current = 'manual'
-                }}
-                onResetBody={() => {
-                  setBodyOverride(null)
-                  bodyOverrideOriginRef.current = null
-                }}
-                insertSubject={insertVariableIntoSubject}
-                cc={resolvedCcEmails}
-                bcc={resolvedBccEmails}
-                sendMode={sendMode}
-                scheduledAt={scheduledAt}
-                setScheduledAt={setScheduledAt}
-                followupSequenceId={followupSequenceId}
-                setFollowupSequenceId={setFollowupSequenceId}
-                recipientEmails={previewContacts.map((c) => c.email)}
-                previewContacts={isEditMode ? previewContacts : undefined}
-                excludedContactIds={isEditMode ? excludedContactIds : undefined}
-                setExcludedContactIds={isEditMode ? setExcludedContactIds : undefined}
-                selectedContactIds={isEditMode ? selectedContactIds : undefined}
-                setSelectedContactIds={isEditMode ? setSelectedContactIds : undefined}
-              />
-            </>
+            <div className="p-4 space-y-3 sticky top-0">
+              {/* Compact summary card */}
+              <Card>
+                <CardContent className="p-3 space-y-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Badge variant={sendMode === 'bulk' ? 'default' : 'secondary'}>
+                      <Send className="w-3 h-3 mr-1" />
+                      {sendMode === 'bulk' ? '한 번에 보내기' : '개별 발송'}
+                    </Badge>
+                    <Badge variant="secondary">
+                      <Users className="w-3 h-3 mr-1" />
+                      {previewContacts.length}명
+                    </Badge>
+                    {scheduledAt && (
+                      <Badge variant="default" className="bg-blue-600 hover:bg-blue-600">
+                        <CalendarClock className="w-3 h-3 mr-1" />
+                        {new Date(scheduledAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                      </Badge>
+                    )}
+                    {attachments.length > 0 && (
+                      <Badge variant={attachments.reduce((s, a) => s + (a.file_size ?? 0), 0) > GMAIL_ATTACHMENT_SAFE_THRESHOLD ? 'default' : 'secondary'}>
+                        <Paperclip className="w-3 h-3 mr-1" />
+                        첨부 {attachments.length}개
+                      </Badge>
+                    )}
+                    {/* 도메인 검증 */}
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={validation && validation.invalid_emails.length > 0 ? 'destructive' : 'outline'}
+                      className="h-6 text-[11px]"
+                      onClick={async () => {
+                        if (previewContacts.length === 0) return
+                        try {
+                          const r = await validateEmails.mutateAsync(previewContacts.map((c) => c.email))
+                          setValidation(r)
+                          if (r.invalid_emails.length === 0) {
+                            toast.success(`${r.checked_domains}개 도메인 검증 완료 — 모두 정상`)
+                          } else {
+                            toast.warning(`반송 가능성 ${r.invalid_emails.length}건 발견`)
+                          }
+                        } catch (e) {
+                          toast.error(e instanceof Error ? e.message : '검증 실패')
+                        }
+                      }}
+                      disabled={validateEmails.isPending || previewContacts.length === 0}
+                    >
+                      {validateEmails.isPending ? <><Loader2 className="w-3 h-3 mr-1 animate-spin" />검증 중…</> : validation ? (validation.invalid_emails.length > 0 ? `⚠ 의심 ${validation.invalid_emails.length}건` : `✓ 도메인 OK`) : '도메인 검증'}
+                    </Button>
+                  </div>
+                  {/* Bulk warning */}
+                  {sendMode === 'bulk' && (
+                    <div className={`text-xs rounded p-2 ${usedVariables.length > 0 ? 'bg-destructive/10 text-destructive' : 'bg-blue-50/60 dark:bg-blue-950/20 text-blue-700 dark:text-blue-300'}`}>
+                      {usedVariables.length > 0
+                        ? `⚠️ 개인화 변수(${usedVariables.map((v) => `{{${v}}}`).join(', ')})가 있어 한 번에 보내기 불가`
+                        : `수신자 ${previewContacts.length}명 전원이 To에 공개되어 1회 발송됩니다.`}
+                    </div>
+                  )}
+                  {/* CC/BCC compact */}
+                  {(resolvedCcEmails.length > 0 || resolvedBccEmails.length > 0) && (
+                    <div className="text-xs space-y-0.5 pt-1 border-t">
+                      {resolvedCcEmails.length > 0 && (
+                        <div className="flex items-start gap-1.5">
+                          <span className="text-muted-foreground shrink-0">Cc:</span>
+                          <span className="break-all">{resolvedCcEmails.join(', ')}</span>
+                        </div>
+                      )}
+                      {resolvedBccEmails.length > 0 && (
+                        <div className="flex items-start gap-1.5">
+                          <span className="text-muted-foreground shrink-0">Bcc:</span>
+                          <span className="break-all">{resolvedBccEmails.join(', ')}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {/* Invalid emails list */}
+                  {validation && validation.invalid_emails.length > 0 && (
+                    <div className="text-xs pt-2 border-t">
+                      <div className="text-rose-700 dark:text-rose-300 font-medium mb-1">
+                        ⚠ 반송 가능성 있는 이메일 ({validation.invalid_emails.length}건)
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {validation.invalid_emails.slice(0, 20).map((e) => (
+                          <span key={e} className="inline-block text-[10px] px-1.5 py-0.5 rounded bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900 text-rose-700 dark:text-rose-300 font-mono">{e}</span>
+                        ))}
+                        {validation.invalid_emails.length > 20 && <span className="text-[10px] text-muted-foreground self-center">+{validation.invalid_emails.length - 20}건 더</span>}
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Live preview */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs text-muted-foreground">
+                    미리보기 {previewRendered?.contact.email ? `(${previewRendered.contact.email})` : ''}
+                  </Label>
+                  <div className="flex items-center gap-1.5">
+                    {bodyOverride !== null && (
+                      <Button type="button" variant="ghost" size="sm" className="h-6 text-[11px]" onClick={() => { setBodyOverride(null); bodyOverrideOriginRef.current = null }}>
+                        <Undo2 className="w-3 h-3 mr-1" />블록으로 되돌리기
+                      </Button>
+                    )}
+                    {editingBody ? (
+                      <Button type="button" variant="default" size="sm" className="h-6 text-[11px]" onClick={() => setEditingBody(false)}>
+                        <Check className="w-3 h-3 mr-1" />완료
+                      </Button>
+                    ) : (
+                      <Button type="button" variant="ghost" size="sm" className="h-6 text-[11px]" onClick={() => setEditingBody(true)}>
+                        <Pencil className="w-3 h-3 mr-1" />본문 수정
+                      </Button>
+                    )}
+                  </div>
+                </div>
+                {previewRendered ? (
+                  <Card>
+                    <CardContent className="p-0">
+                      <div className="px-3 py-2.5 border-b bg-muted/30 space-y-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[10px] text-muted-foreground uppercase tracking-wide">제목</span>
+                          {bodyOverride !== null && (
+                            <Badge variant="secondary" className="text-[10px] py-0">본문 직접 편집됨</Badge>
+                          )}
+                        </div>
+                        <div className="text-sm font-medium leading-snug">{previewRendered.subject || '(제목 없음)'}</div>
+                        {previewRendered.usedSamples && Object.values(previewRendered.usedSamples).some(Boolean) && (
+                          <div className="text-[11px] text-amber-700 dark:text-amber-400">
+                            💡 샘플 값 적용: {[
+                              previewRendered.usedSamples.name && '이름=홍길동',
+                              previewRendered.usedSamples.company && '회사=주식회사 예시',
+                              previewRendered.usedSamples.department && '부서=마케팅팀',
+                              previewRendered.usedSamples.job_title && '직책=팀장',
+                            ].filter(Boolean).join(', ')}
+                          </div>
+                        )}
+                      </div>
+                      {editingBody ? (
+                        <div className="p-3 space-y-2 bg-muted/10">
+                          <p className="text-xs text-muted-foreground">
+                            합쳐진 본문을 직접 편집합니다. {`{{name}}`} 같은 개인화 변수는 발송 시 각 수신자에 맞춰 치환됩니다.
+                          </p>
+                          <TipTapEditor
+                            value={effectiveBody}
+                            onChange={(html) => { setBodyOverride(html); bodyOverrideOriginRef.current = 'manual' }}
+                            placeholder="본문을 입력하세요"
+                          />
+                        </div>
+                      ) : (
+                        <div className="bg-white dark:bg-gray-950">
+                          <SignaturePreview html={previewRendered.html} />
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                ) : (
+                  <div className="rounded-lg border border-dashed p-8 text-center">
+                    <p className="text-sm text-muted-foreground">수신자와 콘텐츠를 선택하면<br/>미리보기가 여기에 표시됩니다.</p>
+                  </div>
+                )}
+                {usedVariables.length > 0 && (
+                  <div className="flex items-center gap-1 flex-wrap">
+                    <span className="text-xs text-muted-foreground">사용된 변수:</span>
+                    {usedVariables.map((v) => (
+                      <Badge key={v} variant="secondary" className="text-[10px]">{`{{${v}}}`}</Badge>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
           )}
         </div>
       </div>
@@ -1642,39 +1895,57 @@ export default function CampaignWizardPage() {
       <div className="px-4 sm:px-6 py-3 border-t flex items-center justify-between bg-card">
         <Button
           variant="outline"
-          onClick={() => navigate('/campaigns')}
+          onClick={() => {
+            if (isEditMode || step === 1) navigate('/campaigns')
+            else setStep((s) => (s - 1) as Step)
+          }}
           disabled={submitting}
         >
           <ArrowLeft className="w-4 h-4 mr-1" />
-          취소
+          {isEditMode || step === 1 ? '취소' : '이전'}
         </Button>
 
-        <Button
-          onClick={handleSubmit}
-          disabled={
-            submitting ||
-            reuseLoading ||
-            previewContacts.length === 0 ||
-            !subject.trim() ||
-            blocks.length === 0 ||
-            (sendMode === 'bulk' && usedVariables.length > 0) ||
-            (sendMode === 'bulk' && previewContacts.length > 500)
-          }
-        >
-          {submitting ? (
-            <>
-              <Loader2 className="w-4 h-4 mr-1 animate-spin" />
-              {isEditMode ? '저장 중...' : scheduledAt ? '예약 중...' : '생성 중...'}
-            </>
-          ) : (
-            <>
-              {scheduledAt ? <CalendarClock className="w-4 h-4 mr-1" /> : <Check className="w-4 h-4 mr-1" />}
-              {isEditMode
-                ? scheduledAt ? '예약 저장' : '저장'
-                : scheduledAt ? '예약 발송 설정' : '초안 생성'}
-            </>
-          )}
-        </Button>
+        {!isEditMode && step < 3 ? (
+          <Button
+            onClick={() => setStep((s) => (s + 1) as Step)}
+            disabled={
+              reuseLoading ||
+              (step === 1 && !canNextFromStep1) ||
+              (step === 2 && !canNextFromStep2)
+            }
+          >
+            다음
+            <ArrowRight className="w-4 h-4 ml-1" />
+          </Button>
+        ) : (
+          <Button
+            onClick={handleSubmit}
+            disabled={
+              submitting ||
+              reuseLoading ||
+              previewContacts.length === 0 ||
+              !subject.trim() ||
+              blocks.length === 0 ||
+              // bulk 모드인데 개인화 변수가 남아있거나 수신자가 Gmail 상한을 초과하면 저장 금지
+              (sendMode === 'bulk' && usedVariables.length > 0) ||
+              (sendMode === 'bulk' && previewContacts.length > 500)
+            }
+          >
+            {submitting ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                {isEditMode ? '저장 중...' : scheduledAt ? '예약 중...' : '생성 중...'}
+              </>
+            ) : (
+              <>
+                {scheduledAt ? <CalendarClock className="w-4 h-4 mr-1" /> : <Check className="w-4 h-4 mr-1" />}
+                {isEditMode
+                  ? scheduledAt ? '예약 저장' : '저장'
+                  : scheduledAt ? '예약 발송 설정' : '초안 생성'}
+              </>
+            )}
+          </Button>
+        )}
       </div>
     </div>
   )
@@ -2266,411 +2537,4 @@ function Step2({
   )
 }
 
-function Step3({
-  name,
-  totalCount,
-  preview,
-  delaySeconds,
-  setDelaySeconds,
-  usedVariables,
-  blockCount,
-  attachments,
-  subject,
-  setSubject,
-  effectiveBody,
-  bodyOverridden,
-  onBodyChange,
-  onResetBody,
-  insertSubject,
-  cc,
-  bcc,
-  sendMode,
-  scheduledAt,
-  setScheduledAt,
-  followupSequenceId,
-  setFollowupSequenceId,
-  recipientEmails,
-  // 편집 모드 — 최종 수신자 검토 (이름/이메일/회사/직책 + 추가/제거).
-  // 새 캠페인 작성 흐름에서는 Step1 에서 이미 다루므로 미전달 (undefined).
-  previewContacts,
-  excludedContactIds,
-  setExcludedContactIds,
-  selectedContactIds,
-  setSelectedContactIds,
-}: {
-  name: string
-  totalCount: number
-  preview: {
-    subject: string
-    html: string
-    contact: PreviewContact
-    usedSamples?: { name: boolean; company: boolean; department: boolean; job_title: boolean }
-  } | null
-  delaySeconds: number
-  setDelaySeconds: (v: number) => void
-  usedVariables: string[]
-  blockCount: number
-  attachments: DriveAttachmentRow[]
-  subject: string
-  setSubject: (v: string) => void
-  /** 편집 대상 본문 (override 가 있으면 override, 없으면 composedHtml). 개인화 변수가 렌더링 전 상태로 들어있음. */
-  effectiveBody: string
-  /** 사용자가 이미 직접 편집한 상태인지 */
-  bodyOverridden: boolean
-  /** 에디터 변경 시 override 저장 */
-  onBodyChange: (html: string) => void
-  /** 편집을 버리고 블록 조합 결과로 되돌림 */
-  onResetBody: () => void
-  insertSubject: (k: string) => void
-  cc: string[]
-  bcc: string[]
-  sendMode: 'individual' | 'bulk'
-  /** 예약 발송 시각 — null 이면 즉시 발송 */
-  scheduledAt: string | null
-  setScheduledAt: (v: string | null) => void
-  /** 후속 시퀀스 id — null 이면 후속 없음 (069) */
-  followupSequenceId: string | null
-  setFollowupSequenceId: (v: string | null) => void
-  /** 발송 전 도메인 MX 검증용 — 수신자 이메일 목록 */
-  recipientEmails: string[]
-  previewContacts?: PreviewContact[]
-  excludedContactIds?: string[]
-  setExcludedContactIds?: (ids: string[]) => void
-  selectedContactIds?: string[]
-  setSelectedContactIds?: (ids: string[]) => void
-}) {
-  const totalAttachmentSize = attachments.reduce((sum, a) => sum + (a.file_size ?? 0), 0)
-  // 후속 시퀀스 셀렉터용 활성 시퀀스 목록 (069)
-  const { data: sequenceOptions = [] } = useSequenceOptions()
-  // useSendCampaign 의 실제 fallback 기준(SAFE_THRESHOLD)과 일치시킴
-  const willFallback = totalAttachmentSize > GMAIL_ATTACHMENT_SAFE_THRESHOLD
-  const bulkBlocked = sendMode === 'bulk' && usedVariables.length > 0
-  // 본문 편집 토글 — '본문 수정' 버튼으로 켜고, '완료' 로 끈다.
-  const [editingBody, setEditingBody] = useState(false)
-  // 도메인 검증 결과 — Step3 진입 후 사용자가 버튼 누르면 채워짐
-  const validateEmails = useValidateEmails()
-  const [validation, setValidation] = useState<ValidationResult | null>(null)
-  return (
-    <div className="space-y-4">
-      <Card>
-        <CardContent className="p-4 space-y-2">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <div>
-              <div className="text-xs text-muted-foreground">메일 발송</div>
-              <div className="font-semibold">{name}</div>
-            </div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <Badge variant={sendMode === 'bulk' ? 'default' : 'secondary'}>
-                <Send className="w-3 h-3 mr-1" />
-                {sendMode === 'bulk' ? '한 번에 보내기' : '개별 발송'}
-              </Badge>
-              <Badge variant="secondary">
-                <Blocks className="w-3 h-3 mr-1" />
-                블록 {blockCount}개
-              </Badge>
-              <Badge variant="secondary">
-                <Users className="w-3 h-3 mr-1" />
-                {totalCount}명
-              </Badge>
-              {/* 발송 전 도메인 MX 검증 — 반송 사전 차단 */}
-              <Button
-                type="button"
-                size="sm"
-                variant={validation && validation.invalid_emails.length > 0 ? 'destructive' : 'outline'}
-                className="h-6 text-[11px]"
-                onClick={async () => {
-                  if (recipientEmails.length === 0) return
-                  try {
-                    const r = await validateEmails.mutateAsync(recipientEmails)
-                    setValidation(r)
-                    if (r.invalid_emails.length === 0) {
-                      toast.success(`${r.checked_domains}개 도메인 검증 완료 — 모두 정상`)
-                    } else {
-                      toast.warning(
-                        `반송 가능성 ${r.invalid_emails.length}건 발견 (도메인 ${r.invalid_domains.length}개 무효)`
-                      )
-                    }
-                  } catch (e) {
-                    toast.error(e instanceof Error ? e.message : '검증 실패')
-                  }
-                }}
-                disabled={validateEmails.isPending || recipientEmails.length === 0}
-                title="수신자 도메인 MX 레코드 사전 확인 → 반송 가능성 있는 이메일 식별"
-              >
-                {validateEmails.isPending ? (
-                  <><Loader2 className="w-3 h-3 mr-1 animate-spin" />검증 중…</>
-                ) : validation ? (
-                  validation.invalid_emails.length > 0
-                    ? `⚠ 의심 ${validation.invalid_emails.length}건`
-                    : `✓ 도메인 OK`
-                ) : (
-                  '도메인 검증'
-                )}
-              </Button>
-              {scheduledAt && (
-                <Badge variant="default" className="bg-blue-600 hover:bg-blue-600">
-                  <CalendarClock className="w-3 h-3 mr-1" />
-                  예약 {new Date(scheduledAt).toLocaleString('ko-KR', {
-                    month: 'numeric',
-                    day: 'numeric',
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  })}
-                </Badge>
-              )}
-              {attachments.length > 0 && (
-                <Badge variant={willFallback ? 'default' : 'secondary'}>
-                  <Paperclip className="w-3 h-3 mr-1" />
-                  첨부 {attachments.length}개 · {formatBytes(totalAttachmentSize)}
-                  {willFallback && ' → 링크'}
-                </Badge>
-              )}
-            </div>
-          </div>
-          {validation && validation.invalid_emails.length > 0 && (
-            <div className="text-xs pt-2 border-t">
-              <div className="text-rose-700 dark:text-rose-300 font-medium mb-1">
-                ⚠ 반송 가능성 있는 이메일 — 도메인 MX 미발견 ({validation.invalid_emails.length}건)
-              </div>
-              <div className="flex flex-wrap gap-1">
-                {validation.invalid_emails.slice(0, 30).map((e) => (
-                  <span
-                    key={e}
-                    className="inline-block text-[10px] px-1.5 py-0.5 rounded bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900 text-rose-700 dark:text-rose-300 font-mono"
-                  >
-                    {e}
-                  </span>
-                ))}
-                {validation.invalid_emails.length > 30 && (
-                  <span className="text-[10px] text-muted-foreground self-center">
-                    +{validation.invalid_emails.length - 30}건 더
-                  </span>
-                )}
-              </div>
-              <p className="text-[10px] text-muted-foreground mt-1.5">
-                연락처 페이지에서 해당 이메일을 수정하거나 수신자에서 제외 후 재시도 권장.
-                ({validation.malformed_count > 0 && `형식 오류 ${validation.malformed_count}건 포함, `}
-                도메인 {validation.invalid_domains.length}개 무효)
-              </p>
-            </div>
-          )}
-          {(cc.length > 0 || bcc.length > 0) && (
-            <div className="text-xs space-y-1 pt-1 border-t">
-              {cc.length > 0 && (
-                <div className="flex items-start gap-2">
-                  <span className="text-muted-foreground shrink-0">Cc:</span>
-                  <span className="flex-1 break-all">{cc.join(', ')}</span>
-                </div>
-              )}
-              {bcc.length > 0 && (
-                <div className="flex items-start gap-2">
-                  <span className="text-muted-foreground shrink-0">Bcc:</span>
-                  <span className="flex-1 break-all">{bcc.join(', ')}</span>
-                </div>
-              )}
-            </div>
-          )}
-          {attachments.length > 0 && willFallback && (
-            <div className="text-xs text-amber-700 dark:text-amber-300 bg-amber-50/60 dark:bg-amber-950/20 rounded p-2 mt-1">
-              Gmail 25MB 초과 — 수신자에게는 Drive 공유 링크가 본문 하단에 자동 추가됩니다.
-            </div>
-          )}
-          {sendMode === 'bulk' && (
-            <div className={`text-xs rounded p-2 mt-1 ${bulkBlocked ? 'bg-destructive/10 text-destructive' : 'bg-blue-50/60 dark:bg-blue-950/20 text-blue-700 dark:text-blue-300'}`}>
-              {bulkBlocked
-                ? `⚠️ 본문/제목에 개인화 변수(${usedVariables.map((v) => `{{${v}}}`).join(', ')})가 있어 한 번에 보내기로는 발송할 수 없습니다.`
-                : `수신자 ${totalCount}명 전원이 받는사람(To)에 공개되어 1회 발송됩니다. 서로의 이메일 주소가 보입니다.`}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {sendMode === 'individual' && (
-        <div className="space-y-1.5">
-          <Label>발송 간격 (초)</Label>
-          <Input
-            type="number"
-            min={0}
-            max={60}
-            value={delaySeconds}
-            onChange={(e) => setDelaySeconds(Math.max(0, Number(e.target.value) || 0))}
-            className="max-w-[120px]"
-          />
-          <p className="text-xs text-muted-foreground">
-            Gmail 일일 한도 초과를 방지하기 위해 메일 간 지연 시간을 설정합니다.
-          </p>
-        </div>
-      )}
-
-      <ScheduleSection
-        scheduledAt={scheduledAt}
-        setScheduledAt={setScheduledAt}
-        hasAttachments={attachments.length > 0}
-      />
-
-      {/* 후속 시퀀스 (069) — 발송 후 미회신자에게 자동 후속. 캠페인=첫 터치. */}
-      <div className="space-y-1.5">
-        <Label className="flex items-center gap-1.5">
-          <RotateCcw className="w-3.5 h-3.5" />
-          후속 시퀀스 <span className="text-xs font-normal text-muted-foreground">(선택)</span>
-        </Label>
-        <Select
-          value={followupSequenceId ?? '__none__'}
-          onValueChange={(v) => setFollowupSequenceId(v === '__none__' ? null : v)}
-        >
-          <SelectTrigger className="max-w-[360px]">
-            <SelectValue placeholder="후속 없음" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__none__">후속 없음</SelectItem>
-            {sequenceOptions.map((s) => (
-              <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <p className="text-xs text-muted-foreground leading-relaxed">
-          발송 후, 회신·수신거부·반송이 없는 수신자에게 이 시퀀스가 같은 메일 스레드로 자동 후속 발송합니다.
-          {sequenceOptions.length === 0 &&
-            ' (활성 시퀀스가 없습니다 — 시퀀스 메뉴에서 먼저 만들어주세요.)'}
-        </p>
-      </div>
-
-      <div className="space-y-1.5">
-        <div className="flex items-center justify-between flex-wrap gap-2">
-          <Label>미리보기 ({preview?.contact.email})</Label>
-          <div className="flex items-center gap-2">
-            {bodyOverridden && (
-              <Badge variant="secondary" className="text-[10px]">
-                본문 직접 편집됨
-              </Badge>
-            )}
-            {usedVariables.length > 0 && (
-              <span className="text-xs text-muted-foreground">
-                변수 {usedVariables.length}개 사용 중
-              </span>
-            )}
-          </div>
-        </div>
-        {preview ? (
-          <Card>
-            <CardContent className="p-0">
-              <div className="px-4 py-3 border-b bg-muted/30 space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="text-xs text-muted-foreground">제목</div>
-                  <div className="flex items-center gap-1 flex-wrap justify-end">
-                    <VariableDropdown onInsert={insertSubject} />
-                    {bodyOverridden && !editingBody && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-7 text-xs"
-                        onClick={onResetBody}
-                        title="블록 조합으로 되돌림 — 사용자가 직접 편집한 내용은 사라집니다"
-                      >
-                        <Undo2 className="w-3.5 h-3.5 mr-1" />
-                        블록으로 되돌리기
-                      </Button>
-                    )}
-                    {editingBody ? (
-                      <Button
-                        size="sm"
-                        variant="default"
-                        className="h-7 text-xs"
-                        onClick={() => setEditingBody(false)}
-                      >
-                        <Check className="w-3.5 h-3.5 mr-1" />
-                        편집 완료
-                      </Button>
-                    ) : (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-7 text-xs"
-                        onClick={() => setEditingBody(true)}
-                      >
-                        <Pencil className="w-3.5 h-3.5 mr-1" />
-                        본문 수정
-                      </Button>
-                    )}
-                  </div>
-                </div>
-                <Input
-                  value={subject}
-                  onChange={(e) => setSubject(e.target.value)}
-                  className="h-8 text-sm"
-                  placeholder="메일 제목"
-                />
-                {preview.subject && preview.subject !== subject && (
-                  <div className="text-xs text-muted-foreground truncate">
-                    렌더링: {preview.subject}
-                  </div>
-                )}
-                {/* 샘플 변수 사용 안내 — 첫 수신자 데이터가 비어있는 필드에는 자연스러운
-                    예시값(홍길동/주식회사 예시/마케팅팀/팀장) 으로 치환됨을 명시. */}
-                {preview.usedSamples &&
-                  Object.values(preview.usedSamples).some(Boolean) && (
-                    <div className="text-[11px] text-amber-700 dark:text-amber-400 flex items-center gap-1">
-                      <span>💡</span>
-                      <span>
-                        샘플 값 적용: {[
-                          preview.usedSamples.name && '이름=홍길동',
-                          preview.usedSamples.company && '회사=주식회사 예시',
-                          preview.usedSamples.department && '부서=마케팅팀',
-                          preview.usedSamples.job_title && '직책=팀장',
-                        ]
-                          .filter(Boolean)
-                          .join(', ')}
-                      </span>
-                    </div>
-                  )}
-              </div>
-              {editingBody ? (
-                <div className="p-3 space-y-2 bg-muted/10">
-                  <p className="text-xs text-muted-foreground">
-                    합쳐진 본문을 직접 편집합니다. {`{{name}}`} 같은 개인화 변수는 그대로 유지되며,
-                    발송 시 각 수신자에 맞춰 치환됩니다. 편집을 완료하면 렌더링된 미리보기로 돌아갑니다.
-                  </p>
-                  <TipTapEditor
-                    value={effectiveBody}
-                    onChange={onBodyChange}
-                    placeholder="본문을 입력하세요"
-                  />
-                </div>
-              ) : (
-                <div className="bg-white dark:bg-gray-950">
-                  <SignaturePreview html={preview.html} />
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        ) : (
-          <p className="text-sm text-muted-foreground">미리보기할 수신자가 없습니다.</p>
-        )}
-      </div>
-
-      {/* 편집 모드 — 최종 수신자 검토 (이름/이메일/회사/직책 + 추가/제거).
-          신규 작성 흐름에서는 Step1 에서 이미 다루므로 표시 안 함. */}
-      {previewContacts !== undefined &&
-        excludedContactIds !== undefined &&
-        setExcludedContactIds !== undefined &&
-        selectedContactIds !== undefined &&
-        setSelectedContactIds !== undefined && (
-          <FinalRecipientReview
-            previewContacts={previewContacts.map((c) => ({
-              id: c.id,
-              email: c.email,
-              name: c.name,
-              company: c.company,
-              job_title: c.job_title,
-              department: c.department,
-            }))}
-            excludedContactIds={excludedContactIds}
-            setExcludedContactIds={setExcludedContactIds}
-            selectedContactIds={selectedContactIds}
-            setSelectedContactIds={setSelectedContactIds}
-          />
-        )}
-    </div>
-  )
-}
 

@@ -36,7 +36,7 @@ const secondaryNav = [
 
 export function Sidebar() {
   return (
-    <aside className="hidden md:flex flex-col w-56 border-r bg-card h-screen sticky top-0 shrink-0">
+    <aside className="flex flex-col w-56 border-r bg-card h-screen sticky top-0">
       {/* 로고 */}
       <div className="flex items-center gap-2.5 px-5 py-4 border-b">
         <div className="w-7 h-7 bg-primary rounded-lg flex items-center justify-center">
