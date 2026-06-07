@@ -44,7 +44,6 @@ import type { Database } from '@/types/database.types'
 type DriveAttachmentRow = Database['mailcaster']['Tables']['drive_attachments']['Row']
 import {
   ArrowLeft,
-  ArrowRight,
   Check,
   Users,
   Send,
@@ -62,7 +61,7 @@ import {
 } from 'lucide-react'
 import { formatBytes, GMAIL_ATTACHMENT_SAFE_THRESHOLD } from '@/lib/utils'
 import { dedupeEmails, isMissingTableError } from './campaign-wizard/helpers'
-import { StepIndicator, type Step } from './campaign-wizard/StepIndicator'
+// StepIndicator 제거 — 새 캠페인도 한 페이지 편집으로 전환
 import { VariableDropdown } from './campaign-wizard/VariableDropdown'
 import { ScheduleSection } from './campaign-wizard/ScheduleSection'
 
@@ -258,7 +257,6 @@ export default function CampaignWizardPage() {
     return raw.filter((v): v is string => typeof v === 'string')
   }, [location.state])
 
-  const [step, setStep] = useState<Step>(1)
   const [submitting, setSubmitting] = useState(false)
 
   const [name, setName] = useState('')
@@ -1019,14 +1017,6 @@ export default function CampaignWizardPage() {
     }
   }, [subject, effectiveBody, previewContacts])
 
-  // 검증
-  // Phase 5: 개별 연락처만 담아도 진행 가능하도록 — 그룹 / 연락처 중 하나라도 있으면 OK
-  const canNextFromStep1 =
-    !!name.trim() &&
-    previewContacts.length > 0 &&
-    (fixedRecipients !== null || selectedGroupIds.length > 0 || selectedContactIds.length > 0)
-  const canNextFromStep2 = subject.trim() && blocks.length > 0
-
   const insertVariableIntoSubject = (key: string) => setSubject((s) => s + `{{${key}}}`)
 
   const addBlock = (templateId: string) => {
@@ -1534,13 +1524,9 @@ export default function CampaignWizardPage() {
             </Badge>
           )}
         </div>
-        {!isEditMode && <StepIndicator step={step} />}
-        {isEditMode && (
-          <p className="text-xs text-muted-foreground mt-2">
-            한 페이지에서 모두 편집할 수 있고, 아래쪽 미리보기는 변수 ({'{{name}}'}, {'{{company}}'} 등)
-            를 첫 수신자 정보 (없으면 샘플) 로 치환해 실시간 표시됩니다.
-          </p>
-        )}
+        <p className="text-xs text-muted-foreground mt-2">
+          수신자·콘텐츠·발송 설정을 한 페이지에서 작성할 수 있습니다. 미리보기는 변수({'{{name}}'}, {'{{company}}'} 등)를 첫 수신자 정보로 실시간 치환합니다.
+        </p>
       </div>
 
       <div className="flex-1 overflow-y-auto">
@@ -1552,9 +1538,8 @@ export default function CampaignWizardPage() {
               <Skeleton className="h-24 w-full" />
             </div>
           )}
-          {/* 편집 모드 — 전체 섹션을 한 페이지에 표시 (한 단계에서 모두 편집 + 실시간 미리보기).
-              새 캠페인 작성은 step-by-step 흐름 유지. */}
-          {!reuseLoading && isEditMode && (
+          {/* 모든 모드(신규·편집·재사용)에서 한 페이지에 수신자·콘텐츠·발송 설정을 표시 */}
+          {!reuseLoading && (
             <>
               <Step1
                 name={name}
@@ -1643,109 +1628,13 @@ export default function CampaignWizardPage() {
                 followupSequenceId={followupSequenceId}
                 setFollowupSequenceId={setFollowupSequenceId}
                 recipientEmails={previewContacts.map((c) => c.email)}
-                previewContacts={previewContacts}
-                excludedContactIds={excludedContactIds}
-                setExcludedContactIds={setExcludedContactIds}
-                selectedContactIds={selectedContactIds}
-                setSelectedContactIds={setSelectedContactIds}
+                previewContacts={isEditMode ? previewContacts : undefined}
+                excludedContactIds={isEditMode ? excludedContactIds : undefined}
+                setExcludedContactIds={isEditMode ? setExcludedContactIds : undefined}
+                selectedContactIds={isEditMode ? selectedContactIds : undefined}
+                setSelectedContactIds={isEditMode ? setSelectedContactIds : undefined}
               />
             </>
-          )}
-
-          {!reuseLoading && !isEditMode && step === 1 && (
-            <Step1
-              name={name}
-              setName={setName}
-              groups={groups}
-              selectedGroupIds={selectedGroupIds}
-              setSelectedGroupIds={setSelectedGroupIds}
-              selectedContactIds={selectedContactIds}
-              setSelectedContactIds={setSelectedContactIds}
-              previewContacts={previewContacts}
-              loadingPreview={loadingPreview}
-              fixedRecipients={fixedRecipients}
-              excludedContactIds={excludedContactIds}
-              setExcludedContactIds={setExcludedContactIds}
-              excludedMeta={excludedMeta}
-            />
-          )}
-
-          {!reuseLoading && !isEditMode && step === 2 && (
-            <Step2
-              templates={templates}
-              signatures={signatures}
-              signatureId={signatureId}
-              setSignatureId={setSignatureId}
-              subject={subject}
-              setSubject={setSubject}
-              blocks={blocks}
-              templateById={templateById}
-              onAddBlock={addBlock}
-              onRemoveBlock={removeBlock}
-              onMoveBlock={moveBlock}
-              insertSubject={insertVariableIntoSubject}
-              usedVariables={usedVariables}
-              composedHtml={effectiveBody}
-              attachments={attachments}
-              setAttachments={setAttachments}
-              groups={groups}
-              ccEmails={ccEmails}
-              setCcEmails={setCcEmails}
-              ccGroupIds={ccGroupIds}
-              setCcGroupIds={setCcGroupIds}
-              ccContactIds={ccContactIds}
-              setCcContactIds={setCcContactIds}
-              resolvedCcEmails={resolvedCcEmails}
-              loadingCcBasket={loadingCcBasket}
-              bccEmails={bccEmails}
-              setBccEmails={setBccEmails}
-              bccGroupIds={bccGroupIds}
-              setBccGroupIds={setBccGroupIds}
-              bccContactIds={bccContactIds}
-              setBccContactIds={setBccContactIds}
-              resolvedBccEmails={resolvedBccEmails}
-              loadingBccBasket={loadingBccBasket}
-              recipientEmails={previewContacts.map((c) => c.email)}
-              sendMode={sendMode}
-              setSendMode={setSendMode}
-              recipientCount={previewContacts.length}
-              bodyOverridden={bodyOverride !== null}
-              onResetBody={() => setBodyOverride(null)}
-            />
-          )}
-
-          {!reuseLoading && !isEditMode && step === 3 && (
-            <Step3
-              name={name}
-              totalCount={previewContacts.length}
-              preview={previewRendered}
-              delaySeconds={delaySeconds}
-              setDelaySeconds={setDelaySeconds}
-              usedVariables={usedVariables}
-              blockCount={blocks.length}
-              attachments={attachments}
-              subject={subject}
-              setSubject={setSubject}
-              effectiveBody={effectiveBody}
-              bodyOverridden={bodyOverride !== null}
-              onBodyChange={(html) => {
-                setBodyOverride(html)
-                bodyOverrideOriginRef.current = 'manual'
-              }}
-              onResetBody={() => {
-                setBodyOverride(null)
-                bodyOverrideOriginRef.current = null
-              }}
-              insertSubject={insertVariableIntoSubject}
-              cc={resolvedCcEmails}
-              bcc={resolvedBccEmails}
-              sendMode={sendMode}
-              scheduledAt={scheduledAt}
-              setScheduledAt={setScheduledAt}
-              followupSequenceId={followupSequenceId}
-              setFollowupSequenceId={setFollowupSequenceId}
-              recipientEmails={previewContacts.map((c) => c.email)}
-            />
           )}
         </div>
       </div>
@@ -1753,57 +1642,39 @@ export default function CampaignWizardPage() {
       <div className="px-4 sm:px-6 py-3 border-t flex items-center justify-between bg-card">
         <Button
           variant="outline"
-          onClick={() => {
-            if (isEditMode || step === 1) navigate('/campaigns')
-            else setStep((s) => (s - 1) as Step)
-          }}
+          onClick={() => navigate('/campaigns')}
           disabled={submitting}
         >
           <ArrowLeft className="w-4 h-4 mr-1" />
-          {isEditMode || step === 1 ? '취소' : '이전'}
+          취소
         </Button>
 
-        {!isEditMode && step < 3 ? (
-          <Button
-            onClick={() => setStep((s) => (s + 1) as Step)}
-            disabled={
-              reuseLoading ||
-              (step === 1 && !canNextFromStep1) ||
-              (step === 2 && !canNextFromStep2)
-            }
-          >
-            다음
-            <ArrowRight className="w-4 h-4 ml-1" />
-          </Button>
-        ) : (
-          <Button
-            onClick={handleSubmit}
-            disabled={
-              submitting ||
-              reuseLoading ||
-              previewContacts.length === 0 ||
-              !subject.trim() ||
-              blocks.length === 0 ||
-              // bulk 모드인데 개인화 변수가 남아있거나 수신자가 Gmail 상한을 초과하면 저장 금지
-              (sendMode === 'bulk' && usedVariables.length > 0) ||
-              (sendMode === 'bulk' && previewContacts.length > 500)
-            }
-          >
-            {submitting ? (
-              <>
-                <Loader2 className="w-4 h-4 mr-1 animate-spin" />
-                {isEditMode ? '저장 중...' : scheduledAt ? '예약 중...' : '생성 중...'}
-              </>
-            ) : (
-              <>
-                {scheduledAt ? <CalendarClock className="w-4 h-4 mr-1" /> : <Check className="w-4 h-4 mr-1" />}
-                {isEditMode
-                  ? scheduledAt ? '예약 저장' : '저장'
-                  : scheduledAt ? '예약 발송 설정' : '초안 생성'}
-              </>
-            )}
-          </Button>
-        )}
+        <Button
+          onClick={handleSubmit}
+          disabled={
+            submitting ||
+            reuseLoading ||
+            previewContacts.length === 0 ||
+            !subject.trim() ||
+            blocks.length === 0 ||
+            (sendMode === 'bulk' && usedVariables.length > 0) ||
+            (sendMode === 'bulk' && previewContacts.length > 500)
+          }
+        >
+          {submitting ? (
+            <>
+              <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+              {isEditMode ? '저장 중...' : scheduledAt ? '예약 중...' : '생성 중...'}
+            </>
+          ) : (
+            <>
+              {scheduledAt ? <CalendarClock className="w-4 h-4 mr-1" /> : <Check className="w-4 h-4 mr-1" />}
+              {isEditMode
+                ? scheduledAt ? '예약 저장' : '저장'
+                : scheduledAt ? '예약 발송 설정' : '초안 생성'}
+            </>
+          )}
+        </Button>
       </div>
     </div>
   )
