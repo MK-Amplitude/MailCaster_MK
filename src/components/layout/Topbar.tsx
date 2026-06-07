@@ -9,16 +9,18 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { Moon, Sun, LogOut, Settings, Mail } from 'lucide-react'
+import { Moon, Sun, LogOut, Settings, Mail, PanelLeft } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { OrgSwitcher } from './OrgSwitcher'
 import { PendingInvitesBanner } from './PendingInvitesBanner'
 import { useComposeLauncher } from '@/components/campaigns/ComposeLauncher'
+import { useSidebar } from '@/contexts/SidebarContext'
 
 export function Topbar() {
   const { user, signOut } = useAuth()
   const navigate = useNavigate()
   const { openCompose } = useComposeLauncher()
+  const { toggle } = useSidebar()
   const [dark, setDark] = useState(() =>
     document.documentElement.classList.contains('dark')
   )
@@ -40,6 +42,9 @@ export function Topbar() {
   return (
     <header className="h-14 border-b bg-card flex items-center justify-between px-4 sticky top-0 z-10">
       <div className="flex items-center gap-2">
+        <Button variant="ghost" size="icon" onClick={toggle} className="h-8 w-8">
+          <PanelLeft className="w-4 h-4" />
+        </Button>
         <OrgSwitcher />
         <PendingInvitesBanner />
       </div>
