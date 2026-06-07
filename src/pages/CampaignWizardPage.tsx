@@ -1701,7 +1701,7 @@ export default function CampaignWizardPage() {
         {/* ── RIGHT: Preview pane (lg 이상은 우측, 미만은 폼 아래로 스택) ── */}
         <div className="flex flex-col w-full lg:w-[420px] xl:w-[480px] shrink-0 lg:overflow-y-auto border-t lg:border-t-0 lg:border-l bg-muted/20">
           {!reuseLoading && (
-            <div className="p-4 space-y-3 lg:sticky lg:top-0">
+            <div className="p-4 space-y-3">
               {/* Compact summary card */}
               <Card>
                 <CardContent className="p-3 space-y-2">

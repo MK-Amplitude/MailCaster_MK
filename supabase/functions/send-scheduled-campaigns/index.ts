@@ -623,8 +623,8 @@ async function processCampaign(
       // 첨부 이력 기록 — 발송된 수신자만 (invalidRecipients 제외)
       await recordRecipientAttachments(
         supabase,
-        c.user_id,
-        validRecipients.map((r) => r.id),
+        c,
+        validRecipients,
         prepared,
         deliveryMode,
       )
@@ -760,7 +760,7 @@ async function processCampaign(
         })
         .eq('id', r.id)
       // 개별 수신자 첨부 이력 기록
-      await recordRecipientAttachments(supabase, c.user_id, [r.id], prepared, deliveryMode)
+      await recordRecipientAttachments(supabase, c, [r], prepared, deliveryMode)
       sent++
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -997,21 +997,26 @@ async function recordRecipientAttachments(
   // deno-lint-ignore no-explicit-any
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   supabase: any,
-  userId: string,
-  recipientIds: string[],
+  campaign: { id: string; user_id: string; name: string },
+  recipients: Array<{ id: string; email: string; name: string | null }>,
   prepared: PreparedAttachment[],
   mode: 'attachment' | 'link',
 ): Promise<void> {
-  if (prepared.length === 0 || recipientIds.length === 0) return
+  if (prepared.length === 0 || recipients.length === 0) return
+  // recipient_attachments 는 recipient_email NOT NULL + link_url 컬럼 없음 (migration 004).
+  // 즉시 발송 경로(useSendCampaign)와 동일하게 denormalized 컬럼을 채운다.
   const rows: Array<Record<string, unknown>> = []
-  for (const rid of recipientIds) {
+  for (const rcpt of recipients) {
     for (const a of prepared) {
       rows.push({
-        user_id: userId,
-        recipient_id: rid,
+        user_id: campaign.user_id,
+        recipient_id: rcpt.id,
+        campaign_id: campaign.id,
+        recipient_email: rcpt.email,
+        recipient_name: rcpt.name,
+        campaign_name: campaign.name,
         attachment_id: a.id,
         delivery_mode: mode,
-        link_url: mode === 'link' ? a.link ?? null : null,
       })
     }
   }
