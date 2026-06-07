@@ -44,7 +44,6 @@ import type { Database } from '@/types/database.types'
 type DriveAttachmentRow = Database['mailcaster']['Tables']['drive_attachments']['Row']
 import {
   ArrowLeft,
-  ArrowRight,
   Check,
   Users,
   Send,
@@ -63,7 +62,6 @@ import {
 import { useSidebar } from '@/contexts/SidebarContext'
 import { GMAIL_ATTACHMENT_SAFE_THRESHOLD } from '@/lib/utils'
 import { dedupeEmails, isMissingTableError } from './campaign-wizard/helpers'
-import { StepIndicator, type Step } from './campaign-wizard/StepIndicator'
 import { VariableDropdown } from './campaign-wizard/VariableDropdown'
 import { ScheduleSection } from './campaign-wizard/ScheduleSection'
 
@@ -266,7 +264,6 @@ export default function CampaignWizardPage() {
     return raw.filter((v): v is string => typeof v === 'string')
   }, [location.state])
 
-  const [step, setStep] = useState<Step>(1)
   const [submitting, setSubmitting] = useState(false)
 
   const [name, setName] = useState('')
@@ -285,13 +282,13 @@ export default function CampaignWizardPage() {
   const [signatureId, setSignatureId] = useState<string>('')
   const [subject, setSubject] = useState('')
 
-  // 사용자가 Step 3 미리보기에서 합쳐진 본문을 직접 편집하면 그 HTML 을 보관.
+  // 사용자가 우측 미리보기에서 합쳐진 본문을 직접 편집하면 그 HTML 을 보관.
   // null 이면 composedHtml(블록+서명) 을 그대로 사용.
   // 블록을 바꾸면 바로 반영돼야 할지(= null 유지) 그대로 둘지(= override 유지) 는 UX 결정.
   // 여기선 "override 우선" — 사용자가 직접 편집한 건 본인이 명시적으로 '블록으로 되돌리기' 하기 전엔 안 사라진다.
   const [bodyOverride, setBodyOverride] = useState<string | null>(null)
   // bodyOverride 가 어디서 왔는지: 'auto' = 편집 모드 로드 시 db 에서 자동 시드,
-  //                                'manual' = 사용자가 Step3 에서 직접 편집.
+  //                                'manual' = 사용자가 미리보기에서 직접 편집.
   // 서명만 바꿨을 때 자동 시드 본문을 폐기하고 새 composedHtml 로 다시 그려주기 위해 분리.
   const bodyOverrideOriginRef = useRef<'auto' | 'manual' | null>(null)
 
@@ -1027,14 +1024,6 @@ export default function CampaignWizardPage() {
     }
   }, [subject, effectiveBody, previewContacts])
 
-  // 검증
-  // Phase 5: 개별 연락처만 담아도 진행 가능하도록 — 그룹 / 연락처 중 하나라도 있으면 OK
-  const canNextFromStep1 =
-    !!name.trim() &&
-    previewContacts.length > 0 &&
-    (fixedRecipients !== null || selectedGroupIds.length > 0 || selectedContactIds.length > 0)
-  const canNextFromStep2 = subject.trim() && blocks.length > 0
-
   const insertVariableIntoSubject = (key: string) => setSubject((s) => s + `{{${key}}}`)
 
   const addBlock = (templateId: string) => {
@@ -1076,8 +1065,7 @@ export default function CampaignWizardPage() {
       toast.error('최소 1개 이상의 블록을 추가해주세요.')
       return
     }
-    // Step 3 에서 제목을 인라인으로 수정할 수 있게 된 뒤로는
-    // Step 2 의 canNextFromStep2 가드를 우회해 빈 제목으로 도달할 수 있음.
+    // 제목은 어느 화면에서도 비어있을 수 있으므로 제출 직전 최종 검증.
     if (!subject.trim()) {
       toast.error('메일 제목을 입력해주세요.')
       return
@@ -1520,7 +1508,7 @@ export default function CampaignWizardPage() {
     }
   }
 
-  // Lifted from Step3 (now inlined in right pane)
+  // 우측 미리보기 패널 — 본문 직접 편집 토글 + 도메인 검증 상태
   const [editingBody, setEditingBody] = useState(false)
   const [validation, setValidation] = useState<ValidationResult | null>(null)
   const validateEmails = useValidateEmails()
@@ -1548,18 +1536,17 @@ export default function CampaignWizardPage() {
             </Badge>
           )}
         </div>
-        {!isEditMode && <StepIndicator step={step} />}
-        {isEditMode && (
-          <p className="text-xs text-muted-foreground mt-2">
-            한 페이지에서 모두 편집할 수 있고, 아래쪽 미리보기는 변수 ({'{{name}}'}, {'{{company}}'} 등)
-            를 첫 수신자 정보 (없으면 샘플) 로 치환해 실시간 표시됩니다.
-          </p>
-        )}
+        <p className="text-xs text-muted-foreground mt-2">
+          수신자·콘텐츠·발송 설정을 한 화면에서 작성하고, 우측 미리보기는 변수 ({'{{name}}'}, {'{{company}}'} 등)
+          를 첫 수신자 정보 (없으면 샘플) 로 치환해 실시간 표시됩니다.
+        </p>
       </div>
 
-      <div className="flex-1 flex overflow-hidden">
+      {/* lg 미만: 폼 위 + 미리보기 아래로 세로 스택 (페이지 전체 스크롤).
+          lg 이상: 좌우 2컬럼 (각 패널 독립 스크롤). */}
+      <div className="flex-1 flex flex-col lg:flex-row overflow-y-auto lg:overflow-hidden">
         {/* ── LEFT: Form pane ── */}
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 lg:overflow-y-auto">
           <div className="max-w-[600px] mx-auto p-4 sm:p-6 space-y-8">
             {reuseLoading && (
               <div className="space-y-3">
@@ -1607,7 +1594,6 @@ export default function CampaignWizardPage() {
                     onMoveBlock={moveBlock}
                     insertSubject={insertVariableIntoSubject}
                     usedVariables={usedVariables}
-                    composedHtml={effectiveBody}
                     attachments={attachments}
                     setAttachments={setAttachments}
                     groups={groups}
@@ -1631,9 +1617,6 @@ export default function CampaignWizardPage() {
                     sendMode={sendMode}
                     setSendMode={setSendMode}
                     recipientCount={previewContacts.length}
-                    bodyOverridden={bodyOverride !== null}
-                    onResetBody={() => setBodyOverride(null)}
-                    hideComposedPreview
                   />
                 </div>
 
@@ -1715,10 +1698,10 @@ export default function CampaignWizardPage() {
           </div>
         </div>
 
-        {/* ── RIGHT: Preview pane (desktop only) ── */}
-        <div className="hidden lg:flex flex-col w-[420px] xl:w-[480px] shrink-0 overflow-y-auto border-l bg-muted/20">
+        {/* ── RIGHT: Preview pane (lg 이상은 우측, 미만은 폼 아래로 스택) ── */}
+        <div className="flex flex-col w-full lg:w-[420px] xl:w-[480px] shrink-0 lg:overflow-y-auto border-t lg:border-t-0 lg:border-l bg-muted/20">
           {!reuseLoading && (
-            <div className="p-4 space-y-3 sticky top-0">
+            <div className="p-4 space-y-3">
               {/* Compact summary card */}
               <Card>
                 <CardContent className="p-3 space-y-2">
@@ -1895,63 +1878,44 @@ export default function CampaignWizardPage() {
       <div className="px-4 sm:px-6 py-3 border-t flex items-center justify-between bg-card">
         <Button
           variant="outline"
-          onClick={() => {
-            if (isEditMode || step === 1) navigate('/campaigns')
-            else setStep((s) => (s - 1) as Step)
-          }}
+          onClick={() => navigate('/campaigns')}
           disabled={submitting}
         >
           <ArrowLeft className="w-4 h-4 mr-1" />
-          {isEditMode || step === 1 ? '취소' : '이전'}
+          취소
         </Button>
 
-        {!isEditMode && step < 3 ? (
-          <Button
-            onClick={() => setStep((s) => (s + 1) as Step)}
-            disabled={
-              reuseLoading ||
-              (step === 1 && !canNextFromStep1) ||
-              (step === 2 && !canNextFromStep2)
-            }
-          >
-            다음
-            <ArrowRight className="w-4 h-4 ml-1" />
-          </Button>
-        ) : (
-          <Button
-            onClick={handleSubmit}
-            disabled={
-              submitting ||
-              reuseLoading ||
-              previewContacts.length === 0 ||
-              !subject.trim() ||
-              blocks.length === 0 ||
-              // bulk 모드인데 개인화 변수가 남아있거나 수신자가 Gmail 상한을 초과하면 저장 금지
-              (sendMode === 'bulk' && usedVariables.length > 0) ||
-              (sendMode === 'bulk' && previewContacts.length > 500)
-            }
-          >
-            {submitting ? (
-              <>
-                <Loader2 className="w-4 h-4 mr-1 animate-spin" />
-                {isEditMode ? '저장 중...' : scheduledAt ? '예약 중...' : '생성 중...'}
-              </>
-            ) : (
-              <>
-                {scheduledAt ? <CalendarClock className="w-4 h-4 mr-1" /> : <Check className="w-4 h-4 mr-1" />}
-                {isEditMode
-                  ? scheduledAt ? '예약 저장' : '저장'
-                  : scheduledAt ? '예약 발송 설정' : '초안 생성'}
-              </>
-            )}
-          </Button>
-        )}
+        <Button
+          onClick={handleSubmit}
+          disabled={
+            submitting ||
+            reuseLoading ||
+            previewContacts.length === 0 ||
+            !subject.trim() ||
+            blocks.length === 0 ||
+            // bulk 모드인데 개인화 변수가 남아있거나 수신자가 Gmail 상한을 초과하면 저장 금지
+            (sendMode === 'bulk' && usedVariables.length > 0) ||
+            (sendMode === 'bulk' && previewContacts.length > 500)
+          }
+        >
+          {submitting ? (
+            <>
+              <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+              {isEditMode ? '저장 중...' : scheduledAt ? '예약 중...' : '생성 중...'}
+            </>
+          ) : (
+            <>
+              {scheduledAt ? <CalendarClock className="w-4 h-4 mr-1" /> : <Check className="w-4 h-4 mr-1" />}
+              {isEditMode
+                ? scheduledAt ? '예약 저장' : '저장'
+                : scheduledAt ? '예약 발송 설정' : '초안 생성'}
+            </>
+          )}
+        </Button>
       </div>
     </div>
   )
 }
-
-// StepIndicator 는 ./campaign-wizard/StepIndicator.tsx 로 이동.
 
 type GroupOpt = { id: string; name: string; color: string | null; member_count: number }
 
@@ -2077,7 +2041,6 @@ function Step2({
   onMoveBlock,
   insertSubject,
   usedVariables,
-  composedHtml,
   attachments,
   setAttachments,
   groups,
@@ -2101,9 +2064,6 @@ function Step2({
   sendMode,
   setSendMode,
   recipientCount,
-  bodyOverridden,
-  onResetBody,
-  hideComposedPreview,
 }: {
   templates: TemplateOpt[]
   signatures: SignatureOpt[]
@@ -2118,7 +2078,6 @@ function Step2({
   onMoveBlock: (key: string, dir: -1 | 1) => void
   insertSubject: (k: string) => void
   usedVariables: string[]
-  composedHtml: string
   attachments: DriveAttachmentRow[]
   setAttachments: Dispatch<SetStateAction<DriveAttachmentRow[]>>
   groups: GroupOpt[]
@@ -2142,12 +2101,6 @@ function Step2({
   sendMode: 'individual' | 'bulk'
   setSendMode: (v: 'individual' | 'bulk') => void
   recipientCount: number
-  /** 사용자가 Step 3 에서 본문을 직접 편집한 상태 */
-  bodyOverridden: boolean
-  /** 편집을 버리고 블록 조합 결과로 되돌림 */
-  onResetBody: () => void
-  /** 편집 모드처럼 Step3 도 같이 렌더되는 경우, Step3 preview 와 중복되지 않도록 본문 미리보기 카드 숨김. */
-  hideComposedPreview?: boolean
 }) {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [pickerFilter, setPickerFilter] = useState('')
@@ -2390,60 +2343,6 @@ function Step2({
           </div>
         )}
       </div>
-
-      {blocks.length > 0 && !hideComposedPreview && (
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between">
-            <Label>합쳐진 본문 미리보기</Label>
-            {bodyOverridden && (
-              <div className="flex items-center gap-2">
-                <Badge variant="secondary" className="text-[10px]">
-                  직접 편집됨
-                </Badge>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-7 text-xs"
-                  onClick={onResetBody}
-                >
-                  <Undo2 className="w-3.5 h-3.5 mr-1" />
-                  블록으로 되돌리기
-                </Button>
-              </div>
-            )}
-          </div>
-          {bodyOverridden && (
-            <p className="text-xs text-muted-foreground">
-              미리보기에 사용자가 직접 수정한 본문이 보입니다. 블록 순서를 바꾸거나 서명을 변경해도
-              여기엔 반영되지 않으며, 되돌리려면 위 버튼을 눌러주세요.
-            </p>
-          )}
-          <Card>
-            <CardContent className="p-0">
-              <div className="bg-white dark:bg-gray-950">
-                <SignaturePreview html={composedHtml} />
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-      )}
-      {bodyOverridden && hideComposedPreview && (
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-end">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-7 text-xs"
-              onClick={onResetBody}
-            >
-              <Undo2 className="w-3.5 h-3.5 mr-1" />
-              본문을 블록으로 되돌리기
-            </Button>
-          </div>
-        </div>
-      )}
 
       <AttachmentSection
         attachments={attachments}
