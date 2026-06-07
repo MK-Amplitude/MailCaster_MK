@@ -35,6 +35,7 @@ import { useGroups } from '@/hooks/useGroups'
 import { useTemplates } from '@/hooks/useTemplates'
 import { useSignatures } from '@/hooks/useSignatures'
 import { useCreateCampaign, useUpdateCampaign } from '@/hooks/useCampaigns'
+import { useSequenceOptions } from '@/hooks/useSequences'
 import { useValidateEmails, type ValidationResult } from '@/hooks/useValidateEmails'
 import { renderTemplate, extractVariables } from '@/lib/mailMerge'
 import { toast } from 'sonner'
@@ -321,6 +322,10 @@ export default function CampaignWizardPage() {
   //       여기선 내부적으로 ISO UTC 로 정규화해 저장 시 DB 로 보낸다.
   const [scheduledAt, setScheduledAt] = useState<string | null>(null)
 
+  // 후속 시퀀스 — 발송 완료 후 수신자를 이 시퀀스에 자동 등록 (캠페인=첫 터치).
+  // null = 후속 없음. (069)
+  const [followupSequenceId, setFollowupSequenceId] = useState<string | null>(null)
+
   // 첨부 파일 — 블록 추가 시 해당 템플릿의 첨부가 자동 포함 + 수동 추가 가능
   const [attachments, setAttachments] = useState<DriveAttachmentRow[]>([])
 
@@ -441,7 +446,7 @@ export default function CampaignWizardPage() {
       try {
         const { data, error: cErr } = await supabase
           .from('campaigns')
-          .select('name, subject, signature_id, send_delay_seconds, cc, bcc, send_mode, body_html, scheduled_at, status')
+          .select('name, subject, signature_id, send_delay_seconds, cc, bcc, send_mode, body_html, scheduled_at, status, followup_sequence_id')
           .eq('id', loadFrom)
           .single()
         if (cancelled) return
@@ -481,6 +486,7 @@ export default function CampaignWizardPage() {
           setSignatureId((c.signature_id as string | null) ?? '')
           setDelaySeconds((c.send_delay_seconds as number | null) ?? 3)
           setSendMode((c.send_mode as 'individual' | 'bulk' | null) === 'bulk' ? 'bulk' : 'individual')
+          setFollowupSequenceId((c.followup_sequence_id as string | null) ?? null)
 
           // Phase 7: CC/BCC 구조화 — 직접 입력 / 그룹 / 개별 연락처 각각 복원.
           // campaigns.cc 는 발송 시 사용되는 최종 이메일 배열(스냅샷) 이고,
@@ -1108,6 +1114,7 @@ export default function CampaignWizardPage() {
             cc: resolvedCcEmails,
             bcc: resolvedBccEmails,
             send_mode: sendMode,
+            followup_sequence_id: followupSequenceId,
             // 예약 시각 변경:
             //   scheduledAt 설정 → status='scheduled' + scheduled_at
             //   scheduledAt null → status='draft'     + scheduled_at=null (예약 해제)
@@ -1354,6 +1361,7 @@ export default function CampaignWizardPage() {
           cc: resolvedCcEmails,
           bcc: resolvedBccEmails,
           send_mode: sendMode,
+          followup_sequence_id: followupSequenceId,
         })
 
         // 2) campaign_blocks
@@ -1632,6 +1640,8 @@ export default function CampaignWizardPage() {
                 sendMode={sendMode}
                 scheduledAt={scheduledAt}
                 setScheduledAt={setScheduledAt}
+                followupSequenceId={followupSequenceId}
+                setFollowupSequenceId={setFollowupSequenceId}
                 recipientEmails={previewContacts.map((c) => c.email)}
                 previewContacts={previewContacts}
                 excludedContactIds={excludedContactIds}
@@ -1732,6 +1742,8 @@ export default function CampaignWizardPage() {
               sendMode={sendMode}
               scheduledAt={scheduledAt}
               setScheduledAt={setScheduledAt}
+              followupSequenceId={followupSequenceId}
+              setFollowupSequenceId={setFollowupSequenceId}
               recipientEmails={previewContacts.map((c) => c.email)}
             />
           )}
@@ -2404,6 +2416,8 @@ function Step3({
   sendMode,
   scheduledAt,
   setScheduledAt,
+  followupSequenceId,
+  setFollowupSequenceId,
   recipientEmails,
   // 편집 모드 — 최종 수신자 검토 (이름/이메일/회사/직책 + 추가/제거).
   // 새 캠페인 작성 흐름에서는 Step1 에서 이미 다루므로 미전달 (undefined).
@@ -2443,6 +2457,9 @@ function Step3({
   /** 예약 발송 시각 — null 이면 즉시 발송 */
   scheduledAt: string | null
   setScheduledAt: (v: string | null) => void
+  /** 후속 시퀀스 id — null 이면 후속 없음 (069) */
+  followupSequenceId: string | null
+  setFollowupSequenceId: (v: string | null) => void
   /** 발송 전 도메인 MX 검증용 — 수신자 이메일 목록 */
   recipientEmails: string[]
   previewContacts?: PreviewContact[]
@@ -2452,6 +2469,8 @@ function Step3({
   setSelectedContactIds?: (ids: string[]) => void
 }) {
   const totalAttachmentSize = attachments.reduce((sum, a) => sum + (a.file_size ?? 0), 0)
+  // 후속 시퀀스 셀렉터용 활성 시퀀스 목록 (069)
+  const { data: sequenceOptions = [] } = useSequenceOptions()
   // useSendCampaign 의 실제 fallback 기준(SAFE_THRESHOLD)과 일치시킴
   const willFallback = totalAttachmentSize > GMAIL_ATTACHMENT_SAFE_THRESHOLD
   const bulkBlocked = sendMode === 'bulk' && usedVariables.length > 0
@@ -2617,6 +2636,33 @@ function Step3({
         setScheduledAt={setScheduledAt}
         hasAttachments={attachments.length > 0}
       />
+
+      {/* 후속 시퀀스 (069) — 발송 후 미회신자에게 자동 후속. 캠페인=첫 터치. */}
+      <div className="space-y-1.5">
+        <Label className="flex items-center gap-1.5">
+          <RotateCcw className="w-3.5 h-3.5" />
+          후속 시퀀스 <span className="text-xs font-normal text-muted-foreground">(선택)</span>
+        </Label>
+        <Select
+          value={followupSequenceId ?? '__none__'}
+          onValueChange={(v) => setFollowupSequenceId(v === '__none__' ? null : v)}
+        >
+          <SelectTrigger className="max-w-[360px]">
+            <SelectValue placeholder="후속 없음" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__none__">후속 없음</SelectItem>
+            {sequenceOptions.map((s) => (
+              <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          발송 후, 회신·수신거부·반송이 없는 수신자에게 이 시퀀스가 같은 메일 스레드로 자동 후속 발송합니다.
+          {sequenceOptions.length === 0 &&
+            ' (활성 시퀀스가 없습니다 — 시퀀스 메뉴에서 먼저 만들어주세요.)'}
+        </p>
+      </div>
 
       <div className="space-y-1.5">
         <div className="flex items-center justify-between flex-wrap gap-2">

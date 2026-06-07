@@ -15,6 +15,7 @@ import { ContactFormDialog } from '@/components/contacts/ContactFormDialog'
 import { ContactDetailSheet } from '@/components/contacts/ContactDetailSheet'
 import { ContactImportDialog } from '@/components/contacts/ContactImportDialog'
 import { AddToGroupDialog } from '@/components/contacts/AddToGroupDialog'
+import { AddToSequenceDialog } from '@/components/contacts/AddToSequenceDialog'
 import { BulkActionBar } from '@/components/common/BulkActionBar'
 import { ConfirmDialog } from '@/components/common/ConfirmDialog'
 import { EmptyState } from '@/components/common/EmptyState'
@@ -38,7 +39,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { UserPlus, Upload, Users, Search, UserX, Trash2, FolderPlus, Tag, Wand2, ScanLine, Loader2, Archive, ArchiveRestore, RotateCcw, Sparkles } from 'lucide-react'
+import { UserPlus, Upload, Users, Search, UserX, Trash2, FolderPlus, Tag, Wand2, ScanLine, Loader2, Archive, ArchiveRestore, RotateCcw, Sparkles, Workflow } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { resolveCompaniesBatch } from '@/lib/resolveCompany'
 import { PersonalizedSendDialog } from '@/components/campaigns/PersonalizedSendDialog'
@@ -77,6 +78,7 @@ export default function ContactsPage() {
   const [deleteTarget, setDeleteTarget] = useState<ContactWithGroups | null>(null)
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
   const [addToGroupOpen, setAddToGroupOpen] = useState(false)
+  const [addToSequenceOpen, setAddToSequenceOpen] = useState(false)
   const [personalizeOpen, setPersonalizeOpen] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const ocr = useOcrBusinessCard()
@@ -552,6 +554,11 @@ export default function ContactsPage() {
             onClick: () => setAddToGroupOpen(true),
           },
           {
+            label: '시퀀스에 등록',
+            icon: <Workflow className="w-3.5 h-3.5 mr-1" />,
+            onClick: () => setAddToSequenceOpen(true),
+          },
+          {
             label: '분류 변경',
             node: (
               <DropdownMenu>
@@ -630,6 +637,12 @@ export default function ContactsPage() {
       <AddToGroupDialog
         open={addToGroupOpen}
         onOpenChange={setAddToGroupOpen}
+        contactIds={scope === 'common' ? expandedCommonContactIds : [...selectedIds]}
+        onDone={clearSelection}
+      />
+      <AddToSequenceDialog
+        open={addToSequenceOpen}
+        onOpenChange={setAddToSequenceOpen}
         contactIds={scope === 'common' ? expandedCommonContactIds : [...selectedIds]}
         onDone={clearSelection}
       />

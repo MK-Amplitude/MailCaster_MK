@@ -113,6 +113,30 @@ export function useSequenceEnrollments(sequenceId: string | undefined) {
   })
 }
 
+export interface SequenceOption {
+  id: string
+  name: string
+}
+
+// 셀렉터용 경량 목록 — active 시퀀스의 {id, name} 만. (캠페인 위저드 후속 시퀀스 선택 등)
+export function useSequenceOptions() {
+  const { currentOrg } = useAuth()
+  return useQuery({
+    queryKey: [QK, 'options', currentOrg?.id],
+    queryFn: async (): Promise<SequenceOption[]> => {
+      const { data, error } = await supabase
+        .from('sequences')
+        .select('id, name')
+        .eq('org_id', currentOrg!.id)
+        .eq('status', 'active')
+        .order('created_at', { ascending: false })
+      if (error) throw error
+      return (data ?? []) as SequenceOption[]
+    },
+    enabled: !!currentOrg,
+  })
+}
+
 export function useCreateSequence() {
   const { user, currentOrg } = useAuth()
   const qc = useQueryClient()
@@ -197,6 +221,27 @@ export function useEnrollContacts() {
       const { data, error } = await supabase.rpc('enroll_contacts_in_sequence', {
         p_sequence_id: input.sequenceId,
         p_contact_ids: input.contactIds,
+      })
+      if (error) throw error
+      return (data as unknown as number) ?? 0
+    },
+    onSuccess: (count, v) => {
+      qc.invalidateQueries({ queryKey: [QK] })
+      qc.invalidateQueries({ queryKey: [QK, 'enrollments', v.sequenceId] })
+      toast.success(`${count}명을 시퀀스에 등록했습니다.`)
+    },
+    onError: (e: Error) => toast.error(e.message || '시퀀스 등록 실패'),
+  })
+}
+
+// 그룹 전체를 시퀀스에 일괄 등록 (069)
+export function useEnrollGroup() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (input: { sequenceId: string; groupId: string }) => {
+      const { data, error } = await supabase.rpc('enroll_group_in_sequence', {
+        p_sequence_id: input.sequenceId,
+        p_group_id: input.groupId,
       })
       if (error) throw error
       return (data as unknown as number) ?? 0

@@ -238,7 +238,7 @@ function SequenceBuilderSheet({
                 <Button size="sm" variant="outline" onClick={addStep}><Plus className="w-3.5 h-3.5 mr-1" />스텝 추가</Button>
               </div>
               {steps.length === 0 && (
-                <p className="text-sm text-muted-foreground">스텝을 추가하세요. 첫 스텝은 등록 즉시, 이후는 직전 스텝 발송 후 지정 영업일 뒤 발송됩니다.</p>
+                <p className="text-sm text-muted-foreground">스텝을 추가하세요. 첫 스텝 대기를 0으로 두면 등록 즉시, 이후는 직전 스텝 발송 후 지정 영업일 뒤 발송됩니다. 캠페인 후속용 시퀀스라면 첫 스텝 대기를 1영업일 이상으로 두는 것을 권장합니다.</p>
               )}
               <div className="space-y-3">
                 {steps.map((s, idx) => (
@@ -253,7 +253,6 @@ function SequenceBuilderSheet({
                           className="w-16 h-8"
                           value={s.wait_days}
                           onChange={(e) => patchStep(idx, { wait_days: Math.max(0, Number(e.target.value) || 0) })}
-                          disabled={idx === 0}
                         />
                         <span className="text-muted-foreground">영업일</span>
                       </div>

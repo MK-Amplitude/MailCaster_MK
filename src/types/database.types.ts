@@ -494,6 +494,8 @@ export interface Database {
           last_processed_recipient_id: string | null
           // 058 — broadcast (다중) vs one_to_one (1:1) 구분
           kind: 'broadcast' | 'one_to_one'
+          // 069 — 발송 완료 후 수신자를 등록할 후속 시퀀스 (NULL = 후속 없음)
+          followup_sequence_id: string | null
         }
         Insert: {
           id?: string
@@ -525,6 +527,7 @@ export interface Database {
           sending_started_at?: string | null
           last_processed_recipient_id?: string | null
           kind?: 'broadcast' | 'one_to_one'
+          followup_sequence_id?: string | null
         }
         Update: {
           name?: string
@@ -552,6 +555,7 @@ export interface Database {
           sending_started_at?: string | null
           last_processed_recipient_id?: string | null
           kind?: 'broadcast' | 'one_to_one'
+          followup_sequence_id?: string | null
         }
         Relationships: []
       }
@@ -667,6 +671,8 @@ export interface Database {
           followup_stopped: boolean
           gmail_message_id: string | null
           gmail_thread_id: string | null
+          // 069 — 후속 시퀀스 In-Reply-To 용 (후속 시퀀스 붙은 캠페인만 채움)
+          rfc_message_id: string | null
           created_at: string
           // Phase 6 (migration 010) — 오픈 추적 확장 / 답장 cron 체크
           first_opened_at: string | null
@@ -703,6 +709,7 @@ export interface Database {
           followup_stopped?: boolean
           gmail_message_id?: string | null
           gmail_thread_id?: string | null
+          rfc_message_id?: string | null
           created_at?: string
           first_opened_at?: string | null
           bounce_reason?: string | null
@@ -729,6 +736,7 @@ export interface Database {
           followup_stopped?: boolean
           gmail_message_id?: string | null
           gmail_thread_id?: string | null
+          rfc_message_id?: string | null
           first_opened_at?: string | null
           bounce_reason?: string | null
           last_reply_check_at?: string | null
@@ -1563,6 +1571,16 @@ export interface Database {
       // RPC — 시퀀스 등록 (062)
       enroll_contacts_in_sequence: {
         Args: { p_sequence_id: string; p_contact_ids: string[] }
+        Returns: number
+      }
+      // RPC — 캠페인 발송 완료 후 수신자를 후속 시퀀스에 등록 (069)
+      enroll_campaign_recipients: {
+        Args: { p_campaign_id: string }
+        Returns: number
+      }
+      // RPC — 그룹 전체를 시퀀스에 일괄 등록 (069)
+      enroll_group_in_sequence: {
+        Args: { p_sequence_id: string; p_group_id: string }
         Returns: number
       }
       // RPC — 시퀀스 등록 중단 (062)

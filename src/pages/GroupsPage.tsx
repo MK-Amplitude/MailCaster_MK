@@ -8,12 +8,13 @@ import { CategoryList } from '@/components/groups/CategoryList'
 import { GroupFormDialog } from '@/components/groups/GroupFormDialog'
 import { GroupMembersSheet } from '@/components/groups/GroupMembersSheet'
 import { AISuggestGroupDialog } from '@/components/groups/AISuggestGroupDialog'
+import { EnrollGroupDialog } from '@/components/groups/EnrollGroupDialog'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { useGroups, useDeleteGroup } from '@/hooks/useGroups'
 import { useGroupCategories } from '@/hooks/useGroupCategories'
 import { useAuth } from '@/hooks/useAuth'
 import type { Group } from '@/types/group'
-import { Plus, Users, MoreHorizontal, Pencil, Trash2, FolderOpen, Filter, ChevronDown, User, Wand2 } from 'lucide-react'
+import { Plus, Users, MoreHorizontal, Pencil, Trash2, FolderOpen, Filter, ChevronDown, User, Wand2, Workflow } from 'lucide-react'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -32,6 +33,7 @@ export default function GroupsPage() {
   // 모바일에서 CategoryList 패널을 Sheet 로 열기 위한 플래그
   const [mobileCategoryOpen, setMobileCategoryOpen] = useState(false)
   const [aiSuggestOpen, setAiSuggestOpen] = useState(false)
+  const [enrollTarget, setEnrollTarget] = useState<Group | null>(null)
 
   type GroupWithCat = Group & { group_categories: { id: string; name: string; color: string | null; icon: string | null } | null }
   const { data: groups = [] as GroupWithCat[], isLoading } = useGroups(selectedCategoryId ?? undefined)
@@ -150,6 +152,7 @@ export default function GroupsPage() {
                   onEdit={openEdit}
                   onDelete={setDeleteTarget}
                   onOpenMembers={openMembers}
+                  onEnroll={setEnrollTarget}
                 />
               ))}
             </div>
@@ -169,6 +172,12 @@ export default function GroupsPage() {
         group={membersGroup}
         open={membersOpen}
         onOpenChange={setMembersOpen}
+      />
+      <EnrollGroupDialog
+        open={!!enrollTarget}
+        onOpenChange={(v) => !v && setEnrollTarget(null)}
+        groupId={enrollTarget?.id ?? null}
+        groupName={enrollTarget?.name}
       />
       <ConfirmDialog
         open={!!deleteTarget}
@@ -198,12 +207,14 @@ function GroupCard({
   onEdit,
   onDelete,
   onOpenMembers,
+  onEnroll,
 }: {
   group: Group & { group_categories?: { name: string; color: string | null } | null }
   canMutate: boolean
   onEdit: (g: Group) => void
   onDelete: (g: Group) => void
   onOpenMembers: (g: Group) => void
+  onEnroll: (g: Group) => void
 }) {
   const cat = (group as { group_categories?: { name: string; color: string | null } | null }).group_categories
 
@@ -238,27 +249,33 @@ function GroupCard({
               )}
             </div>
           </div>
-          {canMutate && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-                <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0">
-                  <MoreHorizontal className="w-4 h-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onEdit(group) }}>
-                  <Pencil className="w-4 h-4 mr-2" /> 수정
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  onClick={(e) => { e.stopPropagation(); onDelete(group) }}
-                  className="text-destructive focus:text-destructive"
-                >
-                  <Trash2 className="w-4 h-4 mr-2" /> 삭제
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+              <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0">
+                <MoreHorizontal className="w-4 h-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {/* 시퀀스 등록은 그룹 소유 여부와 무관하게 org 멤버 누구나 가능 (069) */}
+              <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onEnroll(group) }}>
+                <Workflow className="w-4 h-4 mr-2" /> 시퀀스에 등록
+              </DropdownMenuItem>
+              {canMutate && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onEdit(group) }}>
+                    <Pencil className="w-4 h-4 mr-2" /> 수정
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={(e) => { e.stopPropagation(); onDelete(group) }}
+                    className="text-destructive focus:text-destructive"
+                  >
+                    <Trash2 className="w-4 h-4 mr-2" /> 삭제
+                  </DropdownMenuItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
 
         <div className="flex items-center gap-1.5 text-muted-foreground">

@@ -160,6 +160,7 @@ Deno.serve(async (req) => {
       repliedAtIso: string
       cid: string
       email: string
+      contactId: string | null
       category: ReplyCategory
       meta: ThreadMeta
     }> = []
@@ -262,6 +263,7 @@ Deno.serve(async (req) => {
               repliedAtIso: result.repliedAtIso,
               cid: r.campaign_id,
               email: r.email,
+              contactId: r.contact_id,
               category,
               meta: result.meta,
             })
@@ -319,6 +321,37 @@ Deno.serve(async (req) => {
         })
       if (optErr) console.warn('[check-replies] optout fail', o.email, optErr.message)
       else if (didOptOut) console.log('[check-replies] auto-unsubscribed', o.email)
+    }
+
+    // 4-1c) 답장한 contact 의 진행 중 시퀀스 자동 정지 (069 — 캠페인 후속 시퀀스 안전장치).
+    //  check-inbox 도 새 inbound 시 정지하지만, 캠페인 스레드 답장이 inbox 폴링보다 먼저
+    //  여기서 감지될 수 있어 contact 기준으로 즉시 정지한다. (idempotent — active 만 영향)
+    const orgIdByCid = new Map<string, string | null>()
+    async function orgIdForCampaign(cid: string): Promise<string | null> {
+      const cached = orgIdByCid.get(cid)
+      if (cached !== undefined) return cached
+      const { data } = await supabase
+        .schema('mailcaster')
+        .from('campaigns')
+        .select('org_id')
+        .eq('id', cid)
+        .maybeSingle()
+      const orgId = (data?.org_id as string | undefined) ?? null
+      orgIdByCid.set(cid, orgId)
+      return orgId
+    }
+    for (const info of repliedInfos) {
+      if (!info.contactId) continue
+      const orgId = await orgIdForCampaign(info.cid)
+      if (!orgId) continue
+      const { error: stopErr } = await supabase
+        .schema('mailcaster')
+        .rpc('stop_active_enrollments_for_contact', {
+          p_org_id: orgId,
+          p_contact_id: info.contactId,
+          p_reason: 'replied',
+        })
+      if (stopErr) console.warn('[check-replies] seq stop fail', info.contactId, stopErr.message)
     }
 
     // 4-2) 답장 없음 — 한 번에 rotate

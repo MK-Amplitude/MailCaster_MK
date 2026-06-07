@@ -22,6 +22,49 @@ function sleep(ms: number) {
 }
 
 /**
+ * 발송한 메일의 RFC822 Message-ID 조회 (후속 시퀀스의 In-Reply-To/References 용).
+ * best-effort — 실패해도 null 반환 (gmail_thread_id 만으로도 Gmail 스레드는 묶임).
+ * 후속 시퀀스가 붙은 캠페인에서만 호출해 평상시 발송엔 추가 API 비용이 없게 한다.
+ */
+async function fetchMessageRfcId(accessToken: string, gmailMessageId: string): Promise<string | null> {
+  try {
+    const res = await fetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(gmailMessageId)}?format=metadata&metadataHeaders=Message-ID`,
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    )
+    if (!res.ok) return null
+    const data = await res.json()
+    const headers = data.payload?.headers ?? []
+    const found = headers.find((h: { name: string }) => h.name.toLowerCase() === 'message-id')
+    return found?.value ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 캠페인 발송 완료 후 후속 시퀀스 등록 (followup_sequence_id 가 있고 1건 이상 발송됐을 때만).
+ * RPC enroll_campaign_recipients 가 'sent' 수신자를 캠페인 스레드의 followup 으로 등록한다.
+ * 실패해도 발송 자체는 성공이므로 경고만 — 등록은 멱등이라 재발송/재시도 시 복구 가능.
+ */
+async function enrollFollowupSequence(
+  campaign: { followup_sequence_id?: string | null },
+  campaignId: string,
+  sentCount: number,
+): Promise<number> {
+  if (!campaign.followup_sequence_id || sentCount <= 0) return 0
+  const { data, error } = await supabase.rpc('enroll_campaign_recipients', {
+    p_campaign_id: campaignId,
+  })
+  if (error) {
+    console.warn('[sendCampaign] follow-up enroll failed:', error.message)
+    toast.warning(`후속 시퀀스 등록 실패 — 메일은 발송됨 (${error.message})`)
+    return 0
+  }
+  return (data as unknown as number) ?? 0
+}
+
+/**
  * 본문에 서명이 이미 들어있는지 판정 — HTML 미세 차이 무시.
  *
  * 단순 HTML.includes() 는 TipTap 이 본문을 정규화 (속성 순서, 공백) 했을 때
@@ -593,6 +636,10 @@ export function useSendCampaign() {
 
           // 전원 sent 로 일괄 업데이트 — 공통 gmail_message_id 기록
           const nowIso = new Date().toISOString()
+          // 후속 시퀀스가 붙었으면 RFC Message-ID 조회 — bulk 는 1통이므로 공통 rfc.
+          const bulkRfc = campaign.followup_sequence_id
+            ? await fetchMessageRfcId(accessToken, result.id)
+            : null
           const { error: bulkUpdateErr } = await supabase
             .from('recipients')
             .update({
@@ -600,6 +647,7 @@ export function useSendCampaign() {
               sent_at: nowIso,
               gmail_message_id: result.id,
               gmail_thread_id: result.threadId,
+              rfc_message_id: bulkRfc,
               error_message: null,
             })
             .eq('campaign_id', campaignId)
@@ -646,12 +694,16 @@ export function useSendCampaign() {
             .update({ status: 'sent', sent_count: sent, failed_count: 0 })
             .eq('id', campaignId)
 
+          // 후속 시퀀스 등록 — 발송 성공한 수신자를 캠페인 스레드 followup 으로 이어간다.
+          const enrolled = await enrollFollowupSequence(campaign, campaignId, sent)
+
           qc.invalidateQueries({ queryKey: ['campaigns'] })
           qc.invalidateQueries({ queryKey: ['campaigns', 'recipients', campaignId] })
           qc.invalidateQueries({ queryKey: ['campaigns', 'detail', campaignId] })
           qc.invalidateQueries({ queryKey: ['attachment_stats'] })
+          if (enrolled > 0) qc.invalidateQueries({ queryKey: ['sequences'] })
 
-          return { sent, failed: 0, total: recipients.length, deliveryMode }
+          return { sent, failed: 0, total: recipients.length, deliveryMode, enrolled }
         } catch (e) {
           // 실패 시 전원 failed 로 일괄 기록 + 캠페인 'failed' 로 전환
           const msg = e instanceof Error ? e.message : String(e)
@@ -747,6 +799,10 @@ export function useSendCampaign() {
               { label: 'gmail' }
             )
 
+            // 후속 시퀀스가 붙었으면 RFC Message-ID 조회 — followup In-Reply-To 용.
+            const rfcMessageId = campaign.followup_sequence_id
+              ? await fetchMessageRfcId(accessToken, result.id)
+              : null
             await supabase
               .from('recipients')
               .update({
@@ -754,6 +810,7 @@ export function useSendCampaign() {
                 sent_at: new Date().toISOString(),
                 gmail_message_id: result.id,
                 gmail_thread_id: result.threadId,
+                rfc_message_id: rfcMessageId,
                 error_message: null,
               })
               .eq('id', r.id)
@@ -821,9 +878,13 @@ export function useSendCampaign() {
           .update({ status: finalStatus, sent_count: sent, failed_count: failed })
           .eq('id', campaignId)
 
-        qc.invalidateQueries({ queryKey: ['attachment_stats'] })
+        // 후속 시퀀스 등록 — 발송 성공한 수신자를 캠페인 스레드 followup 으로 이어간다.
+        const enrolled = await enrollFollowupSequence(campaign, campaignId, sent)
 
-        return { sent, failed, total: recipients.length, deliveryMode }
+        qc.invalidateQueries({ queryKey: ['attachment_stats'] })
+        if (enrolled > 0) qc.invalidateQueries({ queryKey: ['sequences'] })
+
+        return { sent, failed, total: recipients.length, deliveryMode, enrolled }
       } catch (abortErr) {
         // C2: 루프 외부에서 발생한 abort — campaign 상태 복원
         //     일부 보내졌으면 'failed' (부분 성공), 하나도 못 보냈으면 previousStatus 로 복귀
@@ -864,7 +925,7 @@ export function useSendCampaign() {
         throw abortErr
       }
     },
-    onSuccess: ({ sent, failed, total, deliveryMode }) => {
+    onSuccess: ({ sent, failed, total, deliveryMode, enrolled }) => {
       qc.invalidateQueries({ queryKey: ['campaigns'] })
       // 캠페인 발송 결과 (recipients) 를 공유하는 뷰들 즉시 갱신 — thread 발송 (useSendThreadMessage)
       // 과 동일 패턴. 누락 시 contact 메일 히스토리 / 보낸편지함 / 대시보드 오픈 KPI / 타임라인이
@@ -874,10 +935,11 @@ export function useSendCampaign() {
       qc.invalidateQueries({ queryKey: ['inbox-stats'] })
       qc.invalidateQueries({ queryKey: ['contact-send-history'] })
       const modeSuffix = deliveryMode === 'link' ? ' (Drive 링크 전송)' : ''
+      const seqSuffix = enrolled && enrolled > 0 ? ` · 후속 시퀀스 ${enrolled}명 등록` : ''
       if (failed === 0) {
-        toast.success(`발송 완료: ${sent}/${total}${modeSuffix}`)
+        toast.success(`발송 완료: ${sent}/${total}${modeSuffix}${seqSuffix}`)
       } else {
-        toast.warning(`발송 완료: 성공 ${sent}, 실패 ${failed}${modeSuffix}`)
+        toast.warning(`발송 완료: 성공 ${sent}, 실패 ${failed}${modeSuffix}${seqSuffix}`)
       }
     },
     onError: (e: Error) => {
