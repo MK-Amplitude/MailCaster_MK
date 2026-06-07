@@ -129,6 +129,7 @@ export default function SequencesPage() {
 
       {activeSeqId && (
         <SequenceBuilderSheet
+          key={activeSeqId}
           sequenceId={activeSeqId}
           open={!!activeSeqId}
           onOpenChange={(o) => { if (!o) setActiveSeqId(null) }}
