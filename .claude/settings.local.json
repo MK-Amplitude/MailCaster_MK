@@ -1,4 +1,7 @@
 {
+  "model": "opus",
+  "effortLevel": "xhigh",
+  "ultracode": true,
   "permissions": {
     "allow": [
       "Bash(npm create *)",
