@@ -1,7 +1,7 @@
 // 시퀀스(자동 후속 cadence) 관리 — 목록/빌더/등록 (고도화 Tier1-D).
 
 import { useEffect, useMemo, useState } from 'react'
-import { Plus, Trash2, GripVertical, Send, Workflow, Archive, UserPlus, Search, Loader2 } from 'lucide-react'
+import { Plus, Trash2, GripVertical, Send, Workflow, Archive, UserPlus, Search, Loader2, Pencil, Check, X } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/hooks/useAuth'
 import {
@@ -11,11 +11,13 @@ import {
   useSequenceStepFunnel,
   useCreateSequence,
   useUpdateSequence,
+  useDeleteSequence,
   useSaveSequenceSteps,
   useEnrollContacts,
   useStopEnrollment,
   type StepInput,
 } from '@/hooks/useSequences'
+import { ConfirmDialog } from '@/components/common/ConfirmDialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -187,9 +189,15 @@ function SequenceBuilderSheet({
   const { data: funnel = [] } = useSequenceStepFunnel(sequenceId)
   const saveSteps = useSaveSequenceSteps()
   const updateSeq = useUpdateSequence()
+  const deleteSeq = useDeleteSequence()
   const stopEnr = useStopEnrollment()
   const [steps, setSteps] = useState<StepInput[]>([])
   const [enrollOpen, setEnrollOpen] = useState(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  // 이름·설명 인라인 편집
+  const [editingMeta, setEditingMeta] = useState(false)
+  const [editName, setEditName] = useState('')
+  const [editDesc, setEditDesc] = useState('')
 
   useEffect(() => {
     if (data?.steps) {
@@ -203,6 +211,19 @@ function SequenceBuilderSheet({
 
   const seq = data?.sequence
   const archived = seq?.status === 'archived'
+
+  function startEditMeta() {
+    setEditName(seq?.name ?? '')
+    setEditDesc(seq?.description ?? '')
+    setEditingMeta(true)
+  }
+  function saveMeta() {
+    if (!editName.trim()) return
+    updateSeq.mutate(
+      { id: sequenceId, data: { name: editName.trim(), description: editDesc.trim() || null } },
+      { onSuccess: () => setEditingMeta(false) },
+    )
+  }
 
   function addStep() {
     setSteps((prev) => [
@@ -223,8 +244,45 @@ function SequenceBuilderSheet({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="w-full sm:max-w-2xl overflow-y-auto">
         <SheetHeader>
-          <SheetTitle>{seq?.name ?? '시퀀스'}</SheetTitle>
-          <SheetDescription>{seq?.description || '스텝과 등록을 관리합니다.'}</SheetDescription>
+          {editingMeta ? (
+            <div className="space-y-2">
+              <Input
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                placeholder="시퀀스 이름"
+                className="font-semibold"
+              />
+              <Input
+                value={editDesc}
+                onChange={(e) => setEditDesc(e.target.value)}
+                placeholder="설명 (선택)"
+              />
+              <div className="flex items-center gap-2">
+                <Button size="sm" disabled={!editName.trim() || updateSeq.isPending} onClick={saveMeta}>
+                  <Check className="w-3.5 h-3.5 mr-1" /> 저장
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setEditingMeta(false)}>
+                  <X className="w-3.5 h-3.5 mr-1" /> 취소
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center gap-2 pr-8">
+                <SheetTitle className="truncate">{seq?.name ?? '시퀀스'}</SheetTitle>
+                {seq && (
+                  <Button
+                    size="icon" variant="ghost" className="h-7 w-7 shrink-0"
+                    onClick={startEditMeta}
+                    title="이름·설명 수정"
+                  >
+                    <Pencil className="w-3.5 h-3.5 text-muted-foreground" />
+                  </Button>
+                )}
+              </div>
+              <SheetDescription>{seq?.description || '스텝과 등록을 관리합니다.'}</SheetDescription>
+            </>
+          )}
         </SheetHeader>
 
         {isLoading || !seq ? (
@@ -283,6 +341,13 @@ function SequenceBuilderSheet({
                   onClick={() => updateSeq.mutate({ id: sequenceId, data: { status: archived ? 'active' : 'archived' } })}
                 >
                   <Archive className="w-4 h-4 mr-1" /> {archived ? '보관 해제' : '보관'}
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="text-destructive hover:text-destructive hover:bg-destructive/10 ml-auto"
+                  onClick={() => setDeleteOpen(true)}
+                >
+                  <Trash2 className="w-4 h-4 mr-1" /> 삭제
                 </Button>
               </div>
             </section>
@@ -372,6 +437,21 @@ function SequenceBuilderSheet({
         )}
 
         <EnrollDialog open={enrollOpen} onOpenChange={setEnrollOpen} sequenceId={sequenceId} />
+
+        <ConfirmDialog
+          open={deleteOpen}
+          onOpenChange={setDeleteOpen}
+          title="시퀀스 삭제"
+          description={`"${seq?.name ?? ''}" 시퀀스를 삭제하시겠습니까? 스텝과 진행 중인 등록(${enrollments.length}건)이 모두 삭제되며 되돌릴 수 없습니다. 이 시퀀스를 후속으로 지정한 캠페인은 후속 없음으로 바뀝니다.`}
+          confirmLabel="삭제"
+          variant="destructive"
+          loading={deleteSeq.isPending}
+          onConfirm={() => {
+            deleteSeq.mutate(sequenceId, {
+              onSuccess: () => { setDeleteOpen(false); onOpenChange(false) },
+            })
+          }}
+        />
       </SheetContent>
     </Sheet>
   )

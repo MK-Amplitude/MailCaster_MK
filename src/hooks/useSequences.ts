@@ -183,6 +183,23 @@ export function useUpdateSequence() {
   })
 }
 
+// 시퀀스 삭제 — sequence_steps / sequence_enrollments 는 ON DELETE CASCADE 로 자동 정리,
+// campaigns.followup_sequence_id / thread_messages.sequence_id 는 ON DELETE SET NULL 로 안전.
+export function useDeleteSequence() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from('sequences').delete().eq('id', id)
+      if (error) throw error
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: [QK] })
+      toast.success('시퀀스를 삭제했습니다.')
+    },
+    onError: (e: Error) => toast.error(e.message || '시퀀스 삭제 실패'),
+  })
+}
+
 // 스텝 전체 교체 — delete 후 insert (step_order UNIQUE 충돌 방지).
 export function useSaveSequenceSteps() {
   const qc = useQueryClient()
