@@ -3,9 +3,11 @@
 // 호출자 인증 필요 (JWT). 성공 시 profiles 테이블 업데이트 + 새 토큰 반환.
 
 import { createClient } from 'jsr:@supabase/supabase-js@2'
+import { decryptToken, encryptToken } from '../_shared/tokenCrypto.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+const ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY')!
 const GOOGLE_CLIENT_ID = Deno.env.get('GOOGLE_CLIENT_ID')!
 const GOOGLE_CLIENT_SECRET = Deno.env.get('GOOGLE_CLIENT_SECRET')!
 
@@ -30,23 +32,18 @@ Deno.serve(async (req) => {
     if (!authHeader?.startsWith('Bearer ')) {
       return json({ error: '인증 필요' }, 401)
     }
-    const jwt = authHeader.slice('Bearer '.length)
 
-    // JWT payload 직접 디코딩 (ES256 지원 위해 Gateway verify_jwt=false)
-    // service_role 로 DB 접근하므로 sub(userId) 만 추출해서 사용
-    let userId: string
-    try {
-      const parts = jwt.split('.')
-      if (parts.length !== 3) throw new Error('invalid jwt')
-      const payloadJson = atob(parts[1].replace(/-/g, '+').replace(/_/g, '/'))
-      const payload = JSON.parse(payloadJson)
-      if (!payload.sub) throw new Error('sub 없음')
-      if (payload.exp && payload.exp * 1000 < Date.now()) throw new Error('JWT 만료')
-      userId = payload.sub as string
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      return json({ error: `JWT 파싱 실패: ${msg}` }, 401)
+    // auth.getUser() 로 JWT 서명까지 검증 — 수동 base64 디코드는 서명을 검증하지 않아
+    // 위조 토큰으로 타 사용자의 refresh_token 을 탈취할 수 있는 CRITICAL 취약점이 있었음.
+    const authClient = createClient(SUPABASE_URL, ANON_KEY, {
+      global: { headers: { Authorization: authHeader } },
+      auth: { persistSession: false },
+    })
+    const { data: userData, error: userErr } = await authClient.auth.getUser()
+    if (userErr || !userData?.user?.id) {
+      return json({ error: '유효하지 않은 세션입니다.' }, 401)
     }
+    const userId = userData.user.id
 
     const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
       auth: { persistSession: false },
@@ -66,13 +63,16 @@ Deno.serve(async (req) => {
       )
     }
 
+    // 암호화된 refresh_token 복호화 (평문 저장된 기존 토큰은 그대로 통과)
+    const refreshToken = await decryptToken(profile.google_refresh_token)
+
     const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
         client_id: GOOGLE_CLIENT_ID,
         client_secret: GOOGLE_CLIENT_SECRET,
-        refresh_token: profile.google_refresh_token,
+        refresh_token: refreshToken,
         grant_type: 'refresh_token',
       }),
     })
@@ -96,11 +96,13 @@ Deno.serve(async (req) => {
 
     const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString()
 
+    // access_token 도 암호화해서 저장 (DB 유출 시 즉시 사용 불가)
+    const encryptedAccessToken = await encryptToken(accessToken)
     const { error: upErr } = await supabase
       .schema('mailcaster')
       .from('profiles')
       .update({
-        google_access_token: accessToken,
+        google_access_token: encryptedAccessToken,
         token_expires_at: expiresAt,
       })
       .eq('id', userId)

@@ -382,9 +382,10 @@ async function applyFilter(
   return (data ?? []).map((r) => (r as { id: string }).id)
 }
 
-// Supabase .or() 의 값은 콤마로 구분되고 () 가 그룹핑이라 사용자 입력에서 제거.
+// Supabase .or() 구분자/그룹핑 문자 + ILIKE 와일드카드(% _)를 제거.
+// AI 생성 값에 이 문자들이 들어오면 필터 패턴이 과도하게 넓어지거나 구조가 깨질 수 있음.
 function escapeOr(s: string): string {
-  return s.replace(/[(),]/g, '').trim()
+  return s.replace(/[(),%_]/g, '').trim()
 }
 
 function buildAutoReasoning(f: FilterSpec): string {

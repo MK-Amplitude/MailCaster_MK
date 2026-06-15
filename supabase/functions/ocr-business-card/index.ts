@@ -10,8 +10,11 @@
 //   1024×1024 이미지 ≈ 765 input tokens × $0.0025/1K ≈ $0.002/건
 //   100건/일 ≈ $0.2/일
 
+import { createClient } from 'jsr:@supabase/supabase-js@2'
 import { z } from 'npm:zod@3'
 
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
+const ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY')!
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY')!
 const OPENAI_MODEL = Deno.env.get('OCR_MODEL') ?? 'gpt-4o'
 
@@ -43,7 +46,18 @@ Deno.serve(async (req) => {
 
   try {
     const auth = req.headers.get('Authorization') ?? ''
-    if (!auth.startsWith('Bearer ')) return json({ error: '로그인이 필요합니다.' }, 401)
+    const token = auth.startsWith('Bearer ') ? auth.slice(7) : ''
+    if (!token) return json({ error: '로그인이 필요합니다.' }, 401)
+
+    // JWT 서명 검증 — Bearer prefix 확인만으로는 위조 토큰을 막을 수 없음.
+    const authClient = createClient(SUPABASE_URL, ANON_KEY, {
+      global: { headers: { Authorization: auth } },
+      auth: { persistSession: false },
+    })
+    const { data: userData, error: userErr } = await authClient.auth.getUser()
+    if (userErr || !userData?.user) {
+      return json({ error: '유효하지 않은 세션입니다.' }, 401)
+    }
 
     let parsed: z.infer<typeof RequestSchema>
     try {
