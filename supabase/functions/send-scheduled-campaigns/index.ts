@@ -28,6 +28,7 @@
 // ============================================================
 
 import { createClient } from 'jsr:@supabase/supabase-js@2'
+import { decryptToken, encryptToken } from '../_shared/tokenCrypto.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -447,12 +448,12 @@ async function processCampaign(
     }
   }
 
-  // 5) DB 업데이트 — 토큰 캐시
+  // 5) DB 업데이트 — 토큰 캐시 (암호화해서 저장)
   await supabase
     .schema('mailcaster')
     .from('profiles')
     .update({
-      google_access_token: accessToken,
+      google_access_token: await encryptToken(accessToken),
       token_expires_at: new Date(Date.now() + 55 * 60 * 1000).toISOString(), // 55분 안전마진
     })
     .eq('id', c.user_id)
@@ -1112,7 +1113,9 @@ function extractVariables(input: string): string[] {
 
 // W5) transient 5xx / 네트워크 오류에 대해 지수 백오프 재시도.
 //     401/400 은 refresh_token 자체 문제이므로 즉시 중단 (재시도해도 같은 결과).
-async function refreshGoogleToken(refreshToken: string): Promise<string> {
+async function refreshGoogleToken(storedToken: string): Promise<string> {
+  // DB 에 암호화되어 저장된 refresh_token 복호화 (평문 저장 기존 토큰도 그대로 통과)
+  const refreshToken = await decryptToken(storedToken)
   const MAX_ATTEMPTS = 3
   let lastErr: unknown = null
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {

@@ -20,6 +20,7 @@ import {
 import { ThreadComposeDialog } from '@/components/campaigns/ThreadComposeDialog'
 import { escapeHtml } from '@/lib/utils'
 import { threadModeLabel, formatSenderLabel } from '@/lib/threadLabels'
+import { sanitizeHtml } from '@/lib/sanitizeHtml'
 
 interface Props {
   contactId: string
@@ -145,7 +146,7 @@ function MailHistoryRow({
             {expanded && m.body_html && (
               <div
                 className="prose prose-sm max-w-none dark:prose-invert mt-2 border-t pt-2"
-                dangerouslySetInnerHTML={{ __html: m.body_html }}
+                dangerouslySetInnerHTML={{ __html: sanitizeHtml(m.body_html) }}
               />
             )}
           </div>
@@ -201,7 +202,7 @@ function MailHistoryRow({
             {expanded && bodyHtml && (
               <div
                 className="prose prose-sm max-w-none dark:prose-invert mt-2 border-t pt-2"
-                dangerouslySetInnerHTML={{ __html: bodyHtml }}
+                dangerouslySetInnerHTML={{ __html: sanitizeHtml(bodyHtml) }}
               />
             )}
           </div>
