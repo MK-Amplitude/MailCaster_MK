@@ -5,7 +5,7 @@ import { sendGmail, encodeAttachmentsForReuse, type MailAttachment } from '@/lib
 import { extractAndInlineImages } from '@/lib/inlineImages'
 import { getFreshGoogleToken, forceRefreshGoogleToken } from '@/lib/googleToken'
 import { downloadFile, getFileMeta, shareAsPublicLink } from '@/lib/drive'
-import { extractVariables, renderTemplate, bodyAlreadyContainsSignature } from '@/lib/mailMerge'
+import { extractVariables, renderTemplate, renderTemplateHtml, bodyAlreadyContainsSignature } from '@/lib/mailMerge'
 import { escapeHtml, GMAIL_ATTACHMENT_SAFE_THRESHOLD, formatBytes } from '@/lib/utils'
 import { toast } from 'sonner'
 import type { Recipient } from '@/types/campaign'
@@ -750,7 +750,9 @@ export function useSendCampaign() {
             const subjOverride = ovr.subject_override?.trim() ? ovr.subject_override : null
             const bodyOverride = ovr.body_html_override?.trim() ? ovr.body_html_override : null
             const subject = subjOverride ?? renderTemplate(campaign.subject ?? '', vars)
-            const renderedBody = bodyOverride ?? renderTemplate(finalBody, vars)
+            // 본문은 HTML 컨텍스트 — 연락처 필드(name/company 등)에 HTML 이 섞여 있어도
+            // 태그로 해석되지 않도록 이스케이프 치환 사용 (XSS/레이아웃 깨짐 방지)
+            const renderedBody = bodyOverride ?? renderTemplateHtml(finalBody, vars)
             const htmlWithLinks = linkSection ? `${renderedBody}${linkSection}` : renderedBody
             // Phase 6 (C) — 오픈 추적 픽셀 주입 (캠페인 설정이 enable 이고 수신자 id 가 있을 때)
             const html = campaign.enable_open_tracking

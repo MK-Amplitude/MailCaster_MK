@@ -251,7 +251,7 @@ Deno.serve(async (req) => {
         const mode = isFirst ? 'new' : 'followup'
         const vars = buildContactVariables(contact)
         const subject = renderTemplate(step.subject, vars)
-        const bodyHtml = renderTemplate(step.body_html, vars)
+        const bodyHtml = renderTemplateHtml(step.body_html, vars)
 
         // thread_messages pending 행 insert → tmId
         const { data: tmRow, error: tmErr } = await supabase
@@ -449,6 +449,20 @@ function renderTemplate(input: string, vars: Record<string, string>): string {
   return input.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, k) => {
     const v = vars[k]
     return v == null ? '' : String(v)
+  })
+}
+
+// HTML 본문용 — 변수 값을 HTML 엔티티로 이스케이프해 삽입 (클라이언트 renderTemplateHtml 과 동일 정책)
+function renderTemplateHtml(input: string, vars: Record<string, string>): string {
+  return input.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, k) => {
+    const v = vars[k]
+    if (v == null) return ''
+    return String(v)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
   })
 }
 

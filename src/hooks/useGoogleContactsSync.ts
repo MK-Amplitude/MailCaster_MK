@@ -57,40 +57,28 @@ export function useSyncGoogleContacts() {
       const accessToken = sessionData.session?.access_token
       if (!accessToken) throw new Error('로그인이 필요합니다.')
 
-      // 현재 선택된 조직에 연락처가 들어가도록 org_id 명시 —
-      // 멀티 조직 사용자에서 다른 조직으로 들어가던 버그 방지.
+      // 현재 선택된 조직에 연락처가 들어가도록 org_id 필수 —
+      // 미로딩 상태에서 서버의 "첫 멤버십" 폴백으로 조용히 넘어가면
+      // 멀티 조직 사용자에서 다른 조직에 들어가는 버그가 재발한다.
+      if (!currentOrg?.id) {
+        throw new Error('조직 정보를 불러오는 중입니다. 잠시 후 다시 시도해주세요.')
+      }
+
+      // syncToken 만료 시 full sync 전환은 서버 (sync-google-contacts) 가 처리.
       const { data, error } = await supabase.functions.invoke('sync-google-contacts', {
-        body: { force_full: opts.forceFull ?? false, org_id: currentOrg?.id },
+        body: { force_full: opts.forceFull ?? false, org_id: currentOrg.id },
         headers: { Authorization: `Bearer ${accessToken}` },
       })
       if (error) {
         let friendly = '동기화에 실패했습니다.'
-        let retryFull = false
         try {
           const resp = (error as { context?: Response }).context
           if (resp) {
-            const body = (await resp.json()) as {
-              error?: string
-              detail?: string
-              retry_with_force_full?: boolean
-            }
+            const body = (await resp.json()) as { error?: string; detail?: string }
             friendly = body.error || body.detail || friendly
-            retryFull = !!body.retry_with_force_full
           }
         } catch {
           friendly = error.message || friendly
-        }
-        // 410 — syncToken 만료. force_full 로 자동 재시도.
-        if (retryFull && !opts.forceFull) {
-          const { data: retryData, error: retryErr } = await supabase.functions.invoke(
-            'sync-google-contacts',
-            {
-              body: { force_full: true, org_id: currentOrg?.id },
-              headers: { Authorization: `Bearer ${accessToken}` },
-            },
-          )
-          if (retryErr) throw new Error(friendly)
-          return retryData as SyncResult
         }
         throw new Error(friendly)
       }
@@ -117,13 +105,13 @@ export function useSyncGoogleContacts() {
         if (r.detail) console.warn('[google-contacts-sync] scope missing detail:', r.detail)
         return
       }
-      // 저장 오류는 반드시 노출 — 조용히 "새 연락처 없음" 으로 가리면 원인 파악 불가.
+      // 저장 오류는 반드시 노출하되, 부분 성공 요약과 타조직 경고도 함께 표시
+      // (early return 하면 "N개 배치 실패 + 1,800명 성공" 같은 상황이 가려짐).
       if (r.errors && r.errors.length > 0) {
         toast.error(
-          `동기화 중 저장 오류 ${r.errors.length}건: ${r.errors[0]?.message ?? ''}`,
+          `동기화 중 저장 오류 ${r.errors.length}건 (일부 배치 저장 실패): ${r.errors[0]?.message ?? ''}`,
           { duration: 12000 },
         )
-        return
       }
       const parts: string[] = []
       if (r.inserted > 0) parts.push(`신규 ${r.inserted}명`)

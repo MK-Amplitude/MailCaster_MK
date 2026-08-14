@@ -8,6 +8,10 @@ verify_jwt = false
 [functions.refresh-google-token]
 verify_jwt = false
 
+[functions.store-google-tokens]
+# 사용자 JWT (ES256) 를 함수 내부에서 auth.getUser() 로 검증.
+verify_jwt = false
+
 [functions.send-scheduled-campaigns]
 # pg_cron 이 Bearer <CRON_SECRET> 으로 자체 인증하므로 jwt 검증은 끈다.
 verify_jwt = false

@@ -148,7 +148,9 @@ Deno.serve(async (req) => {
     let lastErrorDetail: string | null = null
     let syncTokenRetried = false
 
-    do {
+    // 주의: do…while(pageToken) 구조에서 continue 는 조건 검사로 점프해
+    // pageToken=undefined 인 재시도가 루프를 그냥 종료시킨다 — while(true) + 명시 break 사용.
+    while (true) {
       const params = new URLSearchParams({
         personFields: PERSON_FIELDS,
         pageSize: '1000',
@@ -211,7 +213,8 @@ Deno.serve(async (req) => {
       if (Array.isArray(data.connections)) connections.push(...data.connections)
       pageToken = data.nextPageToken
       if (data.nextSyncToken) nextSyncToken = data.nextSyncToken
-    } while (pageToken)
+      if (!pageToken) break
+    }
 
     if (apiDisabled) {
       return json({
@@ -269,8 +272,9 @@ Deno.serve(async (req) => {
 
     // 진단 — 같은 이메일이 이 사용자의 "다른 조직" 에 존재하는 수.
     // 과거 org 선택 버그로 잘못된 조직에 들어간 연락처를 찾아내기 위한 지표.
+    // 비용 절감: 신규 삽입이 0 인데 가져온 행이 있을 때만 (의심 상황에서만) 조회.
     let inOtherOrg = 0
-    if (rows.length > 0) {
+    if (rows.length > 0 && inserted === 0) {
       const emails = rows.map((r) => r.email)
       for (let i = 0; i < emails.length; i += 500) {
         const { count } = await admin

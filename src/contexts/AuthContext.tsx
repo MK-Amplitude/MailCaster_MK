@@ -32,6 +32,7 @@ const CURRENT_ORG_STORAGE_KEY = 'mailcaster-current-org-id'
 // (남은 호출이 있어도 group_categories UNIQUE(user_id, name) 때문에 중복 생성되지 않음.)
 
 async function syncProfileAndTokens(session: Session) {
+  // 1) 프로필 기본 정보 (토큰 제외) — 항상 직접 upsert.
   const updates: Record<string, unknown> = {
     id: session.user.id,
     email: session.user.email ?? '',
@@ -39,17 +40,6 @@ async function syncProfileAndTokens(session: Session) {
       session.user.user_metadata?.full_name ??
       session.user.user_metadata?.name ??
       null,
-  }
-  // provider_token / refresh_token 은 OAuth 완료 직후 한 번만 제공됨.
-  // Google access_token 은 Google OAuth 스펙상 유효기간 1시간이므로,
-  // provider_token 이 있을 때만 token_expires_at 을 Date.now() + 1hr 로 저장.
-  // (session.expires_at 은 Supabase JWT 만료 시각이고 Google 토큰 만료와 별개이므로 쓰지 않는다.)
-  if (session.provider_token) {
-    updates.google_access_token = session.provider_token
-    updates.token_expires_at = new Date(Date.now() + 3600_000).toISOString()
-  }
-  if (session.provider_refresh_token) {
-    updates.google_refresh_token = session.provider_refresh_token
   }
 
   console.log('[auth] syncProfileAndTokens:', {
@@ -61,6 +51,33 @@ async function syncProfileAndTokens(session: Session) {
   const { error } = await supabase.from('profiles').upsert(updates as any, { onConflict: 'id' })
   if (error) {
     console.error('[auth] profile upsert failed:', error)
+  }
+
+  // 2) Google provider 토큰 — 서버 (store-google-tokens) 경유로 저장.
+  //    refresh_token 은 서버에서 암호화 후 저장 (TOKEN_ENCRYPTION_KEY 설정 시).
+  //    provider_token / refresh_token 은 OAuth 완료 직후 한 번만 제공됨.
+  if (session.provider_token || session.provider_refresh_token) {
+    const { error: storeErr } = await supabase.functions.invoke('store-google-tokens', {
+      body: {
+        access_token: session.provider_token ?? undefined,
+        refresh_token: session.provider_refresh_token ?? undefined,
+      },
+    })
+    if (storeErr) {
+      // 서버 저장 실패 시 로그인 자체가 막히면 안 되므로 기존 직접 저장으로 폴백 (평문).
+      console.warn('[auth] store-google-tokens failed, fallback to direct upsert:', storeErr)
+      const tokenUpdates: Record<string, unknown> = { id: session.user.id }
+      if (session.provider_token) {
+        tokenUpdates.google_access_token = session.provider_token
+        tokenUpdates.token_expires_at = new Date(Date.now() + 3600_000).toISOString()
+      }
+      if (session.provider_refresh_token) {
+        tokenUpdates.google_refresh_token = session.provider_refresh_token
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { error: fbErr } = await supabase.from('profiles').upsert(tokenUpdates as any, { onConflict: 'id' })
+      if (fbErr) console.error('[auth] token fallback upsert failed:', fbErr)
+    }
   }
 }
 

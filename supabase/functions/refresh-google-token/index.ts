@@ -3,7 +3,7 @@
 // 호출자 인증 필요 (JWT). 성공 시 profiles 테이블 업데이트 + 새 토큰 반환.
 
 import { createClient } from 'jsr:@supabase/supabase-js@2'
-import { decryptToken, encryptToken } from '../_shared/tokenCrypto.ts'
+import { decryptToken } from '../_shared/tokenCrypto.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -96,13 +96,14 @@ Deno.serve(async (req) => {
 
     const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString()
 
-    // access_token 도 암호화해서 저장 (DB 유출 시 즉시 사용 불가)
-    const encryptedAccessToken = await encryptToken(accessToken)
+    // access_token 은 평문 저장 — 프론트엔드 캐시 (googleToken.ts) 가 이 컬럼을 그대로
+    // Bearer 로 사용하므로 암호화하면 안 됨. 1시간 수명이라 유출 시 피해도 제한적.
+    // 장기 자격증명인 refresh_token 만 암호화 대상 (store-google-tokens 에서 처리).
     const { error: upErr } = await supabase
       .schema('mailcaster')
       .from('profiles')
       .update({
-        google_access_token: encryptedAccessToken,
+        google_access_token: accessToken,
         token_expires_at: expiresAt,
       })
       .eq('id', userId)
