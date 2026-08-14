@@ -374,6 +374,9 @@ Deno.serve(async (req) => {
         .schema('mailcaster')
         .from('recipients')
         .update({
+          // status 도 'bounced' 로 — analytics RPC (066) 와 useOutboundFeed 가
+          // status='bounced' 를 조회하는데 플래그만 세우면 피드에 "발송됨" 으로 표시됨.
+          status: 'bounced',
           bounced: true,
           bounced_at: b.bouncedAtIso,
           bounce_reason: b.reason,
@@ -386,14 +389,8 @@ Deno.serve(async (req) => {
       }
 
       // contact 업데이트 — 같은 org 의 같은 email 모두 (멤버별 사본 일관성)
-      // org 식별: recipients → campaigns → org_id 가 같은 contacts
-      const { data: campaignRow } = await supabase
-        .schema('mailcaster')
-        .from('campaigns')
-        .select('org_id')
-        .eq('id', b.cid)
-        .maybeSingle()
-      const orgId = campaignRow?.org_id as string | undefined
+      // org 식별은 위에서 만든 orgIdForCampaign 캐시 재사용 (같은 캠페인 반복 조회 방지)
+      const orgId = await orgIdForCampaign(b.cid)
       if (!orgId) continue
 
       // 기존 bounce_count 가져와서 +1
@@ -842,6 +839,28 @@ interface ThreadAnalysisInput {
   sent_at: string | null
 }
 
+// Gmail 조회용 fetch — 10초 타임아웃. sendGmail 과 달리 조회 계열엔 타임아웃이 없어
+// 한 thread 가 hang 하면 run 전체가 죽고, 결과가 메모리에만 있어 tick 전체가 유실되던
+// 문제 방지 (같은 150건을 다음 tick 이 다시 조회 — Gmail 쿼터 낭비).
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs = 10_000,
+): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(url, { ...init, signal: controller.signal })
+  } catch (e) {
+    if ((e as Error).name === 'AbortError') {
+      throw new Error(`Gmail API 호출 타임아웃 (${Math.round(timeoutMs / 1000)}초 초과)`)
+    }
+    throw e
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 async function fetchThreadAnalysis(
   accessToken: string,
   r: ThreadAnalysisInput,
@@ -850,7 +869,7 @@ async function fetchThreadAnalysis(
   const url =
     `https://gmail.googleapis.com/gmail/v1/users/me/threads/${encodeURIComponent(r.gmail_thread_id)}` +
     `?format=metadata&metadataHeaders=From&metadataHeaders=Date`
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
   if (!res.ok) {
@@ -1050,7 +1069,7 @@ async function classifyReply(
 
 async function fetchReplyBody(accessToken: string, messageId: string): Promise<string> {
   const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}?format=full`
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } })
+  const res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${accessToken}` } })
   if (!res.ok) {
     throw new Error(`Gmail messages.get ${res.status}`)
   }
@@ -1071,7 +1090,7 @@ interface ReplyMeta {
 }
 async function fetchReplyMeta(accessToken: string, messageId: string): Promise<ReplyMeta> {
   const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}?format=full`
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } })
+  const res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${accessToken}` } })
   if (!res.ok) {
     throw new Error(`Gmail messages.get ${res.status}`)
   }
@@ -1148,7 +1167,7 @@ async function fetchThreadAllNewReplies(
   const url =
     `https://gmail.googleapis.com/gmail/v1/users/me/threads/${encodeURIComponent(threadId)}` +
     `?format=metadata&metadataHeaders=From&metadataHeaders=Date&metadataHeaders=In-Reply-To&metadataHeaders=References`
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } })
+  const res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${accessToken}` } })
   if (!res.ok) {
     if (res.status === 404) return [] // thread 삭제됨
     const body = await res.text().catch(() => '')

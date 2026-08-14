@@ -30,6 +30,7 @@ export function useThreadMessagesByCampaign(campaignId: string | undefined) {
         .select('*')
         .eq('campaign_id', campaignId!)
         .order('created_at', { ascending: false })
+        .range(0, 9999) // PostgREST 1000행 cap 방지 (프로젝트 관례)
       if (error) throw error
       return (data ?? []) as ThreadMessageRow[]
     },

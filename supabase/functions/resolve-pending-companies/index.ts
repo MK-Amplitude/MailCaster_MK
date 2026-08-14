@@ -89,7 +89,16 @@ Deno.serve(async (req) => {
     let failed = 0
     let cachedHits = 0
 
+    // 실행 예산 — pg_net timeout(60초) 안에 요약 로그까지 마치도록 50초에서 중단.
+    // 행별 update 는 이미 커밋되므로 중단해도 안전하고, 남은 건 다음 cron 이 집는다.
+    const runStartedAt = Date.now()
+    const RUN_BUDGET_MS = 50_000
+
     for (const c of pending) {
+      if (Date.now() - runStartedAt > RUN_BUDGET_MS) {
+        console.log('[resolve-pending] run budget exhausted — deferring rest to next tick')
+        break
+      }
       const rawName = (c.company_raw ?? c.company ?? '').toString().trim()
       if (!rawName) {
         // company_raw 가 공백이면 skip 처리해서 다음 cron 에서 다시 집지 않게

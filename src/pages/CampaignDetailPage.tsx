@@ -203,8 +203,13 @@ export default function CampaignDetailPage() {
   const addRecipient = useAddRecipientToCampaign()
   const removeRecipient = useRemoveRecipientFromCampaign()
   const [recipientSearch, setRecipientSearch] = useState('')
-  // 추가 검색용 — 전체 조직 연락처 풀에서 매칭
-  const { data: allContacts = [] } = useContacts({ status: 'all' })
+  // 추가 검색용 — 전체 조직 연락처 풀에서 매칭.
+  // 발송 완료(수정 불가) 캠페인에서는 추가검색 UI 가 렌더되지 않으므로
+  // 1만 행 fetch 를 건너뜀 (enabled 게이팅).
+  const { data: allContacts = [] } = useContacts({
+    status: 'all',
+    enabled: campaign?.status === 'draft' || campaign?.status === 'scheduled',
+  })
   const existingEmailSet = useMemo(
     () => new Set(recipients.map((r) => r.email.trim().toLowerCase())),
     [recipients]

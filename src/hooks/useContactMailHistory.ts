@@ -50,11 +50,12 @@ export function useContactMailHistory(contactId: string | undefined) {
         .order('received_at', { ascending: false })
         .limit(100)
 
-      // 캠페인 발송 메일 — recipients + campaign 정보 join.
-      // 캠페인 본 발송도 Contact 의 첫 메일이라 history 에 포함되어야 함.
+      // 캠페인 발송 메일 — recipients 만 먼저 가져오고 campaign 메타는 별도 1회 조회.
+      // embedded join 은 같은 캠페인의 body_html(수십~수백 KB)이 수신자 행마다
+      // 중복 전송돼 히스토리 1회 로드가 수 MB 가 되던 문제 (30초 폴링과 결합 시 심각).
       const campaignP = supabase
         .from('recipients')
-        .select('*, campaigns!inner(id, subject, body_html)')
+        .select('*')
         .eq('contact_id', contactId)
         .in('status', ['sent', 'bounced', 'failed'])
         .order('sent_at', { ascending: false, nullsFirst: false })
@@ -64,6 +65,29 @@ export function useContactMailHistory(contactId: string | undefined) {
       if (out.error) throw out.error
       if (inb.error) throw inb.error
       if (cam.error) throw cam.error
+
+      // 캠페인 메타 별도 조회 — 고유 campaign_id 만 (같은 캠페인 body 1회씩만 전송)
+      const campaignIds = Array.from(
+        new Set(
+          ((cam.data ?? []) as CampaignRecipientRow[])
+            .map((r) => r.campaign_id)
+            .filter((id): id is string => !!id),
+        ),
+      )
+      const campaignMetaMap = new Map<
+        string,
+        { id: string; subject: string | null; body_html: string | null }
+      >()
+      if (campaignIds.length > 0) {
+        const { data: campMeta, error: campErr } = await supabase
+          .from('campaigns')
+          .select('id, subject, body_html')
+          .in('id', campaignIds)
+        if (campErr) throw campErr
+        for (const cRow of campMeta ?? []) {
+          campaignMetaMap.set(cRow.id, cRow)
+        }
+      }
 
       const items: MailHistoryItem[] = []
       for (const row of out.data ?? []) {
@@ -80,18 +104,15 @@ export function useContactMailHistory(contactId: string | undefined) {
           row: row as InboundMessage,
         })
       }
-      for (const row of cam.data ?? []) {
-        // campaigns join 결과는 단일 객체 또는 배열로 올 수 있음 (Supabase JS).
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const r = row as any
-        const camp = Array.isArray(r.campaigns) ? r.campaigns[0] : r.campaigns
+      for (const row of (cam.data ?? []) as CampaignRecipientRow[]) {
+        const camp = row.campaign_id ? campaignMetaMap.get(row.campaign_id) : undefined
         if (!camp) continue
-        const ts = r.sent_at ?? r.created_at ?? new Date(0).toISOString()
+        const ts = row.sent_at ?? row.created_at ?? new Date(0).toISOString()
         items.push({
           kind: 'campaign',
           ts,
           row: {
-            recipient: r as CampaignRecipientRow,
+            recipient: row,
             campaignSubject: camp.subject ?? null,
             campaignBodyHtml: camp.body_html ?? null,
             campaignId: camp.id,

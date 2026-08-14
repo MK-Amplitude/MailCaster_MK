@@ -46,13 +46,15 @@ export function useSequences() {
       if (list.length === 0) return []
       const ids = list.map((s) => s.id)
 
+      // .range 명시 — PostgREST 1000행 cap 으로 step_count/active_count 가 축소 표시되는 것 방지
       const [stepsRes, enrRes] = await Promise.all([
-        supabase.from('sequence_steps').select('sequence_id').in('sequence_id', ids),
+        supabase.from('sequence_steps').select('sequence_id').in('sequence_id', ids).range(0, 9999),
         supabase
           .from('sequence_enrollments')
           .select('sequence_id, status')
           .in('sequence_id', ids)
-          .eq('status', 'active'),
+          .eq('status', 'active')
+          .range(0, 9999),
       ])
       const stepCount = new Map<string, number>()
       for (const r of (stepsRes.data ?? []) as Array<{ sequence_id: string }>) {
@@ -106,6 +108,7 @@ export function useSequenceEnrollments(sequenceId: string | undefined) {
         .select('*, contact:contacts(id, name, email, company)')
         .eq('sequence_id', sequenceId!)
         .order('enrolled_at', { ascending: false })
+        .range(0, 9999)
       if (error) throw error
       return (data ?? []) as unknown as EnrollmentWithContact[]
     },

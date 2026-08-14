@@ -1,7 +1,7 @@
 // 관계 관리 — "사람별" 탭. 기존 EngagementPage 의 테이블 로직 추출.
 // 차트/인사이트로부터 받은 필터를 props 로 받아 적용.
 
-import { useMemo, useState, useEffect } from 'react'
+import { useDeferredValue, useMemo, useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { format, formatDistanceToNow } from 'date-fns'
 import { ko } from 'date-fns/locale'
@@ -87,6 +87,8 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
   const { data: parentGroupOptions = [] } = useParentGroupOptions()
 
   const [search, setSearch] = useState('')
+  // 검색은 deferred 값으로 필터 — 대형 목록의 keystroke 동기 재렌더 완화
+  const deferredSearch = useDeferredValue(search)
   const [customerType, setCustomerType] = useState<CustomerType | 'all'>('all')
   const [customerTypes, setCustomerTypes] = useState<CustomerType[]>([])
   const [parentGroup, setParentGroup] = useState<string | 'all' | '__none__'>('all')
@@ -159,7 +161,7 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
   )
 
   const filtered = useMemo(() => {
-    const q = search.trim()
+    const q = deferredSearch.trim()
     const tiersSet = extraTiers.length > 0 ? new Set(extraTiers) : null
     const typesSet = customerTypes.length > 0 ? new Set(customerTypes) : null
     return enriched.filter((r) => {
@@ -207,7 +209,7 @@ export function PeopleTab({ externalFilter, onClearExternal }: Props) {
     })
   }, [
     enriched,
-    search,
+    deferredSearch,
     customerType,
     customerTypes,
     parentGroup,

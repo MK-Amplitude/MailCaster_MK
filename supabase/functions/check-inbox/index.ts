@@ -77,11 +77,14 @@ Deno.serve(async (req) => {
 
   try {
     // 1) Google 토큰 보유한 모든 user 가져오기
+    //    오래 전에 체크된 사용자부터 처리 (rotating cursor) — 정렬 없이 테이블 순서로 돌면
+    //    예산 소진 break 때문에 뒤쪽 사용자가 영원히 폴링되지 않는 starvation 발생.
     const { data: profiles, error: pErr } = await supabase
       .schema('mailcaster')
       .from('profiles')
       .select('id, email, google_refresh_token, last_inbox_check_at, last_history_id, default_org_id')
       .not('google_refresh_token', 'is', null)
+      .order('last_inbox_check_at', { ascending: true, nullsFirst: true })
 
     if (pErr) throw pErr
     const candidates = (profiles ?? []) as Array<{
@@ -204,6 +207,9 @@ Deno.serve(async (req) => {
       //     다음 tick 이 그 이전(더 오래된)부터 이어받음. UNIQUE 가 중복 INSERT 차단하므로 안전)
       let latestProcessedMs = cursorMs
       let oldestProcessedMs = Number.MAX_SAFE_INTEGER
+      // record_inbound_message 실패가 하나라도 있으면 History 커서를 전진시키지 않는다 —
+      // History 델타는 재조회가 안 되므로 전진하면 그 메시지가 영구 유실됨.
+      let hadRecordFailure = false
 
       for (const msgId of listIds) {
         if (Date.now() - runStartedAt > RUN_BUDGET_MS - MESSAGE_FETCH_BUDGET_MS) break userLoop
@@ -257,6 +263,7 @@ Deno.serve(async (req) => {
               p_auto_create_contact: true,
             })
           if (rpcErr) {
+            hadRecordFailure = true
             console.warn(
               '[check-inbox] record rpc fail uid=',
               profile.id,
@@ -290,6 +297,7 @@ Deno.serve(async (req) => {
           if (ts < oldestProcessedMs) oldestProcessedMs = ts
         } catch (e) {
           gmailErrors++
+          hadRecordFailure = true
           console.warn(
             '[check-inbox] msg fail uid=',
             profile.id,
@@ -302,7 +310,7 @@ Deno.serve(async (req) => {
 
       // cursor 갱신 — History 경로와 시간기반 경로 분기.
       const floorSecMs = (ms: number) => Math.floor(ms / 1000) * 1000
-      if (usedHistory && !windowFull) {
+      if (usedHistory && !windowFull && !hadRecordFailure) {
         // History 경로 정상(변경분 100통 미만 = 전부 처리) → historyId 전진 + 폴백 시계 now.
         await supabase
           .schema('mailcaster')
@@ -314,8 +322,9 @@ Deno.serve(async (req) => {
           .eq('id', profile.id)
         continue
       }
-      if (usedHistory && windowFull) {
-        // 변경분이 100통+ → 일부만 처리했고 historyId 를 전진시키면 나머지를 영구 유실(C2).
+      if (usedHistory && (windowFull || hadRecordFailure)) {
+        // 변경분이 100통+ (일부만 처리) 또는 기록 실패 발생 — historyId 를 전진시키면
+        // 미처리/실패 메시지를 영구 유실(C2).
         // History 커서를 내려놓고(null), 시간기반 retreat 으로 백로그를 드레인하게 한다.
         // 하한을 "가장 오래된 처리분 -1s" 로 둬 다음 시간기반 tick 이 그 지점부터 이어받음
         // (이미 처리한 건 UNIQUE(org_id, gmail_message_id) 가 중복 INSERT 차단).
@@ -340,7 +349,11 @@ Deno.serve(async (req) => {
       //   - 윈도우 가득 참 (더 오래된 미처리분 가능성): oldestProcessedMs 의 "초" 직전으로 후퇴
       //     이미 처리한 건 UNIQUE (org_id, gmail_message_id) 가 중복 INSERT 차단.
       let nextCursorMs: number
-      if (!windowFull) {
+      if (hadRecordFailure) {
+        // 기록 실패분 재시도를 위해 최소 전진(라이브락 방지 1초)만 —
+        // 성공분 재스캔은 UNIQUE(org_id, gmail_message_id) 가 중복 INSERT 차단.
+        nextCursorMs = floorSecMs(cursorMs) + 1000
+      } else if (!windowFull) {
         nextCursorMs = floorSecMs(latestProcessedMs) + 1000
       } else if (
         oldestProcessedMs !== Number.MAX_SAFE_INTEGER &&
@@ -356,7 +369,7 @@ Deno.serve(async (req) => {
       }
       // 백로그를 다 비웠으면(!windowFull) 다음 tick 부터 History API 사용하도록 현재 historyId 저장.
       // 아직 가득 차 있으면(windowFull) 시간기반으로 backlog 를 계속 비운다 (history 로 전환하면 backlog skip 위험).
-      if (!windowFull) {
+      if (!windowFull && !hadRecordFailure) {
         try {
           upd.last_history_id = await fetchCurrentHistoryId(accessToken)
         } catch {

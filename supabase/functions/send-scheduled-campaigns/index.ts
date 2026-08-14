@@ -135,6 +135,11 @@ Deno.serve(async (req) => {
     // 클라이언트 즉시 발송 중 케이스이므로 cron 이 건드리지 않는다.
     // ------------------------------------------------------------
     const nowIso = new Date().toISOString()
+    // 재개 대상은 lease 만료된 것만 — sending_started_at 이 90초 이내면
+    // 아직 살아있는(또는 방금 죽은) 실행일 수 있으므로 건드리지 않는다.
+    // 락 획득/재개 시 sending_started_at 을 항상 새로 찍으므로 (아래 processCampaign),
+    // 살아있는 실행과 겹쳐 같은 수신자에게 중복 발송되는 경쟁을 차단한다.
+    const staleIso = new Date(Date.now() - 90_000).toISOString()
     const { data: due, error: dErr } = await supabase
       .schema('mailcaster')
       .from('campaigns')
@@ -142,7 +147,7 @@ Deno.serve(async (req) => {
         'id, user_id, name, subject, body_html, signature_id, send_delay_seconds, cc, bcc, send_mode, scheduled_at, status, sending_started_at, last_processed_recipient_id, enable_open_tracking, followup_sequence_id'
       )
       .or(
-        `and(status.eq.scheduled,scheduled_at.lte.${nowIso}),and(status.eq.sending,sending_started_at.not.is.null)`
+        `and(status.eq.scheduled,scheduled_at.lte.${nowIso}),and(status.eq.sending,sending_started_at.lt.${staleIso})`
       )
       .order('scheduled_at', { ascending: true })
       .limit(MAX_CAMPAIGNS_PER_RUN)
@@ -243,13 +248,15 @@ async function processCampaign(
       return { sent: 0, failed: 0 }
     }
   } else if (c.status === 'sending' && c.sending_started_at) {
-    // 재개: sending_started_at 의 현재 값을 "CAS token" 으로 사용해 경쟁 회피.
-    // touch 로만 변화 유도해야 하므로 같은 값으로 다시 쓴다. (Supabase 는 변경 없으면 빈 결과 → 토큰 일치 시 성공 표현으로 updated_at 트리거/컬럼을 쓰는 게 더 안전하지만
-    // 현재 campaigns 에는 updated_at 이 없으므로 이 방식으로 충분.)
+    // 재개: sending_started_at 의 현재 값을 CAS 토큰으로 걸되, 반드시 "새 값" 을 쓴다.
+    // 같은 값을 다시 쓰면 두 동시 실행 모두 predicate 를 통과해 둘 다 락을 얻는
+    // (→ 중복 발송) 문제가 있었음. 새 timestamp 를 쓰면 두 번째 실행의
+    // .eq(old value) 가 더 이상 매칭되지 않아 진짜 CAS 가 된다.
+    // 이 갱신은 SELECT 의 90초 lease 기준 시각도 함께 연장한다.
     const { data: touched, error: lockErr } = await supabase
       .schema('mailcaster')
       .from('campaigns')
-      .update({ sending_started_at: c.sending_started_at })
+      .update({ sending_started_at: new Date().toISOString() })
       .eq('id', c.id)
       .eq('status', 'sending')
       .eq('sending_started_at', c.sending_started_at)
@@ -324,19 +331,47 @@ async function processCampaign(
     })
   }
   // 차단된 행은 즉시 failed 처리 — 카운터에 잡히도록.
-  for (const s of skipped) {
-    await supabase
-      .schema('mailcaster')
-      .from('recipients')
-      .update({ status: 'failed', error_message: s.reason })
-      .eq('id', s.id)
+  // 사유는 2종뿐이므로 사유별로 묶어 UPDATE 2회로 배치 (행당 1회 → 대량 스킵 시 RTT 절감).
+  if (skipped.length > 0) {
+    const byReason = new Map<string, string[]>()
+    for (const s of skipped) {
+      if (!byReason.has(s.reason)) byReason.set(s.reason, [])
+      byReason.get(s.reason)!.push(s.id)
+    }
+    for (const [reason, ids] of byReason) {
+      await supabase
+        .schema('mailcaster')
+        .from('recipients')
+        .update({ status: 'failed', error_message: reason })
+        .in('id', ids)
+    }
   }
 
   if (recipients.length === 0) {
+    // 보낼 게 없어도 "완료" — 실제 누적 카운트를 재계산해 기록하고 체크포인트 정리.
+    // (전원이 반송/수신거부로 차단된 캠페인이 0 sent / 0 failed 로 보이던 문제 방지)
+    const { count: doneSent } = await supabase
+      .schema('mailcaster')
+      .from('recipients')
+      .select('id', { count: 'exact', head: true })
+      .eq('campaign_id', c.id)
+      .eq('status', 'sent')
+    const { count: doneFailed } = await supabase
+      .schema('mailcaster')
+      .from('recipients')
+      .select('id', { count: 'exact', head: true })
+      .eq('campaign_id', c.id)
+      .eq('status', 'failed')
     await supabase
       .schema('mailcaster')
       .from('campaigns')
-      .update({ status: 'sent' })  // 보낼 게 없어도 "완료" 상태로
+      .update({
+        status: 'sent',
+        sent_count: doneSent ?? 0,
+        failed_count: doneFailed ?? 0,
+        sending_started_at: null,
+        last_processed_recipient_id: null,
+      })
       .eq('id', c.id)
     return { sent: 0, failed: 0 }
   }
@@ -437,14 +472,19 @@ async function processCampaign(
   async function sendGmailWithAutoRefresh(
     input: Omit<GmailSendInput, 'accessToken'>,
   ): Promise<{ id: string; threadId: string }> {
+    // 단일 호출 타임아웃을 "남은 run 예산" 으로 clamp — 예산 5초 남은 시점에
+    // 시작한 호출이 25초를 다 쓰면 총 70초로 Edge hard timeout(60초) 을 넘겨
+    // 워커가 중간에 죽는 (→ orphan 'sending' 행) 문제 방지.
+    const remaining = RUN_BUDGET_MS - (Date.now() - runStartedAt)
+    const timeoutMs = Math.max(3_000, Math.min(25_000, remaining))
     try {
-      return await sendGmail({ ...input, accessToken })
+      return await sendGmail({ ...input, accessToken }, timeoutMs)
     } catch (e) {
       const err = e as Error & { status?: number }
       if (err.status !== 401) throw e
       console.log(`[send-scheduled] 401 → refreshing token for campaign ${c.id}`)
       accessToken = await refreshGoogleToken(refreshTokenCached)
-      return await sendGmail({ ...input, accessToken })
+      return await sendGmail({ ...input, accessToken }, timeoutMs)
     }
   }
 
@@ -512,16 +552,22 @@ async function processCampaign(
     if (hasOverride) {
       const errMsg =
         '일괄 발송 모드인데 일부 수신자에 개인화 오버라이드가 있습니다. 개별 발송 모드로 전환하세요.'
+      // 로드된 수신자에는 orphan 'sending' 도 포함되므로 status=pending 필터가 아니라
+      // id 목록으로 갱신 — 아니면 'sending' 행이 영원히 고립됨.
       await supabase
         .schema('mailcaster')
         .from('recipients')
         .update({ status: 'failed', error_message: errMsg })
-        .eq('campaign_id', c.id)
-        .eq('status', 'pending')
+        .in('id', (recipients as Recipient[]).map((r) => r.id))
       await supabase
         .schema('mailcaster')
         .from('campaigns')
-        .update({ status: 'failed', failed_count: recipients.length })
+        .update({
+          status: 'failed',
+          failed_count: recipients.length,
+          sending_started_at: null,
+          last_processed_recipient_id: null,
+        })
         .eq('id', c.id)
       return { sent: 0, failed: recipients.length }
     }
@@ -536,12 +582,16 @@ async function processCampaign(
           status: 'failed',
           error_message: `일괄 발송에는 개인화 변수를 사용할 수 없습니다: ${vars.map((v) => `{{${v}}}`).join(', ')}`,
         })
-        .eq('campaign_id', c.id)
-        .eq('status', 'pending')
+        .in('id', (recipients as Recipient[]).map((r) => r.id))
       await supabase
         .schema('mailcaster')
         .from('campaigns')
-        .update({ status: 'failed', failed_count: recipients.length })
+        .update({
+          status: 'failed',
+          failed_count: recipients.length,
+          sending_started_at: null,
+          last_processed_recipient_id: null,
+        })
         .eq('id', c.id)
       return { sent: 0, failed: recipients.length }
     }
@@ -574,12 +624,16 @@ async function processCampaign(
           status: 'failed',
           error_message: `일괄 발송 수신자 합계가 500명을 초과합니다.`,
         })
-        .eq('campaign_id', c.id)
-        .eq('status', 'pending')
+        .in('id', validRecipients.map((r) => r.id))
       await supabase
         .schema('mailcaster')
         .from('campaigns')
-        .update({ status: 'failed', failed_count: recipients.length })
+        .update({
+          status: 'failed',
+          failed_count: recipients.length,
+          sending_started_at: null,
+          last_processed_recipient_id: null,
+        })
         .eq('id', c.id)
       return { sent: 0, failed: recipients.length }
     }
@@ -611,8 +665,7 @@ async function processCampaign(
           rfc_message_id: bulkRfc,
           error_message: null,
         })
-        .eq('campaign_id', c.id)
-        .eq('status', 'pending')
+        .in('id', validRecipients.map((r) => r.id))
       await supabase
         .schema('mailcaster')
         .from('campaigns')
@@ -620,6 +673,8 @@ async function processCampaign(
           status: 'sent',
           sent_count: validRecipients.length,
           failed_count: invalidRecipients.length,
+          sending_started_at: null,
+          last_processed_recipient_id: null,
         })
         .eq('id', c.id)
       // 첨부 이력 기록 — 발송된 수신자만 (invalidRecipients 제외)
@@ -639,8 +694,7 @@ async function processCampaign(
         .schema('mailcaster')
         .from('recipients')
         .update({ status: 'failed', error_message: msg })
-        .eq('campaign_id', c.id)
-        .eq('status', 'pending')
+        .in('id', validRecipients.map((r) => r.id))
       await supabase
         .schema('mailcaster')
         .from('campaigns')
@@ -648,6 +702,8 @@ async function processCampaign(
           status: 'failed',
           sent_count: 0,
           failed_count: recipients.length,
+          sending_started_at: null,
+          last_processed_recipient_id: null,
         })
         .eq('id', c.id)
       return { sent: 0, failed: recipients.length }
@@ -687,6 +743,7 @@ async function processCampaign(
     .eq('status', 'failed')
   const baselineSent = baselineSentRaw ?? 0
   const baselineFailed = baselineFailedRaw ?? 0
+  let lastProcessedId: string | null = null
 
   for (let i = 0; i < recipients.length; i++) {
     // 이 반복을 시작하기 전에 남은 예산 확인
@@ -775,16 +832,19 @@ async function processCampaign(
       failed++
     }
 
-    // 캠페인 카운터 + 체크포인트
-    //   W6) baseline + 로컬 증분으로 갱신. count 쿼리 없이 update 한 번만 발생.
-    //   300명 발송 시 기존 900 RTT → 300 RTT 로 감소.
-    await advanceCheckpoint(
-      supabase,
-      c.id,
-      r.id,
-      baselineSent + sent,
-      baselineFailed + failed,
-    )
+    // 캠페인 카운터 + 체크포인트 — 진행 표시(UI)용이므로 10명마다 1회로 스로틀.
+    //   재개 로직은 체크포인트가 아니라 recipients.status 로 재선별하므로 안전하고,
+    //   최종 정확성은 완료 블록의 COUNT 재계산이 보장. (300명 기준 300 RTT → 30 RTT)
+    lastProcessedId = r.id
+    if ((i + 1) % 10 === 0) {
+      await advanceCheckpoint(
+        supabase,
+        c.id,
+        r.id,
+        baselineSent + sent,
+        baselineFailed + failed,
+      )
+    }
 
     if (i < recipients.length - 1 && delayMs > 0) {
       // delay 도중 예산 초과되면 쉬지 않고 깔끔히 탈출
@@ -804,8 +864,19 @@ async function processCampaign(
   // 마무리 — paused 면 status='sending' 유지 (다음 cron 이 재개),
   //          완료면 sent/failed 결정.
   // ------------------------------------------------------------
+  // 루프 종료 시 체크포인트 1회 플러시 — 스로틀로 미기록된 마지막 구간 반영.
+  if (lastProcessedId) {
+    await advanceCheckpoint(
+      supabase,
+      c.id,
+      lastProcessedId,
+      baselineSent + sent,
+      baselineFailed + failed,
+    )
+  }
+
   if (paused) {
-    // sending_started_at 은 이미 찍혀있음. 체크포인트는 위 updateCampaignCounters 가 이미 업데이트했음.
+    // sending_started_at 은 이미 찍혀있음 (락 획득 시 갱신). 다음 tick 이 lease 만료 후 재개.
     return { sent, failed, paused: true }
   }
 
@@ -842,10 +913,17 @@ async function processCampaign(
   const sentTotal = totalSentCount ?? 0
   const failedTotal = totalFailedCount ?? 0
   const finalStatus = sentTotal === 0 && failedTotal > 0 ? 'failed' : 'sent'
+  // 완료 시 체크포인트 정리 — 남겨두면 수동 재발송이 재개 경로에 오진입 (W7 과 동일 이유).
   await supabase
     .schema('mailcaster')
     .from('campaigns')
-    .update({ status: finalStatus, sent_count: sentTotal, failed_count: failedTotal })
+    .update({
+      status: finalStatus,
+      sent_count: sentTotal,
+      failed_count: failedTotal,
+      sending_started_at: null,
+      last_processed_recipient_id: null,
+    })
     .eq('id', c.id)
 
   // 후속 시퀀스 등록 (개별 발송 완료 시 — paused 가 아니라 실제 완료된 경우만 여기 도달)
@@ -1680,14 +1758,17 @@ function buildMime(input: Omit<GmailSendInput, 'accessToken'>): string {
   return headers.join('\r\n') + '\r\n\r\n' + parts.join('\r\n')
 }
 
-async function sendGmail(input: GmailSendInput): Promise<{ id: string; threadId: string }> {
+async function sendGmail(
+  input: GmailSendInput,
+  timeoutMs = 25_000,
+): Promise<{ id: string; threadId: string }> {
   const mime = buildMime(input)
   const raw = b64urlMime(mime)
-  // 명시적 25초 타임아웃 — Gmail 이 hang 하면 RUN_BUDGET_MS(50초) 안에 다른
-  // recipient 처리를 못 하고 함수가 통째로 죽음. 부분 진행 보존을 위해 단일 호출
-  // 상한을 둠. Supabase Edge 의 hard timeout(60초) 보다 짧게.
+  // 명시적 타임아웃 (기본 25초) — Gmail 이 hang 하면 RUN_BUDGET_MS(50초) 안에 다른
+  // recipient 처리를 못 하고 함수가 통째로 죽음. 호출자가 남은 예산으로 clamp 해
+  // 넘기면 run 예산을 넘겨 Edge hard timeout(60초) 에 걸리는 오버슛도 방지.
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 25_000)
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
   let res: Response
   try {
     res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
@@ -1701,7 +1782,9 @@ async function sendGmail(input: GmailSendInput): Promise<{ id: string; threadId:
     })
   } catch (e) {
     if ((e as Error).name === 'AbortError') {
-      const err = new Error('Gmail API 호출 타임아웃 (25초 초과)') as Error & { status?: number }
+      const err = new Error(
+        `Gmail API 호출 타임아웃 (${Math.round(timeoutMs / 1000)}초 초과)`,
+      ) as Error & { status?: number }
       err.status = 504
       throw err
     }

@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from './useAuth'
@@ -30,6 +31,9 @@ export interface ContactSort {
 export interface ContactQueryOptions extends ContactFilters {
   scope?: ContactScope
   sort?: ContactSort
+  /** false 면 쿼리 비활성 — 조건부로만 필요한 화면 (예: 발송 완료 캠페인 상세) 에서
+   *  1만 행 연락처 fetch 를 건너뛰기 위한 옵션. 기본 true. */
+  enabled?: boolean
 }
 
 // Supabase PostgREST 의 응답 행 수 cap 을 우회하기 위해 큰 range 를 명시.
@@ -40,9 +44,11 @@ const CONTACTS_FETCH_RANGE_END = 9999
 export function useContacts(filters?: ContactQueryOptions) {
   const { user, currentOrg } = useAuth()
   const scope: ContactScope = filters?.scope ?? 'org'
+  // enabled 는 fetch 여부만 결정 — query key 에서 제외해 토글 시 캐시가 갈리지 않게 함
+  const { enabled: enabledOpt = true, ...keyFilters } = filters ?? {}
 
   return useQuery({
-    queryKey: [QUERY_KEY, currentOrg?.id, scope, filters],
+    queryKey: [QUERY_KEY, currentOrg?.id, scope, keyFilters],
     queryFn: async () => {
       // 정렬 — 기본은 등록일 내림차순. 사용자가 헤더 클릭 시 동적으로 변경.
       // NULL 값은 항상 끝에 표시 (ASC/DESC 모두) — 빈 값이 위에 와서 노이즈 되는 걸 방지.
@@ -107,7 +113,7 @@ export function useContacts(filters?: ContactQueryOptions) {
       if (error) throw error
       return (data ?? []) as unknown as ContactWithGroups[]
     },
-    enabled: !!user && !!currentOrg,
+    enabled: !!user && !!currentOrg && enabledOpt,
   })
 }
 
@@ -167,26 +173,38 @@ export function useContactsCommon() {
 // (recipients.variables 는 캠페인 생성 시점 스냅샷이라 사용자가 contact 에서 사용 직책을
 // 바꾸면 stale 해진다 — 이 훅은 항상 최신 contact 데이터를 반환.)
 export function useContactsTitleMap(ids: string[]) {
-  // ID 정렬해서 안정적인 query key — 동일한 set 이면 캐시 재사용
-  const key = [...ids].sort().join(',')
+  // ID 정렬해서 안정적인 query key — 동일한 set 이면 캐시 재사용.
+  // useMemo — 정렬+join 이 대형 목록에서 매 렌더마다 도는 것 방지.
+  const key = useMemo(() => [...ids].sort().join(','), [ids])
   return useQuery({
     queryKey: [QUERY_KEY, 'title-map', key],
     queryFn: async (): Promise<Map<string, string>> => {
       if (ids.length === 0) return new Map()
-      const { data, error } = await supabase
-        .from('contacts')
-        .select('id, job_title, display_title')
-        .in('id', ids)
-        .range(0, 9999)
-      if (error) throw error
+      // .in() 은 ID 전부가 GET URL 에 들어가므로 수천 건이면 URL 길이 한도(414) 초과.
+      // 500개씩 청크로 나눠 병렬 조회 후 병합.
+      const CHUNK = 500
+      const chunks: string[][] = []
+      for (let i = 0; i < ids.length; i += CHUNK) chunks.push(ids.slice(i, i + CHUNK))
+      const results = await Promise.all(
+        chunks.map((chunk) =>
+          supabase
+            .from('contacts')
+            .select('id, job_title, display_title')
+            .in('id', chunk)
+            .range(0, CHUNK - 1),
+        ),
+      )
       const map = new Map<string, string>()
-      for (const r of (data ?? []) as Array<{
-        id: string
-        job_title: string | null
-        display_title: string | null
-      }>) {
-        const effective = r.display_title?.trim() || r.job_title || ''
-        if (effective) map.set(r.id, effective)
+      for (const res of results) {
+        if (res.error) throw res.error
+        for (const r of (res.data ?? []) as Array<{
+          id: string
+          job_title: string | null
+          display_title: string | null
+        }>) {
+          const effective = r.display_title?.trim() || r.job_title || ''
+          if (effective) map.set(r.id, effective)
+        }
       }
       return map
     },
@@ -208,21 +226,6 @@ export function useContactById(contactId: string | null | undefined) {
         .maybeSingle()
       if (error) throw error
       return (data ?? null) as unknown as ContactWithGroups | null
-    },
-    enabled: !!contactId,
-  })
-}
-
-export function useContactGroups(contactId: string) {
-  return useQuery({
-    queryKey: ['contact-groups', contactId],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from('contact_groups')
-        .select('group_id, groups(id, name, color, category_id, group_categories(name, color))')
-        .eq('contact_id', contactId)
-      if (error) throw error
-      return data ?? []
     },
     enabled: !!contactId,
   })
@@ -543,31 +546,6 @@ export function useAddContactsToGroup() {
       } else {
         toast.success('그룹에 추가되었습니다.')
       }
-    },
-  })
-}
-
-export function useRemoveContactFromGroup() {
-  const qc = useQueryClient()
-
-  return useMutation({
-    mutationFn: async ({ contactId, groupId }: { contactId: string; groupId: string }) => {
-      const { error } = await supabase
-        .from('contact_groups')
-        .delete()
-        .eq('contact_id', contactId)
-        .eq('group_id', groupId)
-      if (error) throw error
-    },
-    onSuccess: (_data, { groupId }) => {
-      qc.invalidateQueries({ queryKey: [QUERY_KEY] })
-      qc.invalidateQueries({ queryKey: [COMMON_QUERY_KEY] })
-      qc.invalidateQueries({ queryKey: ['groups'] })
-      qc.invalidateQueries({ queryKey: ['group-members', groupId] })
-    },
-    onError: (e: Error) => {
-      console.error('[removeContactFromGroup] failed:', e)
-      toast.error(e.message || '그룹에서 제거 실패')
     },
   })
 }

@@ -238,7 +238,7 @@ function buildSystemPrompt(tone?: RequestInput['tone'], senderName?: string): st
 1) 톤: ${toneText} 한국어. 비즈니스 매너 유지.
 2) 분량: 본문 4~10줄. 짧고 명료.
 3) 변수 치환 ({{name}} 같은) 금지 — 이미 사람별 컨텍스트로 직접 작성.
-4) 인사말은 "${'${sender}'.length > 0 ? '간단히' : '자연스럽게'}" — 회사명/그룹사를 활용해 진정성.
+4) 인사말은 "${senderName ? '간단히' : '자연스럽게'}" — 회사명/그룹사를 활용해 진정성.
 5) 끝맺음은 답장 유도 또는 미팅/통화 제안. 강압적 X.
 6) 주제·이름·회사를 어색하게 반복하지 않는다.
 ${sender}

@@ -20,7 +20,7 @@
 //   - 수신거부/반송 연락처는 조용히 스킵 (그룹 펼칠 때 부모 로직에서 제거)
 // ------------------------------------------------------------
 
-import { useMemo, useState } from 'react'
+import { useDeferredValue, useMemo, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -264,10 +264,12 @@ function ContactTab({
 }) {
   const { data: allContacts = [], isLoading } = useContacts({ status: 'normal' })
   const [search, setSearch] = useState('')
+  // 검색은 deferred 값으로 필터 — 1만 행 목록의 keystroke 동기 재렌더 완화
+  const deferredSearch = useDeferredValue(search)
   const [stagingIds, setStagingIds] = useState<Set<string>>(new Set())
 
   const filtered = useMemo(() => {
-    const q = search.trim()
+    const q = deferredSearch.trim()
     if (!q) return allContacts
     return allContacts.filter((c) =>
       matchesSearch(c.email, q) ||
@@ -276,7 +278,7 @@ function ContactTab({
       matchesSearch(c.department, q) ||
       matchesSearch(c.job_title, q)
     )
-  }, [allContacts, search])
+  }, [allContacts, deferredSearch])
 
   const alreadyInBasket = useMemo(
     () => new Set(selectedContactIds),

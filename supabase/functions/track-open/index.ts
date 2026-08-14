@@ -116,20 +116,19 @@ Deno.serve(async (req) => {
       auth: { persistSession: false },
     })
 
-    // 호출은 fire-and-forget 에 가깝게 — 실패해도 픽셀은 항상 반환
+    // RPC 는 반드시 await — fire-and-forget 은 응답 flush 직후 isolate 가 회수되면
+    // DB 기록이 유실될 수 있음 (오픈 이벤트 비결정적 드롭). 실패해도 픽셀은 반환.
     if (isThread) {
-      supabase
+      const r = await supabase
         .schema('mailcaster')
         .rpc('track_thread_open', {
           p_thread_message_id: tmid,
           p_ip: ip,
           p_user_agent: ua,
         })
-        .then((r: { error: unknown }) => {
-          if (r.error) console.warn('[track-open] thread rpc error:', r.error)
-        })
+      if (r.error) console.warn('[track-open] thread rpc error:', r.error)
     } else {
-      supabase
+      const r = await supabase
         .schema('mailcaster')
         .rpc('track_email_open', {
           p_recipient_id: rid,
@@ -137,9 +136,7 @@ Deno.serve(async (req) => {
           p_ip: ip,
           p_user_agent: ua,
         })
-        .then((r: { error: unknown }) => {
-          if (r.error) console.warn('[track-open] rpc error:', r.error)
-        })
+      if (r.error) console.warn('[track-open] rpc error:', r.error)
     }
 
     return pixel()
