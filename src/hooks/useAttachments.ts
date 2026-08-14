@@ -4,7 +4,6 @@
 //
 // 401 재시도 패턴: drive.ts 호출은 모두 callDrive() 래퍼를 통해 — 토큰 만료 시 자동 refresh 1회 재시도.
 
-import { useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from './useAuth'
@@ -206,18 +205,6 @@ export function useUploadAttachment() {
 // Drive picker — 사용자가 기존 Drive 파일을 선택
 // =============================================================
 
-export function useDriveFileList() {
-  const { user } = useAuth()
-
-  return useCallback(
-    async (opts: ListDriveFilesOptions): Promise<DriveListPage> => {
-      if (!user) throw new Error('로그인이 필요합니다.')
-      return callDrive(user.id, (token) => listDriveFiles(token, opts))
-    },
-    [user]
-  )
-}
-
 /** Drive 에서 선택한 기존 파일을 DB 에 등록 (picked) + 옵션으로 템플릿/캠페인 link */
 export function usePickDriveFile() {
   const { user } = useAuth()
@@ -338,7 +325,9 @@ export function useAttachmentSendStats() {
   const { user } = useAuth()
 
   return useQuery({
-    queryKey: [QK_STATS],
+    // user.id 를 키에 포함 — 같은 탭에서 로그아웃 후 다른 계정 로그인 시
+    // 이전 계정의 캐시가 최대 5분간 표시되던 문제 방지
+    queryKey: [QK_STATS, user?.id],
     queryFn: async (): Promise<AttachmentSendStat[]> => {
       const { data, error } = await supabase
         .from('attachment_send_stats')
@@ -378,7 +367,8 @@ export function useDriveFileListQuery(
   const { user } = useAuth()
 
   return useQuery({
-    queryKey: [QK_DRIVE_LIST, opts.query ?? '', opts.mimeTypePrefix ?? '', opts.pageToken ?? ''],
+    // user.id 포함 — 계정 전환 시 이전 계정의 Drive 목록 캐시 노출 방지
+    queryKey: [QK_DRIVE_LIST, user?.id, opts.query ?? '', opts.mimeTypePrefix ?? '', opts.pageToken ?? ''],
     queryFn: async (): Promise<DriveListPage> => {
       if (!user) throw new Error('로그인이 필요합니다.')
       return callDrive(user.id, (token) => listDriveFiles(token, opts))

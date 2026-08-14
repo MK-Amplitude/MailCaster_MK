@@ -68,11 +68,14 @@ export function useCampaignRecipients(campaignId: string | undefined) {
   return useQuery({
     queryKey: [QK, 'recipients', campaignId],
     queryFn: async () => {
+      // .range 명시 — PostgREST 기본 cap(1000행) 으로 1,000명 초과 캠페인의
+      // 상세 목록/분석이 잘려 보이던 문제 방지.
       const { data, error } = await supabase
         .from('recipients')
         .select('*')
         .eq('campaign_id', campaignId!)
         .order('created_at', { ascending: true })
+        .range(0, 9999)
       if (error) throw error
       return (data ?? []) as Recipient[]
     },

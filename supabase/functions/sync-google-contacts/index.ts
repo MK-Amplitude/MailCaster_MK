@@ -288,8 +288,10 @@ Deno.serve(async (req) => {
       }
     }
 
-    // sync token 저장
-    if (nextSyncToken) {
+    // sync token 저장 — 배치 upsert 오류가 하나라도 있으면 저장하지 않는다.
+    // 저장하면 다음 incremental 이 델타만 반환해 실패한 배치의 연락처가
+    // force_full 전까지 영구 누락됨.
+    if (nextSyncToken && errors.length === 0) {
       await admin
         .schema('mailcaster')
         .from('profiles')

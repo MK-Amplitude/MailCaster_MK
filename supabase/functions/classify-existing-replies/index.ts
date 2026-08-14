@@ -26,8 +26,9 @@
 // 비용 (gpt-4o-mini): 1건 ≈ 60 토큰 ≈ $0.000008.
 //   답장 1만건 백필 ≈ $0.08. 합리적.
 
-import { createClient, type SupabaseClient } from 'jsr:@supabase/supabase-js@2'
+import { createClient } from 'jsr:@supabase/supabase-js@2'
 import { z } from 'npm:zod@3'
+import { decryptToken } from '../_shared/tokenCrypto.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -61,11 +62,14 @@ const RequestSchema = z.object({
   force_all: z.boolean().optional(),
 })
 
+// check-replies 와 동일한 6분류 — 'unsubscribe' 누락 시 force_all 백필이
+// 기존 unsubscribe 라벨을 not_interested/unclear 로 덮어써 옵트아웃 신호가 소실됨.
 type ReplyCategory =
   | 'interested'
   | 'not_interested'
   | 'question'
   | 'out_of_office'
+  | 'unsubscribe'
   | 'unclear'
 
 const VALID_CATEGORIES = new Set<ReplyCategory>([
@@ -73,6 +77,7 @@ const VALID_CATEGORIES = new Set<ReplyCategory>([
   'not_interested',
   'question',
   'out_of_office',
+  'unsubscribe',
   'unclear',
 ])
 
@@ -153,17 +158,20 @@ Deno.serve(async (req) => {
       q = q.eq('campaign_id', parsed.campaign_id)
     }
 
+    // 카테고리 필터를 SQL 로 push — .limit() 이 필터 전에 적용되므로
+    // JS 필터만 쓰면 "최근 50건이 전부 분류됨" 인 경우 미분류 행이 남아 있어도
+    // processed:0 으로 끝나는 문제가 있었음.
+    if (!forceAll) {
+      if (parsed.include_unclear) {
+        q = q.or('reply_category.is.null,reply_category.eq.unclear')
+      } else {
+        q = q.is('reply_category', null)
+      }
+    }
+
     const { data: rowsRaw, error: qErr } = await q
     if (qErr) throw qErr
-    let rows = (rowsRaw ?? []) as Row[]
-
-    // null 또는 (옵션) 'unclear' 만 처리. force_all 이면 카테고리 무관 전부.
-    rows = rows.filter((r) => {
-      if (forceAll) return true
-      if (r.reply_category === null) return true
-      if (parsed.include_unclear && r.reply_category === 'unclear') return true
-      return false
-    })
+    const rows = (rowsRaw ?? []) as Row[]
 
     if (rows.length === 0) {
       return json({ processed: 0, classified: 0, errors: 0, remaining: 0 })
@@ -277,7 +285,9 @@ function json(b: unknown, status = 200) {
 // Gmail / OpenAI helpers — check-replies 와 동일 로직
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function refreshGoogleToken(refreshToken: string): Promise<string> {
+async function refreshGoogleToken(storedToken: string): Promise<string> {
+  // DB 에 암호화되어 저장된 토큰 복호화 (평문 저장 기존 토큰도 그대로 통과)
+  const refreshToken = await decryptToken(storedToken)
   const res = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -356,7 +366,8 @@ async function classifyReply(
   const trimmed = stripQuotedAndSignature(text).slice(0, REPLY_BODY_MAX_CHARS)
   if (!trimmed.trim()) return 'unclear'
 
-  const systemPrompt = `당신은 한국어 B2B 영업 답장의 톤을 5가지로 분류합니다.
+  // check-replies 의 6분류 프롬프트와 동일 유지 — 드리프트 시 백필이 라벨을 훼손함.
+  const systemPrompt = `당신은 한국어 B2B 영업 답장의 톤을 6가지로 분류합니다.
 입력은 답장 본문(인용/서명 제거됨). 출력은 JSON: {"category": "..."}.
 
 분류 (보수적으로 — 애매하면 unclear):
@@ -371,13 +382,19 @@ async function classifyReply(
 - not_interested  : 정중한 거절·관심 없음·이미 충분함·다음 기회·예산 없음
 - question        : 구체적 질문·자료 요청·가격·기능 문의 (미팅 약속은 아님)
 - out_of_office   : 자동응답·휴가·부재중·자리 비움·자동 회신
+- unsubscribe     : 명시적으로 "메일 발송을 중단/수신거부" 를 요청.
+                    예) "수신거부", "메일 그만 보내주세요", "더 이상 연락하지 마세요",
+                         "발송 중단해주세요", "unsubscribe", "remove me", "stop emailing".
+                    주의: 발송 중단 요청이 명확할 때만. 단순 거절("관심 없습니다")은
+                    not_interested 이지 unsubscribe 가 아님.
 - unclear         : 위에 안 맞거나 톤이 모호 — 단순 회신·인사·"알겠습니다" 류 포함
 
 규칙:
-1) 반드시 위 5개 중 하나.
+1) 반드시 위 6개 중 하나.
 2) interested 는 보수적으로 — 약속·동의·구체적 액션이 명확할 때만.
-3) JSON 외 다른 출력 금지.`
-  const userPrompt = `답장 본문:\n"""\n${trimmed}\n"""\n\n위 5개 중 하나로 분류:`
+3) unsubscribe 는 발송 중단 요청이 명시적일 때만.
+4) JSON 외 다른 출력 금지.`
+  const userPrompt = `답장 본문:\n"""\n${trimmed}\n"""\n\n위 6개 중 하나로 분류:`
 
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -488,6 +505,3 @@ function stripQuotedAndSignature(text: string): string {
   return out.trim()
 }
 
-// 사용 안 하는 reference 막기 (Deno tsc 경고)
-type _Admin = SupabaseClient
-void {} as unknown as _Admin

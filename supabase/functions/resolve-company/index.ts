@@ -98,18 +98,28 @@ Deno.serve(async (req) => {
 
     // contact_id org 격리 — 사용자 호출이면 자기 org 의 contact 만 허용 (IDOR 차단).
     // 도메인 힌트 결정 시 + 결과 update 시 모두 이 검증된 contact_id 만 사용.
+    // contact row 는 1회만 조회 — email(도메인 힌트) / org(격리 검증) /
+    // department·company(부서 분리 시 갱신 판단) 를 모두 여기서 가져와 재사용.
     let safeContactId: string | null = null
+    let contactRowCached: {
+      email: string | null
+      org_id: string
+      department: string | null
+      company: string | null
+      company_raw: string | null
+    } | null = null
     if (contact_id) {
       const { data: contactRow } = await supabase
         .schema('mailcaster')
         .from('contacts')
-        .select('email, org_id')
+        .select('email, org_id, department, company, company_raw')
         .eq('id', contact_id)
         .maybeSingle()
       if (contactRow) {
         // cron 이면 무제한, 사용자면 자기 org 의 contact 만
         if (callerOrgIds === null || callerOrgIds.has(contactRow.org_id)) {
           safeContactId = contact_id
+          contactRowCached = contactRow
         } else {
           return json({ error: '해당 연락처에 대한 권한이 없습니다.' }, 403)
         }
@@ -117,18 +127,9 @@ Deno.serve(async (req) => {
     }
 
     // 도메인 힌트 결정 — 클라이언트가 명시적으로 보낸 값 우선.
-    // 값이 없고 (검증된) contact_id 가 있으면 DB 에서 email 조회해 도메인 추출.
     let domainHint = normalizeDomain(email_domain)
-    if (!domainHint && safeContactId) {
-      const { data: contactRow } = await supabase
-        .schema('mailcaster')
-        .from('contacts')
-        .select('email')
-        .eq('id', safeContactId)
-        .maybeSingle()
-      if (contactRow?.email) {
-        domainHint = extractDomain(contactRow.email)
-      }
+    if (!domainHint && contactRowCached?.email) {
+      domainHint = extractDomain(contactRowCached.email)
     }
 
     // 1) 캐시 조회 — 과거에 저장된 null 결과는 cache miss 로 취급해
@@ -205,12 +206,8 @@ Deno.serve(async (req) => {
       }
 
       if (result.extracted_department) {
-        const { data: existing } = await supabase
-          .schema('mailcaster')
-          .from('contacts')
-          .select('department, company, company_raw')
-          .eq('id', safeContactId)
-          .maybeSingle()
+        // 도입부에서 이미 조회한 contact row 재사용 (같은 row 3회 조회 제거)
+        const existing = contactRowCached
 
         // 기존 department 가 비어있으면 분리된 부서로 채움
         if (existing && (!existing.department || !existing.department.trim())) {

@@ -172,7 +172,7 @@ Deno.serve(async (req) => {
     const { count: totalScanned } = await admin
       .schema('mailcaster')
       .from('contacts')
-      .select('*', { count: 'exact', head: true })
+      .select('id', { count: 'exact', head: true })
       .eq('org_id', orgId)
       .eq('is_unsubscribed', false)
       .eq('is_bounced', false)

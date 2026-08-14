@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from './useAuth'
-import { sendGmail, encodeAttachmentsForReuse, type MailAttachment } from '@/lib/gmail'
+import { sendGmail, encodeAttachmentsForReuse, fetchMessageRfcId, type MailAttachment } from '@/lib/gmail'
 import { extractAndInlineImages } from '@/lib/inlineImages'
 import { getFreshGoogleToken, forceRefreshGoogleToken } from '@/lib/googleToken'
 import { downloadFile, getFileMeta, shareAsPublicLink } from '@/lib/drive'
@@ -19,27 +19,6 @@ interface SendArgs {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-/**
- * 발송한 메일의 RFC822 Message-ID 조회 (후속 시퀀스의 In-Reply-To/References 용).
- * best-effort — 실패해도 null 반환 (gmail_thread_id 만으로도 Gmail 스레드는 묶임).
- * 후속 시퀀스가 붙은 캠페인에서만 호출해 평상시 발송엔 추가 API 비용이 없게 한다.
- */
-async function fetchMessageRfcId(accessToken: string, gmailMessageId: string): Promise<string | null> {
-  try {
-    const res = await fetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(gmailMessageId)}?format=metadata&metadataHeaders=Message-ID`,
-      { headers: { Authorization: `Bearer ${accessToken}` } },
-    )
-    if (!res.ok) return null
-    const data = await res.json()
-    const headers = data.payload?.headers ?? []
-    const found = headers.find((h: { name: string }) => h.name.toLowerCase() === 'message-id')
-    return found?.value ?? null
-  } catch {
-    return null
-  }
 }
 
 /**
@@ -63,15 +42,6 @@ async function enrollFollowupSequence(
   }
   return (data as unknown as number) ?? 0
 }
-
-/**
- * 본문에 서명이 이미 들어있는지 판정 — HTML 미세 차이 무시.
- *
- * 단순 HTML.includes() 는 TipTap 이 본문을 정규화 (속성 순서, 공백) 했을 때
- * false 가 떨어져 서명이 중복 append 되는 버그가 있었음.
- *
- * 정책: src/lib/mailMerge.ts 의 bodyAlreadyContainsSignature 로 추출됨 (미리보기와 공용).
- */
 
 /**
  * Google API 일시적 오류(429 rate limit, 5xx) exponential backoff 재시도.
@@ -252,12 +222,15 @@ export function useSendCampaign() {
         .single()
       if (cErr) throw cErr
 
+      // .range 명시 — PostgREST 기본 cap(1000행) 때문에 1,000명 초과 캠페인이
+      // 1,000명만 발송되고 'sent' 처리되는 silent truncation 방지.
       const { data: recipients, error: rErr } = await supabase
         .from('recipients')
         .select('*')
         .eq('campaign_id', campaignId)
         .eq('status', 'pending')
         .order('created_at', { ascending: true })
+        .range(0, 9999)
       if (rErr) throw rErr
 
       if (!recipients || recipients.length === 0) {
@@ -453,10 +426,21 @@ export function useSendCampaign() {
       // 링크 모드면 본문에 섹션 append
       const linkSection = deliveryMode === 'link' ? buildLinkSection(linkRefs) : ''
 
-      // 3) 캠페인 상태 sending 으로 전환
+      // 3) 캠페인 상태 sending 으로 전환 — CAS(compare-and-set).
       //    W8) campaign.status 는 DbCampaignStatus union 이므로 그대로 사용.
+      //    무조건 UPDATE 하면 두 탭(또는 예약발송 cron)이 동시에 같은 pending 수신자
+      //    집합을 읽어 중복 발송됨 — 이미 'sending' 이면 여기서 중단.
       const previousStatus = campaign.status
-      await supabase.from('campaigns').update({ status: 'sending' }).eq('id', campaignId)
+      const { data: lockRows, error: lockErr } = await supabase
+        .from('campaigns')
+        .update({ status: 'sending' })
+        .eq('id', campaignId)
+        .neq('status', 'sending')
+        .select('id')
+      if (lockErr) throw lockErr
+      if (!lockRows || lockRows.length === 0) {
+        throw new Error('이미 다른 곳에서 이 캠페인을 발송 중입니다. 잠시 후 상태를 확인해주세요.')
+      }
       qc.invalidateQueries({ queryKey: ['campaigns'] })
 
       const fromEmail = user.email ?? ''
@@ -738,7 +722,6 @@ export function useSendCampaign() {
           const r = recipients[i] as Recipient
 
           await supabase.from('recipients').update({ status: 'sending' }).eq('id', r.id)
-          qc.invalidateQueries({ queryKey: ['campaigns', 'recipients', campaignId] })
 
           try {
             const vars = buildVariables(r)
@@ -865,8 +848,13 @@ export function useSendCampaign() {
             .from('campaigns')
             .update({ sent_count: sent, failed_count: failed })
             .eq('id', campaignId)
-          qc.invalidateQueries({ queryKey: ['campaigns', 'recipients', campaignId] })
-          qc.invalidateQueries({ queryKey: ['campaigns', 'detail', campaignId] })
+          // invalidate 는 10명마다 1회 — 매 수신자마다 하면 active 쿼리가 그때마다
+          // recipients 전체(개인화 override 포함, 최대 1만 행)를 재요청해 발송 내내
+          // 수 GB 급 전송이 발생. 진행 표시는 useCampaignRecipients 의 2초 폴링이 담당.
+          if ((i + 1) % 10 === 0) {
+            qc.invalidateQueries({ queryKey: ['campaigns', 'recipients', campaignId] })
+            qc.invalidateQueries({ queryKey: ['campaigns', 'detail', campaignId] })
+          }
 
           if (i < recipients.length - 1 && delayMs > 0) {
             await sleep(delayMs)
@@ -879,6 +867,8 @@ export function useSendCampaign() {
           .from('campaigns')
           .update({ status: finalStatus, sent_count: sent, failed_count: failed })
           .eq('id', campaignId)
+        qc.invalidateQueries({ queryKey: ['campaigns', 'recipients', campaignId] })
+        qc.invalidateQueries({ queryKey: ['campaigns', 'detail', campaignId] })
 
         // 후속 시퀀스 등록 — 발송 성공한 수신자를 캠페인 스레드 followup 으로 이어간다.
         const enrolled = await enrollFollowupSequence(campaign, campaignId, sent)

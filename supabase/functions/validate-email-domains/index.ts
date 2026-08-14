@@ -18,7 +18,11 @@
 //
 // 보안: 인증된 사용자만. 외부 노출 X (사용자가 가진 연락처 도메인만 조회).
 
+import { createClient } from 'jsr:@supabase/supabase-js@2'
 import { z } from 'npm:zod@3'
+
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
+const ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY')!
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -41,6 +45,16 @@ Deno.serve(async (req) => {
     const auth = req.headers.get('Authorization') ?? ''
     if (!auth.startsWith('Bearer ')) {
       return json({ error: '로그인이 필요합니다.' }, 401)
+    }
+    // JWT 서명 검증 — 게이트웨이 verify_jwt 설정에만 의존하지 않도록 함수 내부에서도 검증
+    // (다른 함수들과 동일 관례).
+    const authClient = createClient(SUPABASE_URL, ANON_KEY, {
+      global: { headers: { Authorization: auth } },
+      auth: { persistSession: false },
+    })
+    const { data: userData, error: userErr } = await authClient.auth.getUser()
+    if (userErr || !userData?.user) {
+      return json({ error: '유효하지 않은 세션입니다.' }, 401)
     }
 
     let parsed: z.infer<typeof RequestSchema>
@@ -116,6 +130,10 @@ function json(b: unknown, status = 200) {
 
 // 도메인 MX 검증 — true 면 valid, false 면 invalid.
 // timeout 적용: 느린 DNS 응답에 함수 전체가 막히면 안 됨.
+//
+// 중요: NXDOMAIN (도메인 자체가 없음) 만 invalid 판정.
+// timeout / 리졸버 오류는 "알 수 없음" 으로 간주해 valid 취급 —
+// 일시적 DNS 지연으로 정상 회사 도메인이 발송 차단 목록에 들어가면 안 됨.
 async function checkDomain(domain: string): Promise<boolean> {
   // Public suffix 만 있고 도메인 없는 경우 (e.g., "com") → invalid
   if (!domain.includes('.')) return false
@@ -127,9 +145,15 @@ async function checkDomain(domain: string): Promise<boolean> {
       DNS_TIMEOUT_MS
     )
     return Array.isArray(records) && records.length > 0
-  } catch {
-    // NXDOMAIN, timeout, network error → invalid
-    return false
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    // Deno 는 NXDOMAIN 을 NotFound 계열로 던짐 — 이때만 invalid.
+    if (e instanceof Deno.errors.NotFound || /no record|NXDOMAIN|not found/i.test(msg)) {
+      return false
+    }
+    // timeout / 기타 오류 — 판단 불가 → 차단하지 않음 (보수적)
+    console.warn('[validate-emails] DNS 판단 불가, valid 로 통과:', domain, msg)
+    return true
   }
 }
 

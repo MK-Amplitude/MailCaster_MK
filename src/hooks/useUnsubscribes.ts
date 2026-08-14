@@ -66,7 +66,8 @@ export function useUnsubscribes(scope: UnsubscribeScope = 'org') {
         q = q.eq('user_id', user!.id)
       }
 
-      const { data, error } = await q
+      // .range 명시 — PostgREST 1000행 cap 방지 (프로젝트 관례)
+      const { data, error } = await q.range(0, 9999)
       if (error) throw error
       return (data ?? []) as unknown as UnsubscribeWithOwner[]
     },

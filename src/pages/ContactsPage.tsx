@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef } from 'react'
+import { useState, useMemo, useRef, useDeferredValue } from 'react'
 import { matchesSearch } from '@/lib/search'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -22,6 +22,7 @@ import { EmptyState } from '@/components/common/EmptyState'
 import {
   useContacts,
   useContactsCommon,
+  useContactById,
   useDeleteContacts,
   useToggleUnsubscribe,
   useClearBounce,
@@ -103,8 +104,12 @@ export default function ContactsPage() {
     isLoading: commonLoading,
   } = useContactsCommon()
 
+  // 검색은 deferred 값으로 필터 — 1만 행 테이블이 keystroke 마다 동기 재렌더되어
+  // 입력이 버벅이던 문제 완화 (입력은 즉시, 목록은 한 프레임 뒤 갱신).
+  const deferredSearch = useDeferredValue(search)
+
   const contacts = useMemo(() => {
-    const q = search.trim()
+    const q = deferredSearch.trim()
     if (!q) return allContacts
     return allContacts.filter(
       (c) =>
@@ -114,7 +119,7 @@ export default function ContactsPage() {
         matchesSearch(c.department, q) ||
         matchesSearch(c.job_title, q)
     )
-  }, [allContacts, search])
+  }, [allContacts, deferredSearch])
 
   // 공통 뷰 — 상태/검색 필터를 클라이언트에서 적용 (common 뷰에는 status 필드만 존재).
   // 반송은 'bounced' 로 명시 조회할 때만 노출 — 그 외는 모두 숨겨 검색·그룹 빌더에서 제외.
@@ -130,7 +135,7 @@ export default function ContactsPage() {
       // 'all' (기본) / 'needs_verification' — 반송만 숨김
       list = list.filter((c) => !c.is_bounced)
     }
-    const q = search.trim()
+    const q = deferredSearch.trim()
     if (!q) return list
     return list.filter(
       (c) =>
@@ -140,7 +145,7 @@ export default function ContactsPage() {
         matchesSearch(c.department, q) ||
         matchesSearch(c.job_title, q)
     )
-  }, [commonContacts, search, status])
+  }, [commonContacts, deferredSearch, status])
 
   const isLoading = scope === 'common' ? commonLoading : contactsLoading
   const displayCount = scope === 'common' ? filteredCommon.length : contacts.length
@@ -199,6 +204,17 @@ export default function ContactsPage() {
   const activeSelectedCount =
     scope === 'common' ? selectedCommonKeys.size : selectedIds.size
 
+  // 개인화 발송 대상 — useMemo + Set 조회.
+  // 기존엔 JSX 안 IIFE 로 매 렌더마다 O(선택수 × 전체행) includes 스캔을 돌려
+  // 1만 행 전체 선택 상태에서 keystroke 마다 수 초씩 멈추던 문제.
+  const personalizeTargets = useMemo(() => {
+    const idSet = new Set(scope === 'common' ? expandedCommonContactIds : [...selectedIds])
+    if (idSet.size === 0) return []
+    return contacts
+      .filter((c) => idSet.has(c.id) && !c.is_unsubscribed && !c.is_bounced)
+      .map((c) => ({ id: c.id, name: c.name, email: c.email }))
+  }, [contacts, scope, expandedCommonContactIds, selectedIds])
+
   const clearSelection = () => {
     setSelectedIds(new Set())
     setSelectedCommonKeys(new Set())
@@ -220,13 +236,10 @@ export default function ContactsPage() {
     setDetailContactId(contact.id)
   }
 
-  // 실제 detail contact — contacts 리스트에서 매번 lookup (always fresh).
-  // 리스트 갱신 시 sheet 데이터도 자동 동기화.
-  const detailContact = useMemo(
-    () =>
-      detailContactId ? contacts.find((c) => c.id === detailContactId) ?? null : null,
-    [contacts, detailContactId],
-  )
+  // 실제 detail contact — 자체 쿼리로 조회 (invalidate 시 자동 refetch → always fresh).
+  // 필터된 리스트에서 lookup 하면 sheet 안에서 고객분류/그룹사를 바꾸는 순간
+  // 그 행이 현재 필터에서 빠지며 sheet 가 편집 도중 저절로 닫히는 문제가 있었음.
+  const { data: detailContact = null } = useContactById(detailContactId)
 
   const handleDelete = async () => {
     if (deleteTarget) {
@@ -666,7 +679,7 @@ export default function ContactsPage() {
       <ConfirmDialog
         open={bulkDeleteOpen}
         onOpenChange={setBulkDeleteOpen}
-        title={`연락처 ${selectedIds.size}개 삭제`}
+        title={`연락처 ${scope === 'common' ? expandedCommonContactIds.length : selectedIds.size}개 삭제`}
         description="선택한 연락처를 모두 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다."
         confirmLabel="삭제"
         variant="destructive"
@@ -676,14 +689,7 @@ export default function ContactsPage() {
       <PersonalizedSendDialog
         open={personalizeOpen}
         onOpenChange={setPersonalizeOpen}
-        contacts={(() => {
-          // common 뷰면 expanded 된 contact_id 들에 매칭, 일반이면 selectedIds 그대로.
-          const ids =
-            scope === 'common' ? expandedCommonContactIds : [...selectedIds]
-          return contacts
-            .filter((c) => ids.includes(c.id) && !c.is_unsubscribed && !c.is_bounced)
-            .map((c) => ({ id: c.id, name: c.name, email: c.email }))
-        })()}
+        contacts={personalizeTargets}
       />
     </div>
   )

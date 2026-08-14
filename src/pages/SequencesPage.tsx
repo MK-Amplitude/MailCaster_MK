@@ -1,6 +1,6 @@
 // 시퀀스(자동 후속 cadence) 관리 — 목록/빌더/등록 (고도화 Tier1-D).
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Plus, Trash2, GripVertical, Send, Workflow, Archive, UserPlus, Search, Loader2, Pencil, Check, X } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/hooks/useAuth'
@@ -192,7 +192,9 @@ function SequenceBuilderSheet({
   const updateSeq = useUpdateSequence()
   const deleteSeq = useDeleteSequence()
   const stopEnr = useStopEnrollment()
-  const [steps, setSteps] = useState<StepInput[]>([])
+  // 로컬 스텝 상태 — 각 행에 고정 _key 를 부여 (index 키는 삭제/재배열 시 DOM 재사용으로
+  // 포커스·한글 IME 조합 상태가 다음 행에 넘어가는 문제가 있음).
+  const [steps, setSteps] = useState<Array<StepInput & { _key: string }>>([])
   const [enrollOpen, setEnrollOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
   // 이름·설명 인라인 편집
@@ -200,14 +202,19 @@ function SequenceBuilderSheet({
   const [editName, setEditName] = useState('')
   const [editDesc, setEditDesc] = useState('')
 
+  // 서버 데이터 hydrate 는 시퀀스당 1회만 — refetch 마다 덮어쓰면 이름 변경/보관 등
+  // 다른 mutation 의 invalidate 가 "아직 저장 안 한 스텝 편집" 을 조용히 날려버림.
+  // (시트는 key={activeSeqId} 로 시퀀스마다 리마운트되므로 1회 hydrate 로 충분)
+  const hydratedRef = useRef(false)
   useEffect(() => {
-    if (data?.steps) {
-      setSteps(
-        data.steps.map((s) => ({
-          step_order: s.step_order, wait_days: s.wait_days, subject: s.subject, body_html: s.body_html,
-        })),
-      )
-    }
+    if (hydratedRef.current || !data?.steps) return
+    hydratedRef.current = true
+    setSteps(
+      data.steps.map((s) => ({
+        _key: crypto.randomUUID(),
+        step_order: s.step_order, wait_days: s.wait_days, subject: s.subject, body_html: s.body_html,
+      })),
+    )
   }, [data?.steps])
 
   const seq = data?.sequence
@@ -229,7 +236,7 @@ function SequenceBuilderSheet({
   function addStep() {
     setSteps((prev) => [
       ...prev,
-      { step_order: prev.length + 1, wait_days: prev.length === 0 ? 0 : 3, subject: '', body_html: '' },
+      { _key: crypto.randomUUID(), step_order: prev.length + 1, wait_days: prev.length === 0 ? 0 : 3, subject: '', body_html: '' },
     ])
   }
   function removeStep(idx: number) {
@@ -301,7 +308,7 @@ function SequenceBuilderSheet({
               )}
               <div className="space-y-3">
                 {steps.map((s, idx) => (
-                  <Card key={idx} className="p-3 space-y-2">
+                  <Card key={s._key} className="p-3 space-y-2">
                     <div className="flex items-center gap-2">
                       <GripVertical className="w-4 h-4 text-muted-foreground shrink-0" />
                       <span className="text-sm font-medium">스텝 {idx + 1}</span>

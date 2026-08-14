@@ -126,26 +126,19 @@ export async function resolveCompaniesBatch(
     unique.set(key, arr)
   }
 
-  // query_key 별로 하나만 실제 호출 (나머지는 캐시 이용).
-  // 대표 샘플은 "도메인 힌트가 있는" 항목을 우선 선택 — AI 정확도가 높아짐.
+  // query_key 별로 순차 호출 — 첫 호출(도메인 힌트 있는 쪽 우선)이 서버 company_cache 를
+  // 채우고, 이후 호출은 서버 캐시 히트로 AI 호출 없이 contact 만 업데이트된다.
   for (const [, group] of unique) {
     const sorted = [...group].sort((a, b) => {
       const da = extractDomain(a.email) ? 1 : 0
       const db = extractDomain(b.email) ? 1 : 0
       return db - da
     })
-    // 첫 항목(=도메인 있는 쪽)은 AI 호출 + contact 업데이트까지 수행
-    await resolveCompanyForContact({
-      rawName: sorted[0].rawName,
-      contactId: sorted[0].id,
-      email: sorted[0].email,
-    })
-    // 나머지는 캐시에서 꺼내 contact 별 업데이트만 수행
-    for (let i = 1; i < sorted.length; i++) {
+    for (const it of sorted) {
       await resolveCompanyForContact({
-        rawName: sorted[i].rawName,
-        contactId: sorted[i].id,
-        email: sorted[i].email,
+        rawName: it.rawName,
+        contactId: it.id,
+        email: it.email,
       })
     }
   }

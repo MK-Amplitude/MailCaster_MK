@@ -27,7 +27,7 @@
 //   - excludedContactIds 에 속한 contact 는 preview 에서도 제외
 // ------------------------------------------------------------
 
-import { useMemo, useState } from 'react'
+import { useDeferredValue, useMemo, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent } from '@/components/ui/card'
@@ -247,12 +247,14 @@ function ContactTab({
 }) {
   const { data: allContacts = [], isLoading } = useContacts({ status: 'normal' })
   const [search, setSearch] = useState('')
+  // 검색은 deferred 값으로 필터 — 1만 행 목록이 keystroke 마다 동기 재렌더되는 것 완화
+  const deferredSearch = useDeferredValue(search)
   // 검색 결과 안에서 "체크박스로 고른" 임시 선택 — "바구니에 추가" 누르기 전까지 부모 state 와 분리
   const [stagingIds, setStagingIds] = useState<Set<string>>(new Set())
 
   // 검색 매칭: 이메일 / 이름 / 회사 / 부서 / 직급 어느 하나라도 맞으면
   const filtered = useMemo(() => {
-    const q = search.trim()
+    const q = deferredSearch.trim()
     if (!q) return allContacts
     return allContacts.filter((c) =>
       matchesSearch(c.email, q) ||
@@ -261,7 +263,7 @@ function ContactTab({
       matchesSearch(c.department, q) ||
       matchesSearch(c.job_title, q)
     )
-  }, [allContacts, search])
+  }, [allContacts, deferredSearch])
 
   // 이미 부모(바구니) 에 들어간 연락처는 체크박스를 disabled + 체크된 상태로 표시
   const alreadyInBasket = useMemo(

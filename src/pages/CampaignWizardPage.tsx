@@ -392,6 +392,26 @@ export default function CampaignWizardPage() {
     return rawUnion.filter((c) => excluded.has(c.id))
   }, [rawUnion, excludedContactIds])
 
+  // 자식 컴포넌트에 넘길 파생 배열은 useMemo 로 identity 고정 —
+  // 인라인 .map() 은 매 렌더마다 새 배열이라 CcBccPicker / FinalRecipientReview 의
+  // 내부 useMemo(수신자 Set 구성 + 1만 행 필터)가 keystroke 마다 재계산되던 문제 방지.
+  const recipientEmails = useMemo(
+    () => previewContacts.map((c) => c.email),
+    [previewContacts],
+  )
+  const finalReviewContacts = useMemo(
+    () =>
+      previewContacts.map((c) => ({
+        id: c.id,
+        email: c.email,
+        name: c.name,
+        company: c.company,
+        job_title: c.job_title,
+        department: c.department,
+      })),
+    [previewContacts],
+  )
+
   // Phase 6 (B): URL 상태 동기화 — mount 시 URL → state seed 1회
   //
   // 쿼리파라미터 포맷: ?groups=<uuid,uuid>&contacts=<uuid>&excluded=<uuid>
@@ -604,6 +624,7 @@ export default function CampaignWizardPage() {
           .from('campaign_contacts')
           .select('contact_id')
           .eq('campaign_id', loadFrom)
+          .range(0, 9999) // PostgREST 1000행 cap — 잘리면 저장 시 바구니가 축소 재기록됨
         if (cancelled) return
         if (ccsErr) {
           if (isMissingTableError(ccsErr)) {
@@ -623,6 +644,7 @@ export default function CampaignWizardPage() {
           .from('campaign_exclusions')
           .select('contact_id')
           .eq('campaign_id', loadFrom)
+          .range(0, 9999) // PostgREST 1000행 cap 방지
         if (cancelled) return
         if (exsErr) {
           if (isMissingTableError(exsErr)) {
@@ -669,6 +691,7 @@ export default function CampaignWizardPage() {
             .from('recipients')
             .select('contact_id, email, name, variables')
             .eq('campaign_id', loadFrom)
+            .range(0, 9999) // PostgREST 1000행 cap — 잘리면 저장 시 수신자가 유실됨
           if (cancelled) return
           if (rErr) {
             if (isMissingTableError(rErr)) {
@@ -696,6 +719,7 @@ export default function CampaignWizardPage() {
             .select('contact_id, email, name, variables')
             .eq('campaign_id', loadFrom)
             .eq('status', 'failed')
+            .range(0, 9999) // PostgREST 1000행 cap — 실패 재발송 대상 유실 방지
           if (cancelled) return
           if (rErr) {
             if (isMissingTableError(rErr)) {
@@ -1030,14 +1054,11 @@ export default function CampaignWizardPage() {
   const addBlock = (templateId: string) => {
     const t = templateById.get(templateId)
     if (!t) return
-    // prev.length 로 판정해야 multi-select 시에도 "첫 번째" 템플릿의 subject 만 채워짐
-    // (stale closure 의 blocks.length 는 루프 내 모든 호출에서 0 이라 마지막 템플릿 것으로 덮임)
-    setBlocks((prev) => {
-      if (prev.length === 0) {
-        setSubject((s) => (s.trim() ? s : t.subject))
-      }
-      return [...prev, { key: crypto.randomUUID(), templateId }]
-    })
+    setBlocks((prev) => [...prev, { key: crypto.randomUUID(), templateId }])
+    // updater 밖에서 dispatch — state updater 는 순수해야 함 (StrictMode 이중 호출 안전).
+    // "비어있을 때만 채움" 판정이 updater 큐 순서대로 실행되므로 multi-select 시에도
+    // 첫 번째 템플릿의 subject 만 채워지는 기존 의미 유지.
+    setSubject((s) => (s.trim() ? s : t.subject))
   }
 
   const removeBlock = (key: string) => {
@@ -1264,6 +1285,7 @@ export default function CampaignWizardPage() {
             .from('recipients')
             .select('contact_id, email, subject_override, body_html_override')
             .eq('campaign_id', editCampaignId)
+            .range(0, 9999) // PostgREST 1000행 cap — 잘리면 개인화 오버라이드 유실
           const existing = (existingRaw ?? []) as Array<{
             contact_id: string | null
             email: string
@@ -1292,7 +1314,10 @@ export default function CampaignWizardPage() {
           for (let i = 0; i < previewContacts.length; i += BATCH) {
             const chunk = previewContacts.slice(i, i + BATCH)
             const rows = chunk.map((c) => {
-              const key = c.id ?? `email:${c.email}`
+              // c.id 는 "contact 없음" 을 '' 로 표현하므로 ?? 가 아니라 || 로 판정 —
+              // ?? 를 쓰면 key 가 '' 이 되어 email 키로 저장된 개인화 오버라이드를
+              // 못 찾고 조용히 소실됨 (저장 시 아래 contact_id 도 || 사용).
+              const key = c.id || `email:${c.email}`
               const ov = overrideMap.get(key)
               return {
                 campaign_id: editCampaignId,
@@ -1614,7 +1639,7 @@ export default function CampaignWizardPage() {
                     setBccContactIds={setBccContactIds}
                     resolvedBccEmails={resolvedBccEmails}
                     loadingBccBasket={loadingBccBasket}
-                    recipientEmails={previewContacts.map((c) => c.email)}
+                    recipientEmails={recipientEmails}
                     sendMode={sendMode}
                     setSendMode={setSendMode}
                     recipientCount={previewContacts.length}
@@ -1680,14 +1705,7 @@ export default function CampaignWizardPage() {
                 {/* 편집 모드: 최종 수신자 검토 */}
                 {isEditMode && (
                   <FinalRecipientReview
-                    previewContacts={previewContacts.map((c) => ({
-                      id: c.id,
-                      email: c.email,
-                      name: c.name,
-                      company: c.company,
-                      job_title: c.job_title,
-                      department: c.department,
-                    }))}
+                    previewContacts={finalReviewContacts}
                     excludedContactIds={excludedContactIds}
                     setExcludedContactIds={setExcludedContactIds}
                     selectedContactIds={selectedContactIds}
