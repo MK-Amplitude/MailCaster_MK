@@ -49,14 +49,17 @@ export function useGoogleContactsSyncStatus() {
 
 export function useSyncGoogleContacts() {
   const qc = useQueryClient()
+  const { currentOrg } = useAuth()
   return useMutation({
     mutationFn: async (opts: { forceFull?: boolean } = {}): Promise<SyncResult> => {
       const { data: sessionData } = await supabase.auth.getSession()
       const accessToken = sessionData.session?.access_token
       if (!accessToken) throw new Error('로그인이 필요합니다.')
 
+      // 현재 선택된 조직에 연락처가 들어가도록 org_id 명시 —
+      // 멀티 조직 사용자에서 다른 조직으로 들어가던 버그 방지.
       const { data, error } = await supabase.functions.invoke('sync-google-contacts', {
-        body: { force_full: opts.forceFull ?? false },
+        body: { force_full: opts.forceFull ?? false, org_id: currentOrg?.id },
         headers: { Authorization: `Bearer ${accessToken}` },
       })
       if (error) {
@@ -81,7 +84,7 @@ export function useSyncGoogleContacts() {
           const { data: retryData, error: retryErr } = await supabase.functions.invoke(
             'sync-google-contacts',
             {
-              body: { force_full: true },
+              body: { force_full: true, org_id: currentOrg?.id },
               headers: { Authorization: `Bearer ${accessToken}` },
             },
           )

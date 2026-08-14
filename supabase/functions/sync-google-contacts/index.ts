@@ -55,7 +55,7 @@ Deno.serve(async (req) => {
     const auth = req.headers.get('Authorization') ?? ''
     if (!auth.startsWith('Bearer ')) return json({ error: '인증 필요' }, 401)
 
-    let body: { force_full?: boolean; target_user_id?: string } = {}
+    let body: { force_full?: boolean; target_user_id?: string; org_id?: string } = {}
     try {
       const text = await req.text()
       if (text) body = JSON.parse(text)
@@ -97,18 +97,36 @@ Deno.serve(async (req) => {
       return json({ error: 'Google 재로그인이 필요합니다.' }, 401)
     }
 
-    // 현재 활성 조직 — org_members 의 첫 행 (사용자가 여러 조직이면 향후 명시 받기)
-    const { data: membership } = await admin
-      .schema('mailcaster')
-      .from('org_members')
-      .select('org_id')
-      .eq('user_id', userId)
-      .limit(1)
-      .maybeSingle()
-    if (!membership?.org_id) {
-      return json({ error: '조직 정보가 없습니다.' }, 400)
+    // 대상 조직 결정 — 클라이언트가 보낸 org_id (현재 선택된 조직) 우선.
+    // 멀티 조직 사용자의 경우 org_members 첫 행이 임의라 UI 의 현재 조직과 다른 곳에
+    // 연락처가 들어가는 버그가 있었음 — org_id 를 명시 받고 멤버십을 검증한다.
+    let orgId: string
+    if (body.org_id) {
+      const { data: membership } = await admin
+        .schema('mailcaster')
+        .from('org_members')
+        .select('org_id')
+        .eq('user_id', userId)
+        .eq('org_id', body.org_id)
+        .maybeSingle()
+      if (!membership?.org_id) {
+        return json({ error: '이 조직의 멤버가 아닙니다.' }, 403)
+      }
+      orgId = membership.org_id as string
+    } else {
+      // 하위 호환 (cron 등 org_id 미전달) — 첫 멤버십 사용
+      const { data: membership } = await admin
+        .schema('mailcaster')
+        .from('org_members')
+        .select('org_id')
+        .eq('user_id', userId)
+        .limit(1)
+        .maybeSingle()
+      if (!membership?.org_id) {
+        return json({ error: '조직 정보가 없습니다.' }, 400)
+      }
+      orgId = membership.org_id as string
     }
-    const orgId = membership.org_id as string
 
     // access_token 발급
     let accessToken: string
