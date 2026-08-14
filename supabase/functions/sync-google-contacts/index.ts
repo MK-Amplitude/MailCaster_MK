@@ -267,6 +267,23 @@ Deno.serve(async (req) => {
       duplicates += slice.length - insertedCount
     }
 
+    // 진단 — 같은 이메일이 이 사용자의 "다른 조직" 에 존재하는 수.
+    // 과거 org 선택 버그로 잘못된 조직에 들어간 연락처를 찾아내기 위한 지표.
+    let inOtherOrg = 0
+    if (rows.length > 0) {
+      const emails = rows.map((r) => r.email)
+      for (let i = 0; i < emails.length; i += 500) {
+        const { count } = await admin
+          .schema('mailcaster')
+          .from('contacts')
+          .select('*', { count: 'exact', head: true })
+          .eq('user_id', userId)
+          .neq('org_id', orgId)
+          .in('email', emails.slice(i, i + 500))
+        inOtherOrg += count ?? 0
+      }
+    }
+
     // sync token 저장
     if (nextSyncToken) {
       await admin
@@ -291,6 +308,7 @@ Deno.serve(async (req) => {
       duplicates,
       deleted_skipped: deletedSkipped,
       total_fetched: connections.length,
+      in_other_org: inOtherOrg,
       errors,
       sync_token_updated: !!nextSyncToken,
     })

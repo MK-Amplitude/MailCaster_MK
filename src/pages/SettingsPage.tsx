@@ -561,16 +561,27 @@ function GoogleContactsSyncSection() {
                 : '아직 한 번도 동기화하지 않았습니다.'}
             </p>
           </div>
-          <Button
-            size="sm"
-            onClick={() => sync.mutate({})}
-            disabled={sync.isPending}
-          >
-            <RefreshCcw
-              className={`w-3.5 h-3.5 mr-1.5 ${sync.isPending ? 'animate-spin' : ''}`}
-            />
-            {sync.isPending ? '동기화 중...' : '지금 동기화'}
-          </Button>
+          <div className="flex items-center gap-2 shrink-0">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => sync.mutate({ forceFull: true })}
+              disabled={sync.isPending}
+              title="Google 변경 이력과 무관하게 전체 연락처를 다시 가져옵니다"
+            >
+              전체 다시 동기화
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => sync.mutate({})}
+              disabled={sync.isPending}
+            >
+              <RefreshCcw
+                className={`w-3.5 h-3.5 mr-1.5 ${sync.isPending ? 'animate-spin' : ''}`}
+              />
+              {sync.isPending ? '동기화 중...' : '지금 동기화'}
+            </Button>
+          </div>
         </div>
 
         <Separator />
