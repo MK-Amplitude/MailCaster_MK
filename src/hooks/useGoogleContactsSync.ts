@@ -14,6 +14,7 @@ interface SyncResult {
   duplicates: number
   deleted_skipped: number
   total_fetched?: number
+  in_other_org?: number
   scope_missing?: boolean
   api_disabled?: boolean
   detail?: string
@@ -116,12 +117,32 @@ export function useSyncGoogleContacts() {
         if (r.detail) console.warn('[google-contacts-sync] scope missing detail:', r.detail)
         return
       }
+      // 저장 오류는 반드시 노출 — 조용히 "새 연락처 없음" 으로 가리면 원인 파악 불가.
+      if (r.errors && r.errors.length > 0) {
+        toast.error(
+          `동기화 중 저장 오류 ${r.errors.length}건: ${r.errors[0]?.message ?? ''}`,
+          { duration: 12000 },
+        )
+        return
+      }
       const parts: string[] = []
       if (r.inserted > 0) parts.push(`신규 ${r.inserted}명`)
       if (r.duplicates > 0) parts.push(`이미 존재 ${r.duplicates}명`)
       if (r.deleted_skipped > 0) parts.push(`삭제 처리 ${r.deleted_skipped}명 (반영 안 함)`)
+      // 과거 org 버그로 다른 조직에 들어간 연락처 감지 — 사용자에게 명시
+      if ((r.in_other_org ?? 0) > 0) {
+        toast.warning(
+          `주의: 같은 이메일 연락처 ${r.in_other_org}명이 다른 조직에 있습니다. 조직 전환 후 확인하거나 관리자에게 이전을 요청하세요.`,
+          { duration: 12000 },
+        )
+      }
       if (parts.length === 0) {
-        toast.success('동기화 완료 — 새 연락처 없음')
+        const fetched = r.total_fetched ?? 0
+        toast.success(
+          fetched > 0
+            ? `동기화 완료 — 가져온 ${fetched}건 모두 처리됨 (신규 없음)`
+            : '동기화 완료 — 변경된 연락처 없음 (전체 다시 동기화로 재확인 가능)'
+        )
       } else {
         toast.success(`동기화 완료: ${parts.join(', ')}`)
       }
