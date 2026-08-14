@@ -278,11 +278,24 @@ function joinAddressList(list: string[] | undefined): string | undefined {
   return cleaned.length > 0 ? cleaned.join(', ') : undefined
 }
 
+// 이메일 주소 유효성 — @ 기호 기준 분리, 공백/CRLF 없는지 검사.
+// 헤더 인젝션 방지 (stripCRLF 이후 호출)용.
+function assertValidEmail(addr: string, field: string): void {
+  const atIdx = addr.lastIndexOf('@')
+  if (atIdx < 1 || atIdx === addr.length - 1 || /[\r\n\s]/.test(addr)) {
+    throw new Error(`Invalid ${field} address: ${addr.slice(0, 80)}`)
+  }
+}
+
 async function buildMime(input: Omit<SendMailInput, 'accessToken'>): Promise<string> {
   const { from, to, toName, subject, html, replyTo, attachments, cc, bcc, inlineImages, inReplyTo } = input
-  // 모든 헤더 입력값은 CR/LF 인젝션 방지를 위해 선제 new sanitize.
+  // 모든 헤더 입력값은 CR/LF 인젝션 방지를 위해 선제 sanitize.
   const cleanFrom = encodeAddressHeader(stripCRLF(from))
   const cleanTo = stripCRLF(to)
+  // 이메일 주소 형식 검증 — 잘못된 주소가 Gmail API 에 전달되기 전에 차단
+  assertValidEmail(cleanTo, 'To')
+  if (cc) for (const c of cc) assertValidEmail(stripCRLF(c.replace(/.*<(.+)>/, '$1').trim()), 'Cc')
+  if (bcc) for (const b of bcc) assertValidEmail(stripCRLF(b.replace(/.*<(.+)>/, '$1').trim()), 'Bcc')
   const cleanReplyTo = replyTo ? encodeAddressHeader(stripCRLF(replyTo)) : undefined
   const ccLine = joinAddressList(cc)
   const bccLine = joinAddressList(bcc)
@@ -412,6 +425,11 @@ export interface GmailSendResult {
 }
 
 export async function sendGmail(input: SendMailInput): Promise<GmailSendResult> {
+  // threadId 는 Gmail 내부 hex 문자열 — 다른 형식은 API 오류를 일으키거나
+  // 로그에 사용자 입력이 그대로 남을 수 있어 화이트리스트 검증.
+  if (input.threadId && !/^[0-9a-f]+$/i.test(input.threadId)) {
+    throw new Error(`Invalid threadId format: ${input.threadId.slice(0, 40)}`)
+  }
   const mime = await buildMime(input)
   const raw = b64url(mime)
 

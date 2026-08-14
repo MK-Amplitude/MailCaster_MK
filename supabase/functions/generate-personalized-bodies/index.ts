@@ -250,18 +250,24 @@ ${sender}
 - 다른 키 추가 금지.`
 }
 
+// 토큰 폭증 방지 — DB 에 비정상적으로 긴 값이 있어도 프롬프트를 안전한 크기로 유지.
+function trunc(s: string | null | undefined, max: number): string | null {
+  if (!s) return null
+  return s.length > max ? s.slice(0, max) : s
+}
+
 function buildUserPrompt(c: ContactContext, intent: string): string {
   const days = daysSince(c.last_sent_at)
   const replyDays = daysSince(c.last_replied_at)
   const lines: string[] = []
   lines.push(`[받는 사람 컨텍스트]`)
-  lines.push(`이름: ${c.name ?? '(이름 미상)'}`)
-  if (c.parent_group) lines.push(`그룹사: ${c.parent_group}`)
-  if (c.company) lines.push(`회사: ${c.company}`)
-  if (c.display_title || c.job_title) lines.push(`직책: ${c.display_title || c.job_title}`)
+  lines.push(`이름: ${trunc(c.name, 50) ?? '(이름 미상)'}`)
+  if (c.parent_group) lines.push(`그룹사: ${trunc(c.parent_group, 30)}`)
+  if (c.company) lines.push(`회사: ${trunc(c.company, 60)}`)
+  if (c.display_title || c.job_title) lines.push(`직책: ${trunc(c.display_title || c.job_title, 50)}`)
   if (c.customer_type) lines.push(`분류: ${c.customer_type}`)
   if (days !== null) lines.push(`마지막 메일 발송: ${days}일 전`)
-  if (c.last_campaign_name) lines.push(`마지막 캠페인: "${c.last_campaign_name}"`)
+  if (c.last_campaign_name) lines.push(`마지막 캠페인: "${trunc(c.last_campaign_name, 60)}"`)
   if (c.reply_count > 0) lines.push(`이전 답장 횟수: ${c.reply_count}`)
   if (c.last_reply_category) lines.push(`마지막 답장 톤: ${c.last_reply_category}`)
   if (replyDays !== null) lines.push(`마지막 답장: ${replyDays}일 전`)

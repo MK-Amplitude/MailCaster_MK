@@ -36,6 +36,7 @@
 // ============================================================
 
 import { createClient } from 'jsr:@supabase/supabase-js@2'
+import { decryptToken } from '../_shared/tokenCrypto.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -1395,7 +1396,9 @@ function json(body: unknown, status = 200) {
   })
 }
 
-async function refreshGoogleToken(refreshToken: string): Promise<string> {
+async function refreshGoogleToken(storedToken: string): Promise<string> {
+  // DB 에 암호화되어 저장된 토큰 복호화 (평문 저장 기존 토큰도 그대로 통과)
+  const refreshToken = await decryptToken(storedToken)
   const res = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },

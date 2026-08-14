@@ -22,6 +22,7 @@
 // ============================================================
 
 import { createClient } from 'jsr:@supabase/supabase-js@2'
+import { decryptToken } from '../_shared/tokenCrypto.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -582,7 +583,8 @@ function stripQuoteOnly(text: string): string {
   return out.trim()
 }
 
-async function refreshGoogleToken(refreshToken: string): Promise<string> {
+async function refreshGoogleToken(storedToken: string): Promise<string> {
+  const refreshToken = await decryptToken(storedToken)
   const body = new URLSearchParams({
     client_id: GOOGLE_CLIENT_ID,
     client_secret: GOOGLE_CLIENT_SECRET,

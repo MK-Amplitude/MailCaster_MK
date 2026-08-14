@@ -38,6 +38,8 @@ const FETCH_TIMEOUT_MS = 10_000
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024 // 8MB
 // 전체 이미지 합계 — Gmail 25MB 한계 대비 보수적.
 const MAX_TOTAL_BYTES = 20 * 1024 * 1024 // 20MB
+// 인라인 이미지 개수 상한 — 대량 이미지로 MIME 구조가 비대해지는 것 방지.
+const MAX_IMAGE_COUNT = 20
 
 /**
  * HTML 본문의 <img> 를 inline (cid:) 으로 embed 가능한 형식으로 변환.
@@ -71,6 +73,7 @@ export async function extractAndInlineImages(html: string): Promise<ExtractResul
     if (r.status === 'rejected' || !r.value) continue
     const img = r.value
     if (img.rawBytes > MAX_IMAGE_BYTES) continue
+    if (images.length >= MAX_IMAGE_COUNT) continue
     if (totalBytes + img.rawBytes > MAX_TOTAL_BYTES) continue
     totalBytes += img.rawBytes
     const cid = `mc-img-${index++}-${crypto.randomUUID().slice(0, 8)}`

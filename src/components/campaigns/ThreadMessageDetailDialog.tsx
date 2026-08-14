@@ -23,6 +23,7 @@ import { Eye, EyeOff, MessageCircle, Mail, AlertTriangle } from 'lucide-react'
 import { THREAD_MODE_META, THREAD_STATUS_META } from './threadMessageMeta'
 import type { ThreadMessageRow, ThreadMessageReply } from '@/hooks/useThreadMessages'
 import { useThreadMessageReplies } from '@/hooks/useThreadMessages'
+import { sanitizeHtml } from '@/lib/sanitizeHtml'
 
 interface Props {
   open: boolean
@@ -259,9 +260,7 @@ export function ThreadMessageDetailDialog({ open, onOpenChange, message, onReply
             {message.body_html ? (
               <div
                 className="prose prose-sm max-w-none dark:prose-invert"
-                // 본문은 자체 발송자가 만든 HTML — XSS 우려 없음 (자기 자신의 메일).
-                // 트래킹 픽셀은 발송 직전에 주입된 거라 DB body_html 에는 없음.
-                dangerouslySetInnerHTML={{ __html: message.body_html }}
+                dangerouslySetInnerHTML={{ __html: sanitizeHtml(message.body_html) }}
               />
             ) : (
               <div className="text-sm text-muted-foreground italic">(본문 없음)</div>

@@ -17,6 +17,7 @@
 // 출력: { inserted, duplicates, errors, scope_missing? }
 
 import { createClient } from 'jsr:@supabase/supabase-js@2'
+import { decryptToken } from '../_shared/tokenCrypto.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -120,13 +121,14 @@ Deno.serve(async (req) => {
 
     // 페이지네이션으로 모든 connections 수집.
     // force_full 이면 syncToken 무시 → 전체 sync. 그 외엔 incremental.
-    const useSyncToken = !body.force_full && !!profile.google_contacts_sync_token
+    let useSyncToken = !body.force_full && !!profile.google_contacts_sync_token
     const connections: PeopleConnection[] = []
     let pageToken: string | undefined = undefined
     let nextSyncToken: string | null = null
     let scopeMissing = false
     let apiDisabled = false
     let lastErrorDetail: string | null = null
+    let syncTokenRetried = false
 
     do {
       const params = new URLSearchParams({
@@ -165,12 +167,23 @@ Deno.serve(async (req) => {
         }
         break
       }
-      if (res.status === 410) {
-        // syncToken 만료 → full sync 재시도
-        return json({
-          error: 'sync_token_expired',
-          retry_with_force_full: true,
-        }, 410)
+      // syncToken 만료 — People API 는 400 FAILED_PRECONDITION (EXPIRED_SYNC_TOKEN) 을
+      // 반환한다 (410 은 다른 Google API 계열의 관례 — 방어적으로 둘 다 처리).
+      // 서버에서 즉시 full sync 로 전환해 재시도 — 클라이언트 왕복 없이 한 번에 처리.
+      if (res.status === 410 || res.status === 400) {
+        const bodyText = await res.text()
+        const isExpiredToken =
+          res.status === 410 || /EXPIRED_SYNC_TOKEN|Sync token is expired/i.test(bodyText)
+        if (isExpiredToken && useSyncToken && !syncTokenRetried) {
+          console.warn('[sync-google-contacts] sync token expired — full sync 으로 전환')
+          syncTokenRetried = true
+          useSyncToken = false
+          connections.length = 0
+          pageToken = undefined
+          nextSyncToken = null
+          continue
+        }
+        throw new Error(`People API ${res.status}: ${bodyText.slice(0, 300)}`)
       }
       if (!res.ok) {
         const body = await res.text()
@@ -330,7 +343,9 @@ function pickPrimary<T extends { metadata?: { primary?: boolean } }>(
   return arr.find((x) => x.metadata?.primary) ?? arr[0]
 }
 
-async function refreshGoogleToken(refreshToken: string): Promise<string> {
+async function refreshGoogleToken(storedToken: string): Promise<string> {
+  // DB 에 암호화되어 저장된 토큰 복호화 (평문 저장 기존 토큰도 그대로 통과)
+  const refreshToken = await decryptToken(storedToken)
   const res = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },

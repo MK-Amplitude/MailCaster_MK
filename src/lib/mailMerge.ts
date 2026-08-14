@@ -10,6 +10,25 @@ export function renderTemplate(
   })
 }
 
+// HTML 컨텍스트용 치환 — 값을 HTML 엔티티로 이스케이프한 뒤 삽입.
+// 연락처 name/company 등 외부 데이터를 HTML body 에 직접 삽입할 때 XSS 차단.
+// (<script>, <img onerror=...> 같은 페이로드를 무해한 텍스트로 렌더링)
+export function renderTemplateHtml(
+  input: string,
+  variables: Record<string, string | null | undefined>
+): string {
+  return input.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, key) => {
+    const v = variables[key]
+    if (v == null) return ''
+    return String(v)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+  })
+}
+
 // 템플릿 본문에 포함된 변수 키 목록 추출
 export function extractVariables(input: string): string[] {
   const set = new Set<string>()

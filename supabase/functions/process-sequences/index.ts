@@ -14,6 +14,7 @@
 // =============================================
 
 import { createClient } from 'jsr:@supabase/supabase-js@2'
+import { decryptToken } from '../_shared/tokenCrypto.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -461,7 +462,8 @@ function injectTrackingPixel(html: string, pixelHtml: string): string {
   return html + pixelHtml
 }
 
-async function refreshGoogleToken(refreshToken: string): Promise<string> {
+async function refreshGoogleToken(storedToken: string): Promise<string> {
+  const refreshToken = await decryptToken(storedToken)
   const MAX_ATTEMPTS = 3
   let lastErr: unknown = null
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {

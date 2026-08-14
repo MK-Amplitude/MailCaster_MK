@@ -45,6 +45,7 @@ import { useSignatures } from '@/hooks/useSignatures'
 import { useSendThreadMessage, type ThreadMode } from '@/hooks/useSendThreadMessage'
 import { useContacts } from '@/hooks/useContacts'
 import { matchesSearch } from '@/lib/search'
+import { sanitizeHtml } from '@/lib/sanitizeHtml'
 
 interface OriginalMessage {
   /** Gmail 내부 message id (recipients.gmail_message_id 또는 답장 메시지 id). */
@@ -407,7 +408,7 @@ export function ThreadComposeDialog({
                 <div
                   className="prose prose-sm max-w-none dark:prose-invert"
                   // 발송될 최종 HTML 그대로 — 본문 + (포함 옵션 시) 인용 블록
-                  dangerouslySetInnerHTML={{ __html: finalBodyHtml }}
+                  dangerouslySetInnerHTML={{ __html: sanitizeHtml(finalBodyHtml) }}
                 />
               </div>
             ) : (
@@ -488,7 +489,7 @@ export function ThreadComposeDialog({
                 <div
                   className="prose prose-sm max-w-none dark:prose-invert max-h-60 overflow-y-auto text-muted-foreground"
                   // 읽기 전용 미리보기 — 편집은 불가 (이전 대화이므로 수정할 일 없음)
-                  dangerouslySetInnerHTML={{ __html: original.bodyHtml ?? '' }}
+                  dangerouslySetInnerHTML={{ __html: sanitizeHtml(original.bodyHtml ?? '') }}
                 />
               </div>
             </details>
