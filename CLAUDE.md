@@ -52,8 +52,8 @@ SECURITY DEFINER + `SET search_path = mailcaster, public` 고정 필수.
 ### 마이그레이션
 - 위치: `supabase/migrations/`
 - 파일명 규칙: `NNN_description.sql` (3자리 순번)
-- **현재 최신 마이그레이션: `068_sequence_step_funnel.sql`**
-- 신규 마이그레이션 파일명은 `069_` 부터 시작
+- **현재 최신 마이그레이션: `070_encrypt_google_tokens.sql`**
+- 신규 마이그레이션 파일명은 `071_` 부터 시작 (반드시 migrations/ 디렉터리의 실제 최신 순번을 먼저 확인할 것)
 
 ---
 
@@ -96,7 +96,7 @@ src/
 └── types/              # TypeScript 인터페이스
 
 supabase/
-├── migrations/         # 001_~068_ SQL 마이그레이션 (순번 관리)
+├── migrations/         # 001_~070_ SQL 마이그레이션 (순번 관리)
 ├── functions/          # 16개 Deno Edge Functions
 │   ├── check-inbox/        # pg_cron: 인박스 폴링
 │   ├── check-replies/      # pg_cron: 답장 감지
