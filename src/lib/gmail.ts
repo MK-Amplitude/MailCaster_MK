@@ -278,12 +278,19 @@ function joinAddressList(list: string[] | undefined): string | undefined {
   return cleaned.length > 0 ? cleaned.join(', ') : undefined
 }
 
-// 이메일 주소 유효성 — @ 기호 기준 분리, 공백/CRLF 없는지 검사.
-// 헤더 인젝션 방지 (stripCRLF 이후 호출)용.
+// "Display Name <a@b>" 또는 raw 주소에서 이메일 부분만 추출.
+function extractEmailPart(addr: string): string {
+  const m = addr.match(/<([^>]+)>/)
+  return (m ? m[1] : addr).trim()
+}
+
+// 단일 이메일 주소 유효성 — @ 위치, 공백/CRLF/콤마 없는지 검사.
+// 주의: bulk 발송의 To 는 콤마로 연결된 목록이므로 호출자가 콤마 분리 후 개별 검증.
 function assertValidEmail(addr: string, field: string): void {
-  const atIdx = addr.lastIndexOf('@')
-  if (atIdx < 1 || atIdx === addr.length - 1 || /[\r\n\s]/.test(addr)) {
-    throw new Error(`Invalid ${field} address: ${addr.slice(0, 80)}`)
+  const email = extractEmailPart(addr)
+  const atIdx = email.lastIndexOf('@')
+  if (atIdx < 1 || atIdx === email.length - 1 || /[\r\n\s,]/.test(email)) {
+    throw new Error(`Invalid ${field} address: ${email.slice(0, 80)}`)
   }
 }
 
@@ -292,10 +299,11 @@ async function buildMime(input: Omit<SendMailInput, 'accessToken'>): Promise<str
   // 모든 헤더 입력값은 CR/LF 인젝션 방지를 위해 선제 sanitize.
   const cleanFrom = encodeAddressHeader(stripCRLF(from))
   const cleanTo = stripCRLF(to)
-  // 이메일 주소 형식 검증 — 잘못된 주소가 Gmail API 에 전달되기 전에 차단
-  assertValidEmail(cleanTo, 'To')
-  if (cc) for (const c of cc) assertValidEmail(stripCRLF(c.replace(/.*<(.+)>/, '$1').trim()), 'Cc')
-  if (bcc) for (const b of bcc) assertValidEmail(stripCRLF(b.replace(/.*<(.+)>/, '$1').trim()), 'Bcc')
+  // 이메일 주소 형식 검증 — 잘못된 주소가 Gmail API 에 전달되기 전에 차단.
+  // To 는 bulk 발송에서 "a@x.com, b@y.com" 콤마 목록이 올 수 있으므로 분리 후 개별 검증.
+  for (const part of cleanTo.split(',')) assertValidEmail(part, 'To')
+  if (cc) for (const c of cc) assertValidEmail(stripCRLF(c), 'Cc')
+  if (bcc) for (const b of bcc) assertValidEmail(stripCRLF(b), 'Bcc')
   const cleanReplyTo = replyTo ? encodeAddressHeader(stripCRLF(replyTo)) : undefined
   const ccLine = joinAddressList(cc)
   const bccLine = joinAddressList(bcc)

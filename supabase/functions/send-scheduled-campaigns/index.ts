@@ -28,7 +28,7 @@
 // ============================================================
 
 import { createClient } from 'jsr:@supabase/supabase-js@2'
-import { decryptToken, encryptToken } from '../_shared/tokenCrypto.ts'
+import { decryptToken } from '../_shared/tokenCrypto.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -448,12 +448,13 @@ async function processCampaign(
     }
   }
 
-  // 5) DB 업데이트 — 토큰 캐시 (암호화해서 저장)
+  // 5) DB 업데이트 — 토큰 캐시.
+  // access_token 은 평문 — 프론트 캐시 (googleToken.ts) 가 이 컬럼을 그대로 Bearer 로 사용.
   await supabase
     .schema('mailcaster')
     .from('profiles')
     .update({
-      google_access_token: await encryptToken(accessToken),
+      google_access_token: accessToken,
       token_expires_at: new Date(Date.now() + 55 * 60 * 1000).toISOString(), // 55분 안전마진
     })
     .eq('id', c.user_id)
@@ -728,7 +729,7 @@ async function processCampaign(
       const subject = subjOverride ?? renderTemplate(c.subject ?? '', vars)
       const renderedHtml = bodyOverride
         ? (linkSection ? `${bodyOverride}${linkSection}` : bodyOverride)
-        : renderTemplate(bodyWithLinks, vars)
+        : renderTemplateHtml(bodyWithLinks, vars)
       // Phase 6 (C) — 오픈 추적 픽셀 주입 (캠페인 설정 on 일 때만)
       const html = c.enable_open_tracking
         ? injectTrackingPixel(renderedHtml, buildTrackingPixel(r.id, c.id))
@@ -1100,6 +1101,20 @@ function renderTemplate(input: string, vars: Record<string, string>): string {
   return input.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, k) => {
     const v = vars[k]
     return v == null ? '' : String(v)
+  })
+}
+
+// HTML 본문용 — 변수 값을 HTML 엔티티로 이스케이프해 삽입 (클라이언트 renderTemplateHtml 과 동일 정책)
+function renderTemplateHtml(input: string, vars: Record<string, string>): string {
+  return input.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, k) => {
+    const v = vars[k]
+    if (v == null) return ''
+    return String(v)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
   })
 }
 

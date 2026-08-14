@@ -37,7 +37,7 @@ import { useSignatures } from '@/hooks/useSignatures'
 import { useCreateCampaign, useUpdateCampaign } from '@/hooks/useCampaigns'
 import { useSequenceOptions } from '@/hooks/useSequences'
 import { useValidateEmails, type ValidationResult } from '@/hooks/useValidateEmails'
-import { renderTemplate, extractVariables } from '@/lib/mailMerge'
+import { renderTemplate, renderTemplateHtml, extractVariables } from '@/lib/mailMerge'
 import { toast } from 'sonner'
 import type { Database } from '@/types/database.types'
 
@@ -1012,7 +1012,8 @@ export default function CampaignWizardPage() {
     }
     return {
       subject: renderTemplate(subject, vars),
-      html: renderTemplate(effectiveBody, vars),
+      // 발송 (useSendCampaign) 과 동일하게 HTML 컨텍스트는 이스케이프 치환 — 미리보기/실발송 일치
+      html: renderTemplateHtml(effectiveBody, vars),
       contact: base,
       // 샘플 fallback 이 적용된 필드 — UI 가 "예시값 사용 중" 표시 가능
       usedSamples: {
