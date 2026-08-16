@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Switch } from '@/components/ui/switch'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
@@ -331,6 +332,9 @@ export default function CampaignWizardPage() {
   // null = 후속 없음. (069)
   const [followupSequenceId, setFollowupSequenceId] = useState<string | null>(null)
 
+  // 오픈/클릭 트래킹 — 기본 ON. 픽셀 오픈 + 링크 클릭 추적을 동시에 제어 (072).
+  const [enableTracking, setEnableTracking] = useState(true)
+
   // 첨부 파일 — 블록 추가 시 해당 템플릿의 첨부가 자동 포함 + 수동 추가 가능
   const [attachments, setAttachments] = useState<DriveAttachmentRow[]>([])
 
@@ -471,7 +475,7 @@ export default function CampaignWizardPage() {
       try {
         const { data, error: cErr } = await supabase
           .from('campaigns')
-          .select('name, subject, signature_id, send_delay_seconds, cc, bcc, send_mode, body_html, scheduled_at, status, followup_sequence_id')
+          .select('name, subject, signature_id, send_delay_seconds, cc, bcc, send_mode, body_html, scheduled_at, status, followup_sequence_id, enable_open_tracking')
           .eq('id', loadFrom)
           .single()
         if (cancelled) return
@@ -512,6 +516,8 @@ export default function CampaignWizardPage() {
           setDelaySeconds((c.send_delay_seconds as number | null) ?? 3)
           setSendMode((c.send_mode as 'individual' | 'bulk' | null) === 'bulk' ? 'bulk' : 'individual')
           setFollowupSequenceId((c.followup_sequence_id as string | null) ?? null)
+          // 기존값 없으면(복제/legacy) 기본 ON
+          setEnableTracking((c.enable_open_tracking as boolean | null) ?? true)
 
           // Phase 7: CC/BCC 구조화 — 직접 입력 / 그룹 / 개별 연락처 각각 복원.
           // campaigns.cc 는 발송 시 사용되는 최종 이메일 배열(스냅샷) 이고,
@@ -1133,6 +1139,7 @@ export default function CampaignWizardPage() {
             bcc: resolvedBccEmails,
             send_mode: sendMode,
             followup_sequence_id: followupSequenceId,
+            enable_open_tracking: enableTracking,
             // 예약 시각 변경:
             //   scheduledAt 설정 → status='scheduled' + scheduled_at
             //   scheduledAt null → status='draft'     + scheduled_at=null (예약 해제)
@@ -1384,6 +1391,7 @@ export default function CampaignWizardPage() {
           bcc: resolvedBccEmails,
           send_mode: sendMode,
           followup_sequence_id: followupSequenceId,
+          enable_open_tracking: enableTracking,
         })
 
         // 2) campaign_blocks
@@ -1669,6 +1677,22 @@ export default function CampaignWizardPage() {
                       </p>
                     </div>
                   )}
+
+                  {/* 오픈/클릭 트래킹 토글 */}
+                  <div className="flex items-start justify-between gap-3 rounded-lg border p-3">
+                    <div className="min-w-0">
+                      <Label className="text-sm">오픈·클릭 추적</Label>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        메일 열람(픽셀)과 본문 링크 클릭을 추적해 분석에 표시합니다.
+                        {sendMode === 'bulk' && ' (일괄 발송 모드에서는 수신자별 추적이 불가해 적용되지 않습니다.)'}
+                      </p>
+                    </div>
+                    <Switch
+                      checked={enableTracking}
+                      onCheckedChange={setEnableTracking}
+                      disabled={sendMode === 'bulk'}
+                    />
+                  </div>
 
                   <ScheduleSection
                     scheduledAt={scheduledAt}
