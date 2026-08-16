@@ -17,6 +17,7 @@
 // verify_jwt=false 필요 (config.toml) — 메일 클라이언트의 익명 GET.
 
 import { createClient } from 'jsr:@supabase/supabase-js@2'
+import { buildClickPayload, hmacSig } from '../_shared/clickLinks.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -51,21 +52,6 @@ function isSafeHttpUrl(raw: string): boolean {
   }
 }
 
-async function hmacSig(payload: string): Promise<string> {
-  const key = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(CRON_SECRET),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  )
-  const sigBuf = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(payload))
-  const bytes = new Uint8Array(sigBuf)
-  let bin = ''
-  for (const b of bytes) bin += String.fromCharCode(b)
-  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '').slice(0, 22)
-}
-
 Deno.serve(async (req) => {
   try {
     if (req.method !== 'GET') return badRequest('GET only')
@@ -84,18 +70,21 @@ Deno.serve(async (req) => {
       ? UUID_RE.test(tmid)
       : UUID_RE.test(rid) && UUID_RE.test(cid)
 
-    // 서명 검증 — 발송 시점 서버가 만든 링크만 기록.
-    // 서명 불일치/누락은 기록 없이 리다이렉트만 (수신자 이동은 항상 보장).
+    // 서명 검증 — 발송 시점 서버가 서명한 링크만 통과.
+    // 미서명/불일치는 400 — 리다이렉트해주면 이 도메인이 open redirect 가 되어
+    // 피싱 링크 세탁에 악용됨. 정상 발송 메일의 링크는 항상 유효한 서명을 가짐.
     let verified = false
     if (idOk && sig && CRON_SECRET) {
-      const payload = isThread ? `${tmid}||${target}` : `${rid}|${cid}|${target}`
-      const expected = await hmacSig(payload)
+      const expected = await hmacSig(
+        buildClickPayload(isThread ? { tmid } : { rid, cid }, target),
+        CRON_SECRET,
+      )
       // 고정 길이 문자열이라 timing 차이는 실질 위험 없음 (22자 base64url)
       verified = sig === expected
     }
 
     if (!verified) {
-      return redirect(target)
+      return badRequest('invalid signature')
     }
 
     const ip =
@@ -136,11 +125,7 @@ Deno.serve(async (req) => {
     return redirect(target)
   } catch (e) {
     console.error('[track-click] fatal:', e instanceof Error ? e.message : e)
-    // 오류가 나도 목적지 이동은 보장 — u 파라미터가 안전하면 리다이렉트
-    try {
-      const target = new URL(req.url).searchParams.get('u') ?? ''
-      if (isSafeHttpUrl(target)) return redirect(target)
-    } catch { /* fall through */ }
+    // 검증 전 예외에서 리다이렉트하면 open redirect 우회로가 되므로 항상 400.
     return badRequest('error')
   }
 })

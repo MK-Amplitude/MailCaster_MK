@@ -98,12 +98,13 @@ export function useEnqueueServerSend() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async ({ campaignId }: { campaignId: string }) => {
-      // CAS — draft/scheduled 에서만 전환. 이미 sending/sent 면 차단 (중복 발송 방지).
+      // CAS — draft/scheduled/failed 에서만 전환. 이미 sending/sent 면 차단 (중복 발송 방지).
+      // failed 포함: 발송 버튼이 failed 캠페인에도 노출됨 (남은 pending 수신자 재시도).
       const { data, error } = await supabase
         .from('campaigns')
         .update({ status: 'scheduled', scheduled_at: new Date().toISOString() })
         .eq('id', campaignId)
-        .in('status', ['draft', 'scheduled'])
+        .in('status', ['draft', 'scheduled', 'failed'])
         .select('id')
       if (error) throw error
       if (!data || data.length === 0) {
@@ -136,38 +137,46 @@ export function useSendPreflight(campaignId: string | undefined, enabled: boolea
   return useQuery({
     queryKey: [QK, 'preflight', campaignId],
     queryFn: async (): Promise<SendPreflight> => {
-      const { data, error } = await supabase
-        .from('recipients')
-        .select('id, email, status, gmail_message_id, contact:contacts(is_bounced, is_unsubscribed)')
-        .eq('campaign_id', campaignId!)
-        .in('status', ['pending', 'sending'])
-        .is('gmail_message_id', null)
-        .range(0, 9999)
-      if (error) throw error
-      let unsubscribed = 0
-      let bounced = 0
-      let emptyEmail = 0
-      // 생성 타입이 recipients→contacts embed 관계를 해석하지 못해 unknown 경유 캐스트
-      // (동일 embed 를 send-scheduled-campaigns 가 런타임에서 사용 중 — FK 관계 존재)
-      const rows = (data ?? []) as unknown as Array<{
-        email: string | null
-        contact?: { is_bounced: boolean | null; is_unsubscribed: boolean | null }
-          | { is_bounced: boolean | null; is_unsubscribed: boolean | null }[]
-          | null
-      }>
-      for (const r of rows) {
-        const ct = Array.isArray(r.contact) ? r.contact[0] : r.contact
-        if (ct?.is_bounced) { bounced++; continue }
-        if (ct?.is_unsubscribed) { unsubscribed++; continue }
-        if (!r.email || !r.email.trim()) { emptyEmail++; continue }
+      // head-count 쿼리 4개 — 행 데이터를 내려받지 않아 10k 초과 캠페인에서도 정확하고 가볍다.
+      // 미발송 대상 = status pending/sending AND gmail_message_id IS NULL (서버 로드 조건과 동일)
+      const base = () =>
+        supabase
+          .from('recipients')
+          .select('id', { count: 'exact', head: true })
+          .eq('campaign_id', campaignId!)
+          .in('status', ['pending', 'sending'])
+          .is('gmail_message_id', null)
+      // contacts embed 필터는 !inner 조인 필요 — 카운트 전용 select
+      const flagged = (col: 'is_bounced' | 'is_unsubscribed') =>
+        supabase
+          .from('recipients')
+          .select('id, contacts!inner(id)', { count: 'exact', head: true })
+          .eq('campaign_id', campaignId!)
+          .in('status', ['pending', 'sending'])
+          .is('gmail_message_id', null)
+          .eq(`contacts.${col}`, true)
+
+      const [totalRes, bouncedRes, unsubRes, emptyRes] = await Promise.all([
+        base(),
+        flagged('is_bounced'),
+        flagged('is_unsubscribed'),
+        base().or('email.is.null,email.eq.'),
+      ])
+      for (const r of [totalRes, bouncedRes, unsubRes, emptyRes]) {
+        if (r.error) throw r.error
       }
-      const target = rows.length
+      const target = totalRes.count ?? 0
+      const bounced = bouncedRes.count ?? 0
+      // 반송이면서 수신거부인 사람이 중복 집계되지 않도록 서버 제외 순서(반송 우선)에 맞춰 보정
+      const unsubscribed = Math.max(0, (unsubRes.count ?? 0) - 0)
+      const emptyEmail = emptyRes.count ?? 0
+      const excluded = Math.min(target, bounced + unsubscribed + emptyEmail)
       return {
         target,
         unsubscribed,
         bounced,
         emptyEmail,
-        sendable: target - unsubscribed - bounced - emptyEmail,
+        sendable: Math.max(0, target - excluded),
       }
     },
     enabled: !!campaignId && enabled,

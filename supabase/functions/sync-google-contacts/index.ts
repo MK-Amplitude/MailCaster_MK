@@ -248,52 +248,69 @@ Deno.serve(async (req) => {
     let otherNextSyncToken: string | null = null
     const includeOther = profile.google_contacts_include_other === true
     if (includeOther) {
-      let useOtherToken = !body.force_full && !!profile.google_contacts_other_sync_token
-      let otherPageToken: string | undefined = undefined
-      let otherRetried = false
-      while (true) {
-        const params = new URLSearchParams({
-          // otherContacts 는 personFields 가 아니라 readMask, 지원 필드도 제한적
-          readMask: 'names,emailAddresses,phoneNumbers,metadata',
-          pageSize: '1000',
-          requestSyncToken: 'true',
-        })
-        if (otherPageToken) params.set('pageToken', otherPageToken)
-        else if (useOtherToken) {
-          params.set('syncToken', profile.google_contacts_other_sync_token as string)
-        }
-        const res = await fetch(
-          `https://people.googleapis.com/v1/otherContacts?${params.toString()}`,
-          { headers: { Authorization: `Bearer ${accessToken}` } },
-        )
-        if (res.status === 401 || res.status === 403) {
-          otherScopeMissing = true
-          console.warn('[sync-google-contacts] otherContacts scope missing')
-          break
-        }
-        if (res.status === 410 || res.status === 400) {
-          const bodyText = await res.text()
-          const expired =
-            res.status === 410 || /EXPIRED_SYNC_TOKEN|Sync token is expired/i.test(bodyText)
-          if (expired && useOtherToken && !otherRetried) {
-            otherRetried = true
-            useOtherToken = false
-            otherPageToken = undefined
-            otherNextSyncToken = null
-            continue
+      // 전체를 try 로 격리 — otherContacts 의 어떤 실패(5xx/네트워크)도
+      // 이미 수집한 메인 connections 동기화를 무산시키지 않는다.
+      try {
+        let useOtherToken = !body.force_full && !!profile.google_contacts_other_sync_token
+        let otherPageToken: string | undefined = undefined
+        let otherRetried = false
+        while (true) {
+          const params = new URLSearchParams({
+            // otherContacts 는 personFields 가 아니라 readMask, 지원 필드도 제한적
+            readMask: 'names,emailAddresses,phoneNumbers,metadata',
+            pageSize: '1000',
+            requestSyncToken: 'true',
+          })
+          if (otherPageToken) params.set('pageToken', otherPageToken)
+          else if (useOtherToken) {
+            params.set('syncToken', profile.google_contacts_other_sync_token as string)
           }
-          throw new Error(`People otherContacts ${res.status}: ${bodyText.slice(0, 300)}`)
+          const res = await fetch(
+            `https://people.googleapis.com/v1/otherContacts?${params.toString()}`,
+            { headers: { Authorization: `Bearer ${accessToken}` } },
+          )
+          if (res.status === 401 || res.status === 403) {
+            // scope 누락과 일시적 인증 오류 구분 — scope 계열 메시지일 때만 재로그인 안내
+            const bodyText = await res.text().catch(() => '')
+            if (/insufficient|scope|PERMISSION_DENIED|ACCESS_TOKEN_SCOPE/i.test(bodyText)) {
+              otherScopeMissing = true
+              console.warn('[sync-google-contacts] otherContacts scope missing')
+            } else {
+              console.warn('[sync-google-contacts] otherContacts auth transient:', res.status, bodyText.slice(0, 150))
+            }
+            break
+          }
+          if (res.status === 410 || res.status === 400) {
+            const bodyText = await res.text()
+            const expired =
+              res.status === 410 || /EXPIRED_SYNC_TOKEN|Sync token is expired/i.test(bodyText)
+            if (expired && useOtherToken && !otherRetried) {
+              otherRetried = true
+              useOtherToken = false
+              otherPageToken = undefined
+              otherNextSyncToken = null
+              continue
+            }
+            throw new Error(`People otherContacts ${res.status}: ${bodyText.slice(0, 300)}`)
+          }
+          if (!res.ok) {
+            const bodyText = await res.text()
+            throw new Error(`People otherContacts ${res.status}: ${bodyText.slice(0, 300)}`)
+          }
+          const data = await res.json()
+          // 응답 shape 은 connections 과 동일 (names/emailAddresses/phoneNumbers/metadata)
+          if (Array.isArray(data.otherContacts)) connections.push(...data.otherContacts)
+          otherPageToken = data.nextPageToken
+          if (data.nextSyncToken) otherNextSyncToken = data.nextSyncToken
+          if (!otherPageToken) break
         }
-        if (!res.ok) {
-          const bodyText = await res.text()
-          throw new Error(`People otherContacts ${res.status}: ${bodyText.slice(0, 300)}`)
-        }
-        const data = await res.json()
-        // 응답 shape 은 connections 과 동일 (names/emailAddresses/phoneNumbers/metadata)
-        if (Array.isArray(data.otherContacts)) connections.push(...data.otherContacts)
-        otherPageToken = data.nextPageToken
-        if (data.nextSyncToken) otherNextSyncToken = data.nextSyncToken
-        if (!otherPageToken) break
+      } catch (e) {
+        // 실패해도 메인 동기화는 계속 — 토큰 미저장이라 다음 실행에서 재시도됨
+        otherNextSyncToken = null
+        console.warn(
+          '[sync-google-contacts] otherContacts sync failed (main sync unaffected):',
+          e instanceof Error ? e.message : e,
+        )
       }
     }
 

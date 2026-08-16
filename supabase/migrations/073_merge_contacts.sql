@@ -85,14 +85,22 @@ BEGIN
      WHERE p.id = p_primary_id;
   END LOOP;
 
-  -- 2) 그룹 멤버십 이전 — UNIQUE(contact_id, group_id) 충돌 행은 중복이므로 skip
+  -- 2) 그룹 멤버십 이전 — UNIQUE(contact_id, group_id) 충돌 행은 중복이므로 skip.
+  --    주의: 병합 대상 2명이 같은 그룹에 있으면 단순 UPDATE ... NOT EXISTS 는
+  --    한 statement 안에서 둘 다 통과해 UNIQUE 위반으로 전체 롤백됨 →
+  --    그룹당 1행만 DISTINCT ON 으로 골라 이전.
   UPDATE mailcaster.contact_groups cg
      SET contact_id = p_primary_id
-   WHERE cg.contact_id = ANY(v_merge_ids)
-     AND NOT EXISTS (
-       SELECT 1 FROM mailcaster.contact_groups x
-        WHERE x.contact_id = p_primary_id AND x.group_id = cg.group_id
-     );
+   WHERE cg.id IN (
+     SELECT DISTINCT ON (e.group_id) e.id
+       FROM mailcaster.contact_groups e
+      WHERE e.contact_id = ANY(v_merge_ids)
+        AND NOT EXISTS (
+          SELECT 1 FROM mailcaster.contact_groups x
+           WHERE x.contact_id = p_primary_id AND x.group_id = e.group_id
+        )
+      ORDER BY e.group_id
+   );
   DELETE FROM mailcaster.contact_groups WHERE contact_id = ANY(v_merge_ids);
 
   -- 3) 발송/수신 이력 이전 (히스토리 보존)
@@ -111,51 +119,88 @@ BEGIN
   UPDATE mailcaster.contact_notes SET contact_id = p_primary_id
    WHERE contact_id = ANY(v_merge_ids);
 
-  -- 시퀀스 등록 — UNIQUE(sequence_id, contact_id) 충돌은 대표가 이미 등록된 것이므로 중복 삭제
+  -- 시퀀스 등록 — UNIQUE(sequence_id, contact_id) 충돌 처리.
+  -- 정책: active 우선 — 병합 대상의 진행 중(cadence) enrollment 이 대표의 종료된
+  -- enrollment 때문에 삭제되면 자동 후속 발송이 소리 없이 끊긴다.
+  -- 대표에 같은 시퀀스의 "종료" 행이 있고 병합 대상이 "active" 면 대표의 종료 행을 지우고 이전.
+  DELETE FROM mailcaster.sequence_enrollments p
+   USING mailcaster.sequence_enrollments e
+   WHERE p.contact_id = p_primary_id
+     AND p.status <> 'active'
+     AND e.contact_id = ANY(v_merge_ids)
+     AND e.sequence_id = p.sequence_id
+     AND e.status = 'active';
   UPDATE mailcaster.sequence_enrollments se
      SET contact_id = p_primary_id
-   WHERE se.contact_id = ANY(v_merge_ids)
-     AND NOT EXISTS (
-       SELECT 1 FROM mailcaster.sequence_enrollments x
-        WHERE x.sequence_id = se.sequence_id AND x.contact_id = p_primary_id
-     );
+   WHERE se.id IN (
+     SELECT DISTINCT ON (e.sequence_id) e.id
+       FROM mailcaster.sequence_enrollments e
+      WHERE e.contact_id = ANY(v_merge_ids)
+        AND NOT EXISTS (
+          SELECT 1 FROM mailcaster.sequence_enrollments x
+           WHERE x.sequence_id = e.sequence_id AND x.contact_id = p_primary_id
+        )
+      -- 같은 시퀀스에 병합 대상 2명 이상이면 active > 최신 등록 순으로 1명만 이전
+      ORDER BY e.sequence_id, (e.status = 'active') DESC, e.enrolled_at DESC
+   );
   DELETE FROM mailcaster.sequence_enrollments WHERE contact_id = ANY(v_merge_ids);
 
   -- 캠페인 바구니/제외/CC/BCC — UNIQUE(campaign_id, contact_id) 충돌 skip 후 잔여 삭제
+  -- (그룹과 동일하게 캠페인당 1행만 DISTINCT ON 으로 이전)
   UPDATE mailcaster.campaign_contacts cc
      SET contact_id = p_primary_id
-   WHERE cc.contact_id = ANY(v_merge_ids)
-     AND NOT EXISTS (
-       SELECT 1 FROM mailcaster.campaign_contacts x
-        WHERE x.campaign_id = cc.campaign_id AND x.contact_id = p_primary_id
-     );
+   WHERE cc.id IN (
+     SELECT DISTINCT ON (e.campaign_id) e.id
+       FROM mailcaster.campaign_contacts e
+      WHERE e.contact_id = ANY(v_merge_ids)
+        AND NOT EXISTS (
+          SELECT 1 FROM mailcaster.campaign_contacts x
+           WHERE x.campaign_id = e.campaign_id AND x.contact_id = p_primary_id
+        )
+      ORDER BY e.campaign_id
+   );
   DELETE FROM mailcaster.campaign_contacts WHERE contact_id = ANY(v_merge_ids);
 
   UPDATE mailcaster.campaign_exclusions ce
      SET contact_id = p_primary_id
-   WHERE ce.contact_id = ANY(v_merge_ids)
-     AND NOT EXISTS (
-       SELECT 1 FROM mailcaster.campaign_exclusions x
-        WHERE x.campaign_id = ce.campaign_id AND x.contact_id = p_primary_id
-     );
+   WHERE ce.id IN (
+     SELECT DISTINCT ON (e.campaign_id) e.id
+       FROM mailcaster.campaign_exclusions e
+      WHERE e.contact_id = ANY(v_merge_ids)
+        AND NOT EXISTS (
+          SELECT 1 FROM mailcaster.campaign_exclusions x
+           WHERE x.campaign_id = e.campaign_id AND x.contact_id = p_primary_id
+        )
+      ORDER BY e.campaign_id
+   );
   DELETE FROM mailcaster.campaign_exclusions WHERE contact_id = ANY(v_merge_ids);
 
   UPDATE mailcaster.campaign_cc_contacts cc2
      SET contact_id = p_primary_id
-   WHERE cc2.contact_id = ANY(v_merge_ids)
-     AND NOT EXISTS (
-       SELECT 1 FROM mailcaster.campaign_cc_contacts x
-        WHERE x.campaign_id = cc2.campaign_id AND x.contact_id = p_primary_id
-     );
+   WHERE cc2.id IN (
+     SELECT DISTINCT ON (e.campaign_id) e.id
+       FROM mailcaster.campaign_cc_contacts e
+      WHERE e.contact_id = ANY(v_merge_ids)
+        AND NOT EXISTS (
+          SELECT 1 FROM mailcaster.campaign_cc_contacts x
+           WHERE x.campaign_id = e.campaign_id AND x.contact_id = p_primary_id
+        )
+      ORDER BY e.campaign_id
+   );
   DELETE FROM mailcaster.campaign_cc_contacts WHERE contact_id = ANY(v_merge_ids);
 
   UPDATE mailcaster.campaign_bcc_contacts bc
      SET contact_id = p_primary_id
-   WHERE bc.contact_id = ANY(v_merge_ids)
-     AND NOT EXISTS (
-       SELECT 1 FROM mailcaster.campaign_bcc_contacts x
-        WHERE x.campaign_id = bc.campaign_id AND x.contact_id = p_primary_id
-     );
+   WHERE bc.id IN (
+     SELECT DISTINCT ON (e.campaign_id) e.id
+       FROM mailcaster.campaign_bcc_contacts e
+      WHERE e.contact_id = ANY(v_merge_ids)
+        AND NOT EXISTS (
+          SELECT 1 FROM mailcaster.campaign_bcc_contacts x
+           WHERE x.campaign_id = e.campaign_id AND x.contact_id = p_primary_id
+        )
+      ORDER BY e.campaign_id
+   );
   DELETE FROM mailcaster.campaign_bcc_contacts WHERE contact_id = ANY(v_merge_ids);
 
   -- 4) 병합 대상 삭제 (남은 CASCADE 참조 — company_history 등 — 는 함께 정리됨)

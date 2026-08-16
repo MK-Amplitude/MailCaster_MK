@@ -15,7 +15,12 @@ export interface ClickWrapTarget {
   tmid?: string
 }
 
-async function hmacSig(payload: string, secret: string): Promise<string> {
+// track-click/index.ts 와 공유 — 서명 규칙이 한 곳에만 존재하도록 export.
+export function buildClickPayload(target: ClickWrapTarget, url: string): string {
+  return target.tmid ? `${target.tmid}||${url}` : `${target.rid}|${target.cid}|${url}`
+}
+
+export async function hmacSig(payload: string, secret: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     'raw',
     new TextEncoder().encode(secret),
@@ -28,6 +33,23 @@ async function hmacSig(payload: string, secret: string): Promise<string> {
   let bin = ''
   for (const b of bytes) bin += String.fromCharCode(b)
   return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '').slice(0, 22)
+}
+
+// href 속성값의 HTML 엔티티 디코드 — TipTap/innerHTML 이 '&' 를 &amp; 로 직렬화하므로
+// 디코드 없이 서명/리다이렉트하면 쿼리 파라미터가 'amp;b=2' 로 깨진다.
+function decodeHtmlEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#0*39;/g, "'")
+    .replace(/&#0*38;/g, '&')
+}
+
+// 반대로 HTML 속성에 삽입할 때는 & 를 엔티티로 이스케이프 (유효한 HTML 유지)
+function encodeForHtmlAttr(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;')
 }
 
 function isWrappableHref(href: string, trackBase: string): boolean {
@@ -52,27 +74,27 @@ export async function wrapLinksForClickTracking(
 
   const trackBase = `${supabaseUrl}/functions/v1/track-click`
 
-  // href 수집 (중복 URL 은 서명 1회만 계산)
+  // href 수집 (중복 URL 은 서명 1회만 계산) — 속성값은 엔티티 디코드 후 서명
   const hrefRe = /(<a\b[^>]*?\bhref=)(["'])([^"']+)\2/gi
   const unique = new Set<string>()
   let m: RegExpExecArray | null
   while ((m = hrefRe.exec(html)) !== null) {
-    if (isWrappableHref(m[3], trackBase)) unique.add(m[3])
+    const decoded = decodeHtmlEntities(m[3])
+    if (isWrappableHref(decoded, trackBase)) unique.add(m[3]) // 원문 속성값을 키로
   }
   if (unique.size === 0) return html
 
   const wrapped = new Map<string, string>()
-  for (const href of unique) {
-    const payload = isThread
-      ? `${target.tmid}||${href}`
-      : `${target.rid}|${target.cid}|${href}`
-    const sig = await hmacSig(payload, secret)
+  for (const rawHref of unique) {
+    const decoded = decodeHtmlEntities(rawHref)
+    const sig = await hmacSig(buildClickPayload(target, decoded), secret)
     const params = new URLSearchParams(
       isThread
-        ? { tmid: target.tmid!, u: href, s: sig }
-        : { rid: target.rid!, cid: target.cid!, u: href, s: sig },
+        ? { tmid: target.tmid!, u: decoded, s: sig }
+        : { rid: target.rid!, cid: target.cid!, u: decoded, s: sig },
     )
-    wrapped.set(href, `${trackBase}?${params.toString()}`)
+    // HTML 속성에 다시 들어가므로 & → &amp; 이스케이프 (유효 HTML)
+    wrapped.set(rawHref, encodeForHtmlAttr(`${trackBase}?${params.toString()}`))
   }
 
   return html.replace(hrefRe, (full, prefix, quote, href) => {
