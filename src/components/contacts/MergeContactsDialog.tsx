@@ -2,7 +2,7 @@
 // 나머지의 발송/수신 이력·그룹·시퀀스 참조가 대표로 이전되고 삭제된다.
 // 대표의 빈 필드는 병합 대상의 값으로 자동 보완 (서버 RPC 정책).
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Dialog,
   DialogContent,
@@ -28,9 +28,15 @@ export function MergeContactsDialog({ open, onOpenChange, contacts, onDone }: Pr
   const merge = useMergeContacts()
   const [primaryId, setPrimaryId] = useState<string | null>(null)
 
-  // 열릴 때마다 초기화 — 기본 대표는 첫 번째(최신 등록)
+  // open 이 false→true 로 전이할 때만 기본 대표 초기화.
+  // deps 에 contacts 를 넣으면 배경 refetch(useContacts)로 배열 identity 가 바뀔 때마다
+  // 사용자가 고른 대표가 첫 항목으로 되돌아가 엉뚱한 대표로 병합될 수 있음.
+  const wasOpen = useRef(false)
   useEffect(() => {
-    if (open) setPrimaryId(contacts[0]?.id ?? null)
+    if (open && !wasOpen.current) {
+      setPrimaryId(contacts[0]?.id ?? null)
+    }
+    wasOpen.current = open
   }, [open, contacts])
 
   const handleMerge = async () => {

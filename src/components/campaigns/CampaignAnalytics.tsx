@@ -59,11 +59,17 @@ export function CampaignAnalytics({
    * 주어지지 않으면 true 로 간주 (하위호환).
    */
   enableOpenTracking = true,
+  sendMode,
 }: {
   recipients: Recipient[]
   enableOpenTracking?: boolean
+  /** 'bulk' 이면 픽셀/링크 트래킹이 원천적으로 불가 (본문 공유) — 지표를 "비활성" 으로 표기 */
+  sendMode?: string | null
 }) {
   const analytics = useMemo(() => computeAnalytics(recipients), [recipients])
+  // bulk 발송은 수신자별 rid 가 없어 오픈/클릭 트래킹 자체가 불가능.
+  // 설정이 on 이어도 카운터가 영원히 0 이므로 "비활성" 으로 표시해 오해 방지.
+  const trackingEffective = enableOpenTracking && sendMode !== 'bulk'
 
   if (recipients.length === 0) return null
 
@@ -90,21 +96,21 @@ export function CampaignAnalytics({
           <Metric
             label="오픈율"
             value={
-              !enableOpenTracking
+              !trackingEffective
                 ? '비활성'
                 : analytics.sentCount > 0
                 ? `${analytics.openRate.toFixed(1)}%`
                 : '-'
             }
             subValue={
-              !enableOpenTracking
-                ? '오픈 추적 꺼짐'
+              !trackingEffective
+                ? (sendMode === 'bulk' ? '일괄 발송은 추적 불가' : '오픈 추적 꺼짐')
                 : analytics.sentCount > 0
                 ? `${analytics.openedCount}/${analytics.sentCount}`
                 : undefined
             }
             tone={
-              !enableOpenTracking || analytics.sentCount === 0
+              !trackingEffective || analytics.sentCount === 0
                 ? 'neutral'
                 : analytics.openRate >= 40
                 ? 'success'
@@ -116,21 +122,21 @@ export function CampaignAnalytics({
           <Metric
             label="클릭률"
             value={
-              !enableOpenTracking
+              !trackingEffective
                 ? '비활성'
                 : analytics.sentCount > 0
                 ? `${analytics.clickRate.toFixed(1)}%`
                 : '-'
             }
             subValue={
-              !enableOpenTracking
+              !trackingEffective
                 ? '트래킹 꺼짐'
                 : analytics.sentCount > 0
                 ? `${analytics.clickedCount}/${analytics.sentCount}`
                 : undefined
             }
             tone={
-              !enableOpenTracking || analytics.sentCount === 0
+              !trackingEffective || analytics.sentCount === 0
                 ? 'neutral'
                 : analytics.clickRate >= 10
                 ? 'success'

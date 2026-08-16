@@ -7,6 +7,13 @@
 --   - 캠페인 개별 발송: rid+cid 로 수신자 단위 기록
 --   - 시퀀스/스레드 발송: tmid 로 기록
 -- URL 은 발송 시점에 HMAC 서명되어 open-redirect 악용 차단 (track-click 에서 검증).
+--
+-- 운영 설정(권장): CLICK_SIGNING_SECRET secret 을 등록하면 링크 서명 전용 키로 사용.
+--   미설정 시 CRON_SECRET 으로 폴백(하위 호환). 전용 키를 쓰면 노출면 분리 +
+--   향후 회전 가능. 단, 키를 바꾸면 이미 발송된 메일의 링크 서명이 무효화되므로
+--   회전 시 dual-key 검증이 필요(추후). 초기 배포는 폴백으로 무중단.
+--   생성: node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+--   등록: supabase secrets set CLICK_SIGNING_SECRET=<값>
 -- =====================================================================
 
 -- 1) 수신자/캠페인/스레드 클릭 카운터

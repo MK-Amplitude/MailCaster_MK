@@ -556,6 +556,7 @@ export default function CampaignDetailPage() {
           <CampaignAnalytics
             recipients={recipients}
             enableOpenTracking={campaign.enable_open_tracking}
+            sendMode={campaign.send_mode}
           />
         )}
 

@@ -34,6 +34,9 @@ import { wrapLinksForClickTracking } from '../_shared/clickLinks.ts'
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 const CRON_SECRET = Deno.env.get('CRON_SECRET') ?? ''
+// 클릭 링크 서명 전용 키 (track-click 과 동일 우선순위) — 미설정 시 CRON_SECRET 폴백
+const CLICK_SIGNING_SECRET =
+  Deno.env.get('CLICK_SIGNING_SECRET') ?? Deno.env.get('CRON_SECRET') ?? ''
 const GOOGLE_CLIENT_ID = Deno.env.get('GOOGLE_CLIENT_ID')!
 const GOOGLE_CLIENT_SECRET = Deno.env.get('GOOGLE_CLIENT_SECRET')!
 
@@ -795,7 +798,7 @@ async function processCampaign(
             renderedHtml,
             { rid: r.id, cid: c.id },
             SUPABASE_URL,
-            CRON_SECRET,
+            CLICK_SIGNING_SECRET,
           )
         : renderedHtml
       // Phase 6 (C) — 오픈 추적 픽셀 주입 (캠페인 설정 on 일 때만)

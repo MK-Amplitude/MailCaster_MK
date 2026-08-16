@@ -20,6 +20,9 @@ import { wrapLinksForClickTracking } from '../_shared/clickLinks.ts'
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 const CRON_SECRET = Deno.env.get('CRON_SECRET') ?? ''
+// 클릭 링크 서명 전용 키 (track-click 과 동일 우선순위) — 미설정 시 CRON_SECRET 폴백
+const CLICK_SIGNING_SECRET =
+  Deno.env.get('CLICK_SIGNING_SECRET') ?? Deno.env.get('CRON_SECRET') ?? ''
 const GOOGLE_CLIENT_ID = Deno.env.get('GOOGLE_CLIENT_ID')!
 const GOOGLE_CLIENT_SECRET = Deno.env.get('GOOGLE_CLIENT_SECRET')!
 
@@ -289,7 +292,7 @@ Deno.serve(async (req) => {
           bodyHtml,
           { tmid: tmId },
           SUPABASE_URL,
-          CRON_SECRET,
+          CLICK_SIGNING_SECRET,
         )
         const htmlWithPixel = injectTrackingPixel(linkWrapped, buildThreadTrackingPixel(tmId))
 

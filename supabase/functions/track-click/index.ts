@@ -21,7 +21,10 @@ import { buildClickPayload, hmacSig } from '../_shared/clickLinks.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-const CRON_SECRET = Deno.env.get('CRON_SECRET') ?? ''
+// 클릭 링크 서명은 전용 키 우선 — CRON_SECRET(여러 함수의 Bearer)과 분리해
+// 노출면을 줄이고 향후 회전을 가능케 함. 미설정 시 CRON_SECRET 폴백(하위 호환).
+const CLICK_SIGNING_SECRET =
+  Deno.env.get('CLICK_SIGNING_SECRET') ?? Deno.env.get('CRON_SECRET') ?? ''
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 // 봇/스캐너 UA — 기록 스킵 (리다이렉트는 수행). track-open 과 동일 목록.
@@ -40,6 +43,15 @@ function redirect(url: string): Response {
 
 function badRequest(msg: string): Response {
   return new Response(msg, { status: 400 })
+}
+
+// 상수시간 문자열 비교 — 서명 검증의 조기 종료 timing 채널 제거.
+// 길이가 다르면 즉시 false (길이는 비밀이 아님: 항상 22자 base64url).
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false
+  let diff = 0
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
+  return diff === 0
 }
 
 // http/https 만 리다이렉트 허용 — javascript:/data: 등 차단
@@ -74,13 +86,12 @@ Deno.serve(async (req) => {
     // 미서명/불일치는 400 — 리다이렉트해주면 이 도메인이 open redirect 가 되어
     // 피싱 링크 세탁에 악용됨. 정상 발송 메일의 링크는 항상 유효한 서명을 가짐.
     let verified = false
-    if (idOk && sig && CRON_SECRET) {
+    if (idOk && sig && CLICK_SIGNING_SECRET) {
       const expected = await hmacSig(
         buildClickPayload(isThread ? { tmid } : { rid, cid }, target),
-        CRON_SECRET,
+        CLICK_SIGNING_SECRET,
       )
-      // 고정 길이 문자열이라 timing 차이는 실질 위험 없음 (22자 base64url)
-      verified = sig === expected
+      verified = timingSafeEqual(sig, expected)
     }
 
     if (!verified) {
