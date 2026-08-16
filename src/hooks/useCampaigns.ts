@@ -146,20 +146,29 @@ export function useSendPreflight(campaignId: string | undefined, enabled: boolea
           .eq('campaign_id', campaignId!)
           .in('status', ['pending', 'sending'])
           .is('gmail_message_id', null)
-      // contacts embed 필터는 !inner 조인 필요 — 카운트 전용 select
-      const flagged = (col: 'is_bounced' | 'is_unsubscribed') =>
-        supabase
-          .from('recipients')
-          .select('id, contacts!inner(id)', { count: 'exact', head: true })
-          .eq('campaign_id', campaignId!)
-          .in('status', ['pending', 'sending'])
-          .is('gmail_message_id', null)
-          .eq(`contacts.${col}`, true)
+      // 서버(send-scheduled-campaigns)는 반송 우선으로 제외하므로 카운트도 같은 순서로:
+      //   bounced = is_bounced
+      //   unsubscribed = is_unsubscribed AND NOT is_bounced (반송자와 중복 집계 방지)
+      const bouncedQ = supabase
+        .from('recipients')
+        .select('id, contacts!inner(id)', { count: 'exact', head: true })
+        .eq('campaign_id', campaignId!)
+        .in('status', ['pending', 'sending'])
+        .is('gmail_message_id', null)
+        .eq('contacts.is_bounced', true)
+      const unsubQ = supabase
+        .from('recipients')
+        .select('id, contacts!inner(id)', { count: 'exact', head: true })
+        .eq('campaign_id', campaignId!)
+        .in('status', ['pending', 'sending'])
+        .is('gmail_message_id', null)
+        .eq('contacts.is_unsubscribed', true)
+        .eq('contacts.is_bounced', false)
 
       const [totalRes, bouncedRes, unsubRes, emptyRes] = await Promise.all([
         base(),
-        flagged('is_bounced'),
-        flagged('is_unsubscribed'),
+        bouncedQ,
+        unsubQ,
         base().or('email.is.null,email.eq.'),
       ])
       for (const r of [totalRes, bouncedRes, unsubRes, emptyRes]) {
@@ -167,8 +176,7 @@ export function useSendPreflight(campaignId: string | undefined, enabled: boolea
       }
       const target = totalRes.count ?? 0
       const bounced = bouncedRes.count ?? 0
-      // 반송이면서 수신거부인 사람이 중복 집계되지 않도록 서버 제외 순서(반송 우선)에 맞춰 보정
-      const unsubscribed = Math.max(0, (unsubRes.count ?? 0) - 0)
+      const unsubscribed = unsubRes.count ?? 0
       const emptyEmail = emptyRes.count ?? 0
       const excluded = Math.min(target, bounced + unsubscribed + emptyEmail)
       return {

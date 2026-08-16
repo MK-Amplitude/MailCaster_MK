@@ -61,6 +61,20 @@ BEGIN
     RAISE EXCEPTION '병합 대상 중 존재하지 않는 연락처가 있습니다.';
   END IF;
 
+  -- 소유권 검증 — DEFINER 가 RLS 를 우회하므로 contacts UPDATE/DELETE 정책
+  -- (contacts_*_own_or_admin: user_id = auth.uid() OR org admin) 을 여기서 재현.
+  -- org admin 이 아니면 대표+대상 전원을 호출자 본인이 소유해야 병합 가능.
+  -- (없으면 일반 멤버가 남의 연락처를 마킹 변경/영구 삭제할 수 있는 권한 상승)
+  IF NOT mailcaster.user_is_org_admin(v_org) THEN
+    IF EXISTS (
+      SELECT 1 FROM mailcaster.contacts
+       WHERE (id = p_primary_id OR id = ANY(v_merge_ids))
+         AND user_id IS DISTINCT FROM auth.uid()
+    ) THEN
+      RAISE EXCEPTION '본인이 소유한 연락처만 병합할 수 있습니다 (관리자 제외).';
+    END IF;
+  END IF;
+
   -- 1) 대표 빈 필드 보완 — 병합 대상들을 최신 생성순으로 훑으며 채움
   FOR v_row IN
     SELECT * FROM mailcaster.contacts

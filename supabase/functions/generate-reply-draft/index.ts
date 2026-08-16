@@ -196,8 +196,8 @@ ${parsed.sender_name ? `보내는 사람: ${parsed.sender_name}` : ''}
 
     return json({ body_text: bodyText, body_html: textToHtml(bodyText) })
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
-    console.error('[reply-draft] fatal:', msg)
-    return json({ error: '서버 오류가 발생했습니다.', detail: msg }, 500)
+    // 내부 예외 메시지는 로그로만 — 응답에 detail 로 노출하면 스택/드라이버 정보 유출
+    console.error('[reply-draft] fatal:', e instanceof Error ? e.message : String(e))
+    return json({ error: '서버 오류가 발생했습니다.' }, 500)
   }
 })
