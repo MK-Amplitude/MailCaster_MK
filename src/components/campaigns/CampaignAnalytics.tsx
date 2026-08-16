@@ -76,7 +76,7 @@ export function CampaignAnalytics({
         </div>
 
         {/* 요약 수치 카드 */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           <Metric
             label="성공률"
             value={`${analytics.successRate.toFixed(1)}%`}
@@ -109,6 +109,32 @@ export function CampaignAnalytics({
                 : analytics.openRate >= 40
                 ? 'success'
                 : analytics.openRate >= 15
+                ? 'neutral'
+                : 'danger'
+            }
+          />
+          <Metric
+            label="클릭률"
+            value={
+              !enableOpenTracking
+                ? '비활성'
+                : analytics.sentCount > 0
+                ? `${analytics.clickRate.toFixed(1)}%`
+                : '-'
+            }
+            subValue={
+              !enableOpenTracking
+                ? '트래킹 꺼짐'
+                : analytics.sentCount > 0
+                ? `${analytics.clickedCount}/${analytics.sentCount}`
+                : undefined
+            }
+            tone={
+              !enableOpenTracking || analytics.sentCount === 0
+                ? 'neutral'
+                : analytics.clickRate >= 10
+                ? 'success'
+                : analytics.clickRate >= 3
                 ? 'neutral'
                 : 'danger'
             }
@@ -276,16 +302,21 @@ function computeAnalytics(recipients: Recipient[]) {
   let repliedCount = 0
   let bouncedCount = 0
   let totalOpenEvents = 0
+  let clickedCount = 0
   for (const r of recipients) {
+    // clicked/click_count 는 migration 072 신규 컬럼 — 생성 타입 재생성 전까지 옵셔널 접근
+    const rc = r as { clicked?: boolean | null; click_count?: number | null }
     if (r.status === 'sent') {
       if (r.opened) openedCount++
       if (r.replied) repliedCount++
+      if (rc.clicked) clickedCount++
     }
     if (r.status === 'bounced' || r.bounced) bouncedCount++
     totalOpenEvents += r.open_count ?? 0
   }
   const openRate = sentCount > 0 ? (openedCount / sentCount) * 100 : 0
   const replyRate = sentCount > 0 ? (repliedCount / sentCount) * 100 : 0
+  const clickRate = sentCount > 0 ? (clickedCount / sentCount) * 100 : 0
 
   // 도넛 데이터 — 0 인 상태는 제외해 레전드를 깔끔하게
   const donutData = (['sent', 'failed', 'pending', 'sending', 'bounced', 'skipped'] as const)
@@ -364,6 +395,8 @@ function computeAnalytics(recipients: Recipient[]) {
     failureRate,
     openRate,
     replyRate,
+    clickedCount,
+    clickRate,
     donutData,
     timeline,
     hasTimeline,

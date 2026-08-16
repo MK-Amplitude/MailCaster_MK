@@ -85,11 +85,13 @@ Deno.serve(async (req) => {
       userId = userData.user.id
     }
 
-    // 사용자 프로필 — refresh token + 조직 + sync token
+    // 사용자 프로필 — refresh token + 조직 + sync token (+ 기타 주소록 설정)
     const { data: profile, error: pErr } = await admin
       .schema('mailcaster')
       .from('profiles')
-      .select('id, google_refresh_token, google_contacts_sync_token')
+      .select(
+        'id, google_refresh_token, google_contacts_sync_token, google_contacts_include_other, google_contacts_other_sync_token'
+      )
       .eq('id', userId)
       .single()
     if (pErr) throw pErr
@@ -238,6 +240,63 @@ Deno.serve(async (req) => {
       })
     }
 
+    // ── 기타 주소록 (Other contacts) — opt-in ─────────────────────
+    // Gmail 이 자동 수집한 상대는 connections 에 없음 → otherContacts.list 로 별도 수집.
+    // contacts.other.readonly scope 필요 — 미부여 시 other_scope_missing 플래그만 반환
+    // (메인 동기화 결과는 정상 처리).
+    let otherScopeMissing = false
+    let otherNextSyncToken: string | null = null
+    const includeOther = profile.google_contacts_include_other === true
+    if (includeOther) {
+      let useOtherToken = !body.force_full && !!profile.google_contacts_other_sync_token
+      let otherPageToken: string | undefined = undefined
+      let otherRetried = false
+      while (true) {
+        const params = new URLSearchParams({
+          // otherContacts 는 personFields 가 아니라 readMask, 지원 필드도 제한적
+          readMask: 'names,emailAddresses,phoneNumbers,metadata',
+          pageSize: '1000',
+          requestSyncToken: 'true',
+        })
+        if (otherPageToken) params.set('pageToken', otherPageToken)
+        else if (useOtherToken) {
+          params.set('syncToken', profile.google_contacts_other_sync_token as string)
+        }
+        const res = await fetch(
+          `https://people.googleapis.com/v1/otherContacts?${params.toString()}`,
+          { headers: { Authorization: `Bearer ${accessToken}` } },
+        )
+        if (res.status === 401 || res.status === 403) {
+          otherScopeMissing = true
+          console.warn('[sync-google-contacts] otherContacts scope missing')
+          break
+        }
+        if (res.status === 410 || res.status === 400) {
+          const bodyText = await res.text()
+          const expired =
+            res.status === 410 || /EXPIRED_SYNC_TOKEN|Sync token is expired/i.test(bodyText)
+          if (expired && useOtherToken && !otherRetried) {
+            otherRetried = true
+            useOtherToken = false
+            otherPageToken = undefined
+            otherNextSyncToken = null
+            continue
+          }
+          throw new Error(`People otherContacts ${res.status}: ${bodyText.slice(0, 300)}`)
+        }
+        if (!res.ok) {
+          const bodyText = await res.text()
+          throw new Error(`People otherContacts ${res.status}: ${bodyText.slice(0, 300)}`)
+        }
+        const data = await res.json()
+        // 응답 shape 은 connections 과 동일 (names/emailAddresses/phoneNumbers/metadata)
+        if (Array.isArray(data.otherContacts)) connections.push(...data.otherContacts)
+        otherPageToken = data.nextPageToken
+        if (data.nextSyncToken) otherNextSyncToken = data.nextSyncToken
+        if (!otherPageToken) break
+      }
+    }
+
     // 변환 + upsert
     let inserted = 0
     let duplicates = 0
@@ -290,24 +349,19 @@ Deno.serve(async (req) => {
 
     // sync token 저장 — 배치 upsert 오류가 하나라도 있으면 저장하지 않는다.
     // 저장하면 다음 incremental 이 델타만 반환해 실패한 배치의 연락처가
-    // force_full 전까지 영구 누락됨.
-    if (nextSyncToken && errors.length === 0) {
-      await admin
-        .schema('mailcaster')
-        .from('profiles')
-        .update({
-          google_contacts_sync_token: nextSyncToken,
-          google_contacts_last_sync_at: new Date().toISOString(),
-        })
-        .eq('id', userId)
-    } else {
-      // 응답에 syncToken 이 없으면 last_sync_at 만 갱신
-      await admin
-        .schema('mailcaster')
-        .from('profiles')
-        .update({ google_contacts_last_sync_at: new Date().toISOString() })
-        .eq('id', userId)
+    // force_full 전까지 영구 누락됨. (connections / otherContacts 토큰 각각)
+    const profileUpdates: Record<string, unknown> = {
+      google_contacts_last_sync_at: new Date().toISOString(),
     }
+    if (errors.length === 0) {
+      if (nextSyncToken) profileUpdates.google_contacts_sync_token = nextSyncToken
+      if (otherNextSyncToken) profileUpdates.google_contacts_other_sync_token = otherNextSyncToken
+    }
+    await admin
+      .schema('mailcaster')
+      .from('profiles')
+      .update(profileUpdates)
+      .eq('id', userId)
 
     return json({
       inserted,
@@ -315,6 +369,7 @@ Deno.serve(async (req) => {
       deleted_skipped: deletedSkipped,
       total_fetched: connections.length,
       in_other_org: inOtherOrg,
+      other_scope_missing: otherScopeMissing,
       errors,
       sync_token_updated: !!nextSyncToken,
     })

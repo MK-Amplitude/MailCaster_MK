@@ -29,6 +29,7 @@
 
 import { createClient } from 'jsr:@supabase/supabase-js@2'
 import { decryptToken } from '../_shared/tokenCrypto.ts'
+import { wrapLinksForClickTracking } from '../_shared/clickLinks.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -787,10 +788,20 @@ async function processCampaign(
       const renderedHtml = bodyOverride
         ? (linkSection ? `${bodyOverride}${linkSection}` : bodyOverride)
         : renderTemplateHtml(bodyWithLinks, vars)
+      // 링크 클릭 트래킹 — 본문 링크를 track-click 리다이렉트로 래핑 (오픈 트래킹 설정 공유).
+      // 개별 발송만 가능 (bulk 는 본문이 전 수신자 공유라 수신자별 rid 를 넣을 수 없음).
+      const linkWrapped = c.enable_open_tracking
+        ? await wrapLinksForClickTracking(
+            renderedHtml,
+            { rid: r.id, cid: c.id },
+            SUPABASE_URL,
+            CRON_SECRET,
+          )
+        : renderedHtml
       // Phase 6 (C) — 오픈 추적 픽셀 주입 (캠페인 설정 on 일 때만)
       const html = c.enable_open_tracking
-        ? injectTrackingPixel(renderedHtml, buildTrackingPixel(r.id, c.id))
-        : renderedHtml
+        ? injectTrackingPixel(linkWrapped, buildTrackingPixel(r.id, c.id))
+        : linkWrapped
       const result = await sendGmailWithAutoRefresh({
         from,
         to: r.email,

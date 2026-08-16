@@ -89,6 +89,92 @@ export function useCampaignRecipients(campaignId: string | undefined) {
   })
 }
 
+// ------------------------------------------------------------
+// 서버 발송 등록 — "지금 발송" 을 서버(예약 발송 cron)에 위임.
+// scheduled_at = now 로 예약하면 매분 도는 send-scheduled-campaigns 가 1분 이내 집어
+// 발송한다. 브라우저 탭을 닫아도 발송이 계속되고, 체크포인트/재개/중복 방지가 적용됨.
+// ------------------------------------------------------------
+export function useEnqueueServerSend() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async ({ campaignId }: { campaignId: string }) => {
+      // CAS — draft/scheduled 에서만 전환. 이미 sending/sent 면 차단 (중복 발송 방지).
+      const { data, error } = await supabase
+        .from('campaigns')
+        .update({ status: 'scheduled', scheduled_at: new Date().toISOString() })
+        .eq('id', campaignId)
+        .in('status', ['draft', 'scheduled'])
+        .select('id')
+      if (error) throw error
+      if (!data || data.length === 0) {
+        throw new Error('발송할 수 없는 상태입니다 (이미 발송 중이거나 완료된 캠페인).')
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: [QK] })
+      toast.success('발송이 서버에 등록되었습니다 — 1분 이내 시작됩니다. 창을 닫아도 발송이 계속됩니다.', {
+        duration: 8000,
+      })
+    },
+    onError: (e: Error) => toast.error(e.message || '발송 등록 실패'),
+  })
+}
+
+// ------------------------------------------------------------
+// 발송 전 프리플라이트 — 서버가 발송 시점에 제외할 수신자(수신거부/반송/빈 이메일)를
+// 미리 집계해 확인 다이얼로그에 보여준다. 다이얼로그 열릴 때만 fetch.
+// ------------------------------------------------------------
+export interface SendPreflight {
+  target: number       // 미발송(pending/orphan) 수신자 수
+  unsubscribed: number // 발송 시 제외될 수신거부
+  bounced: number      // 발송 시 제외될 반송
+  emptyEmail: number   // 이메일 없는 행
+  sendable: number     // 실제 발송될 수
+}
+
+export function useSendPreflight(campaignId: string | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: [QK, 'preflight', campaignId],
+    queryFn: async (): Promise<SendPreflight> => {
+      const { data, error } = await supabase
+        .from('recipients')
+        .select('id, email, status, gmail_message_id, contact:contacts(is_bounced, is_unsubscribed)')
+        .eq('campaign_id', campaignId!)
+        .in('status', ['pending', 'sending'])
+        .is('gmail_message_id', null)
+        .range(0, 9999)
+      if (error) throw error
+      let unsubscribed = 0
+      let bounced = 0
+      let emptyEmail = 0
+      // 생성 타입이 recipients→contacts embed 관계를 해석하지 못해 unknown 경유 캐스트
+      // (동일 embed 를 send-scheduled-campaigns 가 런타임에서 사용 중 — FK 관계 존재)
+      const rows = (data ?? []) as unknown as Array<{
+        email: string | null
+        contact?: { is_bounced: boolean | null; is_unsubscribed: boolean | null }
+          | { is_bounced: boolean | null; is_unsubscribed: boolean | null }[]
+          | null
+      }>
+      for (const r of rows) {
+        const ct = Array.isArray(r.contact) ? r.contact[0] : r.contact
+        if (ct?.is_bounced) { bounced++; continue }
+        if (ct?.is_unsubscribed) { unsubscribed++; continue }
+        if (!r.email || !r.email.trim()) { emptyEmail++; continue }
+      }
+      const target = rows.length
+      return {
+        target,
+        unsubscribed,
+        bounced,
+        emptyEmail,
+        sendable: target - unsubscribed - bounced - emptyEmail,
+      }
+    },
+    enabled: !!campaignId && enabled,
+    staleTime: 10_000,
+  })
+}
+
 export function useCreateCampaign() {
   const { user, currentOrg } = useAuth()
   const qc = useQueryClient()

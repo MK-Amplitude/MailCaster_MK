@@ -34,7 +34,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Reply, ReplyAll, Forward, Loader2, Search, Mail, Paperclip, X } from 'lucide-react'
+import { Reply, ReplyAll, Forward, Loader2, Search, Mail, Paperclip, X, Sparkles } from 'lucide-react'
 import {
   Popover,
   PopoverContent,
@@ -46,6 +46,7 @@ import { useSendThreadMessage, type ThreadMode } from '@/hooks/useSendThreadMess
 import { useContacts } from '@/hooks/useContacts'
 import { matchesSearch } from '@/lib/search'
 import { sanitizeHtml } from '@/lib/sanitizeHtml'
+import { useGenerateReplyDraft } from '@/hooks/useGenerateReplyDraft'
 
 interface OriginalMessage {
   /** Gmail 내부 message id (recipients.gmail_message_id 또는 답장 메시지 id). */
@@ -92,6 +93,7 @@ export function ThreadComposeDialog({
   recipient,
 }: Props) {
   const send = useSendThreadMessage()
+  const draftGen = useGenerateReplyDraft()
   const { data: signatures = [] } = useSignatures()
   const defaultSig = useMemo(
     () => signatures.find((s) => s.is_default) ?? signatures[0] ?? null,
@@ -142,6 +144,24 @@ export function ThreadComposeDialog({
     [attachments],
   )
   const attachOversize = totalAttachBytes > MAX_ATTACH_BYTES
+
+  // AI 답장 초안 — 상대 답장 원문(HTML)을 컨텍스트로 초안 생성 후 본문에 채움.
+  // 기존 서명은 유지 (초안 + 서명 순서).
+  const handleGenerateDraft = async () => {
+    if (!original.bodyHtml) return
+    try {
+      const draft = await draftGen.mutateAsync({
+        contactId: recipient.contactId ?? null,
+        originalBodyHtml: original.bodyHtml,
+        originalSubject: original.subject,
+      })
+      const sigPart = defaultSig?.html ? `<br/><br/>${defaultSig.html}` : ''
+      setBody(`${draft.body_html}${sigPart}`)
+      setShowPreview(false)
+    } catch {
+      // onError 토스트에서 처리
+    }
+  }
 
   // dialog 가 새로 열릴 때 (또는 mode/recipient 바뀔 때) 초기값으로 reset.
   useEffect(() => {
@@ -395,13 +415,34 @@ export function ThreadComposeDialog({
           <div className="space-y-1.5">
             <div className="flex items-center justify-between">
               <Label className="text-xs">본문 {showPreview && <span className="text-muted-foreground">(미리보기 — 받는 사람이 볼 모습)</span>}</Label>
-              <button
-                type="button"
-                onClick={() => setShowPreview((v) => !v)}
-                className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-              >
-                {showPreview ? '편집으로 돌아가기' : '미리보기'}
-              </button>
+              <div className="flex items-center gap-3">
+                {/* AI 답장 초안 — reply 모드에서 상대 답장 원문이 있을 때만 */}
+                {mode === 'reply' && original.bodyHtml && (
+                  <button
+                    type="button"
+                    disabled={draftGen.isPending}
+                    onClick={handleGenerateDraft}
+                    className="text-xs text-primary hover:underline disabled:opacity-50 inline-flex items-center gap-1"
+                  >
+                    {draftGen.isPending ? (
+                      <>
+                        <Loader2 className="w-3 h-3 animate-spin" /> 초안 생성 중...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-3 h-3" /> AI 초안
+                      </>
+                    )}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowPreview((v) => !v)}
+                  className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {showPreview ? '편집으로 돌아가기' : '미리보기'}
+                </button>
+              </div>
             </div>
             {showPreview ? (
               <div className="border rounded-md p-4 max-h-[400px] overflow-y-auto bg-white dark:bg-zinc-950">
