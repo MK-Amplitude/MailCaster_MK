@@ -49,6 +49,7 @@ import {
   useGoogleContactsSyncStatus,
   useSyncGoogleContacts,
   useUpdateGoogleContactsAutoSync,
+  useUpdateGoogleContactsIncludeOther,
 } from '@/hooks/useGoogleContactsSync'
 import { format, formatDistanceToNow } from 'date-fns'
 import { ko } from 'date-fns/locale'
@@ -531,6 +532,7 @@ function GoogleContactsSyncSection() {
   const { data: status } = useGoogleContactsSyncStatus()
   const sync = useSyncGoogleContacts()
   const updateAuto = useUpdateGoogleContactsAutoSync()
+  const updateIncludeOther = useUpdateGoogleContactsIncludeOther()
 
   const lastSync = status?.last_sync_at
   const lastSyncLabel = lastSync
@@ -597,6 +599,23 @@ function GoogleContactsSyncSection() {
             checked={status?.auto_sync ?? false}
             onCheckedChange={(v) => updateAuto.mutate(v)}
             disabled={updateAuto.isPending}
+          />
+        </div>
+
+        <Separator />
+
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm font-medium">기타 주소록 포함</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Gmail 이 자동 수집한 상대(구글 연락처의 "기타 주소록")도 함께 가져옵니다.
+              처음 켜면 로그아웃 후 재로그인해 권한을 부여해야 합니다.
+            </p>
+          </div>
+          <Switch
+            checked={status?.include_other ?? false}
+            onCheckedChange={(v) => updateIncludeOther.mutate(v)}
+            disabled={updateIncludeOther.isPending}
           />
         </div>
 

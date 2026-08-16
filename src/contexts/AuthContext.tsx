@@ -255,6 +255,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // Google Contacts 동기화 (Phase 14) — 리멤버 → 구글 주소록 → MailCaster.
           // 기존 사용자는 한 번 더 로그인해야 권한 부여됨.
           'https://www.googleapis.com/auth/contacts.readonly',
+          // 기타 주소록 (Other contacts) 동기화 — Gmail 이 자동 수집한 상대.
+          // 기존 사용자는 한 번 더 로그인해야 권한 부여됨.
+          'https://www.googleapis.com/auth/contacts.other.readonly',
         ].join(' '),
         queryParams: {
           access_type: 'offline',

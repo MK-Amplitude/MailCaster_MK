@@ -15,10 +15,14 @@
 
 import { createClient } from 'jsr:@supabase/supabase-js@2'
 import { decryptToken } from '../_shared/tokenCrypto.ts'
+import { wrapLinksForClickTracking } from '../_shared/clickLinks.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 const CRON_SECRET = Deno.env.get('CRON_SECRET') ?? ''
+// 클릭 링크 서명 전용 키 (track-click 과 동일 우선순위) — 미설정 시 CRON_SECRET 폴백
+const CLICK_SIGNING_SECRET =
+  Deno.env.get('CLICK_SIGNING_SECRET') ?? Deno.env.get('CRON_SECRET') ?? ''
 const GOOGLE_CLIENT_ID = Deno.env.get('GOOGLE_CLIENT_ID')!
 const GOOGLE_CLIENT_SECRET = Deno.env.get('GOOGLE_CLIENT_SECRET')!
 
@@ -283,7 +287,14 @@ Deno.serve(async (req) => {
           continue
         }
         const tmId = (tmRow as { id: string }).id
-        const htmlWithPixel = injectTrackingPixel(bodyHtml, buildThreadTrackingPixel(tmId))
+        // 링크 클릭 트래킹 — 본문 링크를 track-click 리다이렉트로 래핑 (tmid 기준)
+        const linkWrapped = await wrapLinksForClickTracking(
+          bodyHtml,
+          { tmid: tmId },
+          SUPABASE_URL,
+          CLICK_SIGNING_SECRET,
+        )
+        const htmlWithPixel = injectTrackingPixel(linkWrapped, buildThreadTrackingPixel(tmId))
 
         // 발송
         let result: { id: string; threadId: string } | null = null

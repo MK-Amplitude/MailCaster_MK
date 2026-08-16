@@ -585,6 +585,40 @@ export function useBulkUpdateCustomerType() {
   })
 }
 
+// 중복 연락처 병합 — merge_contacts RPC (migration 073).
+// 대표(primary) 1명으로 이력·그룹·시퀀스 참조를 이전하고 나머지를 삭제.
+export function useMergeContacts() {
+  const qc = useQueryClient()
+  return useMutation<
+    void,
+    Error,
+    { primaryId: string; mergeIds: string[] }
+  >({
+    mutationFn: async ({ primaryId, mergeIds }) => {
+      const targets = mergeIds.filter((id) => id !== primaryId)
+      if (targets.length === 0) throw new Error('병합할 연락처를 선택해주세요.')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { error } = await (supabase.rpc as any)('merge_contacts', {
+        p_primary_id: primaryId,
+        p_merge_ids: targets,
+      })
+      if (error) throw error
+    },
+    onSuccess: (_d, { mergeIds, primaryId }) => {
+      qc.invalidateQueries({ queryKey: [QUERY_KEY] })
+      qc.invalidateQueries({ queryKey: [COMMON_QUERY_KEY] })
+      qc.invalidateQueries({ queryKey: ['groups'] })
+      toast.success(
+        `${mergeIds.filter((id) => id !== primaryId).length}명이 병합되었습니다 (이력·그룹 이전 완료).`,
+      )
+    },
+    onError: (e) => {
+      console.error('[mergeContacts] failed:', e)
+      toast.error(e.message || '병합 실패')
+    },
+  })
+}
+
 // 일괄 수신거부 / 해제 — RPC. 단일은 useToggleUnsubscribe 그대로 사용.
 export function useBulkToggleUnsubscribe() {
   const qc = useQueryClient()

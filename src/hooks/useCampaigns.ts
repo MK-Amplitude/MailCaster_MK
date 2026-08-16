@@ -89,6 +89,109 @@ export function useCampaignRecipients(campaignId: string | undefined) {
   })
 }
 
+// ------------------------------------------------------------
+// 서버 발송 등록 — "지금 발송" 을 서버(예약 발송 cron)에 위임.
+// scheduled_at = now 로 예약하면 매분 도는 send-scheduled-campaigns 가 1분 이내 집어
+// 발송한다. 브라우저 탭을 닫아도 발송이 계속되고, 체크포인트/재개/중복 방지가 적용됨.
+// ------------------------------------------------------------
+export function useEnqueueServerSend() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async ({ campaignId }: { campaignId: string }) => {
+      // CAS — draft/scheduled/failed 에서만 전환. 이미 sending/sent 면 차단 (중복 발송 방지).
+      // failed 포함: 발송 버튼이 failed 캠페인에도 노출됨 (남은 pending 수신자 재시도).
+      const { data, error } = await supabase
+        .from('campaigns')
+        .update({ status: 'scheduled', scheduled_at: new Date().toISOString() })
+        .eq('id', campaignId)
+        .in('status', ['draft', 'scheduled', 'failed'])
+        .select('id')
+      if (error) throw error
+      if (!data || data.length === 0) {
+        throw new Error('발송할 수 없는 상태입니다 (이미 발송 중이거나 완료된 캠페인).')
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: [QK] })
+      toast.success('발송이 서버에 등록되었습니다 — 1분 이내 시작됩니다. 창을 닫아도 발송이 계속됩니다.', {
+        duration: 8000,
+      })
+    },
+    onError: (e: Error) => toast.error(e.message || '발송 등록 실패'),
+  })
+}
+
+// ------------------------------------------------------------
+// 발송 전 프리플라이트 — 서버가 발송 시점에 제외할 수신자(수신거부/반송/빈 이메일)를
+// 미리 집계해 확인 다이얼로그에 보여준다. 다이얼로그 열릴 때만 fetch.
+// ------------------------------------------------------------
+export interface SendPreflight {
+  target: number       // 미발송(pending/orphan) 수신자 수
+  unsubscribed: number // 발송 시 제외될 수신거부
+  bounced: number      // 발송 시 제외될 반송
+  emptyEmail: number   // 이메일 없는 행
+  sendable: number     // 실제 발송될 수
+}
+
+export function useSendPreflight(campaignId: string | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: [QK, 'preflight', campaignId],
+    queryFn: async (): Promise<SendPreflight> => {
+      // head-count 쿼리 4개 — 행 데이터를 내려받지 않아 10k 초과 캠페인에서도 정확하고 가볍다.
+      // 미발송 대상 = status pending/sending AND gmail_message_id IS NULL (서버 로드 조건과 동일)
+      const base = () =>
+        supabase
+          .from('recipients')
+          .select('id', { count: 'exact', head: true })
+          .eq('campaign_id', campaignId!)
+          .in('status', ['pending', 'sending'])
+          .is('gmail_message_id', null)
+      // 서버(send-scheduled-campaigns)는 반송 우선으로 제외하므로 카운트도 같은 순서로:
+      //   bounced = is_bounced
+      //   unsubscribed = is_unsubscribed AND NOT is_bounced (반송자와 중복 집계 방지)
+      const bouncedQ = supabase
+        .from('recipients')
+        .select('id, contacts!inner(id)', { count: 'exact', head: true })
+        .eq('campaign_id', campaignId!)
+        .in('status', ['pending', 'sending'])
+        .is('gmail_message_id', null)
+        .eq('contacts.is_bounced', true)
+      const unsubQ = supabase
+        .from('recipients')
+        .select('id, contacts!inner(id)', { count: 'exact', head: true })
+        .eq('campaign_id', campaignId!)
+        .in('status', ['pending', 'sending'])
+        .is('gmail_message_id', null)
+        .eq('contacts.is_unsubscribed', true)
+        .eq('contacts.is_bounced', false)
+
+      const [totalRes, bouncedRes, unsubRes, emptyRes] = await Promise.all([
+        base(),
+        bouncedQ,
+        unsubQ,
+        base().or('email.is.null,email.eq.'),
+      ])
+      for (const r of [totalRes, bouncedRes, unsubRes, emptyRes]) {
+        if (r.error) throw r.error
+      }
+      const target = totalRes.count ?? 0
+      const bounced = bouncedRes.count ?? 0
+      const unsubscribed = unsubRes.count ?? 0
+      const emptyEmail = emptyRes.count ?? 0
+      const excluded = Math.min(target, bounced + unsubscribed + emptyEmail)
+      return {
+        target,
+        unsubscribed,
+        bounced,
+        emptyEmail,
+        sendable: Math.max(0, target - excluded),
+      }
+    },
+    enabled: !!campaignId && enabled,
+    staleTime: 10_000,
+  })
+}
+
 export function useCreateCampaign() {
   const { user, currentOrg } = useAuth()
   const qc = useQueryClient()

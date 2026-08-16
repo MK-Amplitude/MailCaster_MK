@@ -40,10 +40,11 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { UserPlus, Upload, Users, Search, UserX, Trash2, FolderPlus, Tag, Wand2, ScanLine, Loader2, Archive, ArchiveRestore, RotateCcw, Sparkles, Workflow } from 'lucide-react'
+import { UserPlus, Upload, Users, Search, UserX, Trash2, FolderPlus, Tag, Wand2, ScanLine, Loader2, Archive, ArchiveRestore, RotateCcw, Sparkles, Workflow, Merge } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { resolveCompaniesBatch } from '@/lib/resolveCompany'
 import { PersonalizedSendDialog } from '@/components/campaigns/PersonalizedSendDialog'
+import { MergeContactsDialog } from '@/components/contacts/MergeContactsDialog'
 import { useOcrBusinessCard, type OcrFields } from '@/hooks/useOcrBusinessCard'
 import { toast } from 'sonner'
 import {
@@ -81,6 +82,7 @@ export default function ContactsPage() {
   const [addToGroupOpen, setAddToGroupOpen] = useState(false)
   const [addToSequenceOpen, setAddToSequenceOpen] = useState(false)
   const [personalizeOpen, setPersonalizeOpen] = useState(false)
+  const [mergeOpen, setMergeOpen] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const ocr = useOcrBusinessCard()
   const [ocrPrefill, setOcrPrefill] = useState<OcrFields | null>(null)
@@ -203,6 +205,12 @@ export default function ContactsPage() {
 
   const activeSelectedCount =
     scope === 'common' ? selectedCommonKeys.size : selectedIds.size
+
+  // 병합 후보 — 개별 스코프에서 선택된 연락처들 (다이얼로그에 그대로 전달)
+  const mergeCandidates = useMemo(
+    () => contacts.filter((c) => selectedIds.has(c.id)),
+    [contacts, selectedIds],
+  )
 
   // 개인화 발송 대상 — useMemo + Set 조회.
   // 기존엔 JSX 안 IIFE 로 매 렌더마다 O(선택수 × 전체행) includes 스캔을 돌려
@@ -604,6 +612,16 @@ export default function ContactsPage() {
             icon: <UserX className="w-3.5 h-3.5 mr-1" />,
             onClick: handleBulkUnsubscribe,
           },
+          // 병합 — 개별(org) 스코프에서 2명 이상 선택 시에만 (공통 뷰는 email 단위라 병합 개념이 다름)
+          ...(scope !== 'common' && selectedIds.size >= 2
+            ? [
+                {
+                  label: '병합',
+                  icon: <Merge className="w-3.5 h-3.5 mr-1" />,
+                  onClick: () => setMergeOpen(true),
+                },
+              ]
+            : []),
           ...(isBouncedView
             ? [
                 {
@@ -690,6 +708,12 @@ export default function ContactsPage() {
         open={personalizeOpen}
         onOpenChange={setPersonalizeOpen}
         contacts={personalizeTargets}
+      />
+      <MergeContactsDialog
+        open={mergeOpen}
+        onOpenChange={setMergeOpen}
+        contacts={mergeCandidates}
+        onDone={clearSelection}
       />
     </div>
   )

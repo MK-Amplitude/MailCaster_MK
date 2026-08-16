@@ -16,6 +16,7 @@ interface SyncResult {
   total_fetched?: number
   in_other_org?: number
   scope_missing?: boolean
+  other_scope_missing?: boolean
   api_disabled?: boolean
   detail?: string
   message?: string
@@ -33,7 +34,7 @@ export function useGoogleContactsSyncStatus() {
       const { data, error } = await supabase
         .from('profiles')
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        .select('google_contacts_last_sync_at, google_contacts_auto_sync' as any)
+        .select('google_contacts_last_sync_at, google_contacts_auto_sync, google_contacts_include_other' as any)
         .eq('id', user.id)
         .single()
       if (error) throw error
@@ -42,6 +43,7 @@ export function useGoogleContactsSyncStatus() {
       return {
         last_sync_at: p?.google_contacts_last_sync_at as string | null,
         auto_sync: !!p?.google_contacts_auto_sync,
+        include_other: !!p?.google_contacts_include_other,
       }
     },
     enabled: !!user,
@@ -113,6 +115,13 @@ export function useSyncGoogleContacts() {
           { duration: 12000 },
         )
       }
+      // 기타 주소록 권한 없음 — 메인 동기화는 성공, 안내만
+      if (r.other_scope_missing) {
+        toast.warning(
+          '기타 주소록 권한이 없습니다. 로그아웃 후 다시 로그인하면 권한 부여 화면이 나타납니다.',
+          { duration: 10000 },
+        )
+      }
       const parts: string[] = []
       if (r.inserted > 0) parts.push(`신규 ${r.inserted}명`)
       if (r.duplicates > 0) parts.push(`이미 존재 ${r.duplicates}명`)
@@ -138,6 +147,34 @@ export function useSyncGoogleContacts() {
     onError: (e) => {
       toast.error(e instanceof Error ? e.message : '동기화 실패')
     },
+  })
+}
+
+// 기타 주소록(otherContacts) 포함 토글 — 켠 뒤 재로그인해야 scope 부여됨.
+export function useUpdateGoogleContactsIncludeOther() {
+  const { user } = useAuth()
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (enabled: boolean) => {
+      if (!user) throw new Error('로그인이 필요합니다.')
+      const { error } = await supabase
+        .from('profiles')
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .update({ google_contacts_include_other: enabled } as any)
+        .eq('id', user.id)
+      if (error) throw error
+      return enabled
+    },
+    onSuccess: (enabled) => {
+      qc.invalidateQueries({ queryKey: ['google-contacts-sync-status'] })
+      toast.success(
+        enabled
+          ? '기타 주소록 포함 켜짐 — 처음이면 로그아웃 후 재로그인해 권한을 부여해주세요.'
+          : '기타 주소록 포함 꺼짐',
+        { duration: 8000 },
+      )
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : '설정 변경 실패'),
   })
 }
 

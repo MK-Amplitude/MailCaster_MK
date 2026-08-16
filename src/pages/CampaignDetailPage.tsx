@@ -12,6 +12,8 @@ import {
   useUpdateCampaign,
   useAddRecipientToCampaign,
   useRemoveRecipientFromCampaign,
+  useEnqueueServerSend,
+  useSendPreflight,
 } from '@/hooks/useCampaigns'
 import { useContacts } from '@/hooks/useContacts'
 import { ThreadComposeDialog } from '@/components/campaigns/ThreadComposeDialog'
@@ -24,7 +26,6 @@ import { useBackfillReplyCategories } from '@/hooks/useBackfillReplyCategories'
 import { matchesSearch } from '@/lib/search'
 import { Search, X, UserPlus } from 'lucide-react'
 import { useCampaignBlocks } from '@/hooks/useCampaignBlocks'
-import { useSendCampaign } from '@/hooks/useSendCampaign'
 import { useCampaignAttachments } from '@/hooks/useAttachments'
 import { useContactById, useToggleUnsubscribe, useContactsTitleMap } from '@/hooks/useContacts'
 import { ContactDetailSheet } from '@/components/contacts/ContactDetailSheet'
@@ -163,7 +164,7 @@ export default function CampaignDetailPage() {
     }).length
   }, [recipients])
   const backfill = useBackfillReplyCategories()
-  const sendCampaign = useSendCampaign()
+  const enqueueSend = useEnqueueServerSend()
   const deleteCampaign = useDeleteCampaign()
   const updateCampaign = useUpdateCampaign()
   const [deleteOpen, setDeleteOpen] = useState(false)
@@ -172,6 +173,16 @@ export default function CampaignDetailPage() {
   const [rescheduleOpen, setRescheduleOpen] = useState(false)
   const [rescheduleDraft, setRescheduleDraft] = useState<string>('')
   const [sendNowOpen, setSendNowOpen] = useState(false)
+  // 발송 전 프리플라이트 — 확인 다이얼로그가 열릴 때만 제외 대상 집계
+  const { data: preflight } = useSendPreflight(id, sendOpen || sendNowOpen)
+  const preflightLabel = preflight
+    ? [
+        `실제 발송 ${preflight.sendable}명`,
+        preflight.unsubscribed > 0 ? `수신거부 제외 ${preflight.unsubscribed}` : null,
+        preflight.bounced > 0 ? `반송 제외 ${preflight.bounced}` : null,
+        preflight.emptyEmail > 0 ? `이메일 없음 ${preflight.emptyEmail}` : null,
+      ].filter(Boolean).join(' · ')
+    : null
   // 팔로업 / 회신 / 전달 다이얼로그 — 발송된 수신자 행에서 액션 클릭 시 열림.
   const [threadCompose, setThreadCompose] = useState<{
     mode: ThreadMode
@@ -264,7 +275,7 @@ export default function CampaignDetailPage() {
     campaign.total_count > 0
       ? Math.round(((campaign.sent_count + campaign.failed_count) / campaign.total_count) * 100)
       : 0
-  const isSending = campaign.status === 'sending' || sendCampaign.isPending
+  const isSending = campaign.status === 'sending' || enqueueSend.isPending
   const isScheduled = campaign.status === 'scheduled'
   const canSend = campaign.status === 'draft' || campaign.status === 'failed'
   // 발송 이력이 있어야 "재사용" 의미가 있음 (draft 제외)
@@ -325,15 +336,10 @@ export default function CampaignDetailPage() {
   const handleSendNow = async () => {
     if (!id) return
     try {
-      // 예약 해제 후 즉시 발송 — status 를 먼저 draft 로 낮춘 뒤 sendCampaign 을 호출해야
-      // useSendCampaign 의 로직이 정상 동작한다 (scheduled 상태에선 client-side send 미지원).
-      await updateCampaign.mutateAsync({
-        id,
-        data: { status: 'draft', scheduled_at: null },
-      })
+      // 예약을 "지금" 으로 당김 — 서버 cron 이 1분 이내 집어 발송 (창 닫아도 계속).
+      await enqueueSend.mutateAsync({ campaignId: id })
       invalidateAfterSchedule()
       setSendNowOpen(false)
-      await sendCampaign.mutateAsync({ campaignId: id })
     } catch {
       // onError
     }
@@ -382,7 +388,7 @@ export default function CampaignDetailPage() {
                   size="sm"
                   variant="default"
                   onClick={() => setSendNowOpen(true)}
-                  disabled={updateCampaign.isPending || sendCampaign.isPending}
+                  disabled={updateCampaign.isPending || enqueueSend.isPending}
                   title="예약을 해제하고 지금 바로 발송"
                 >
                   <Send className="w-4 h-4 mr-1" />
@@ -550,6 +556,7 @@ export default function CampaignDetailPage() {
           <CampaignAnalytics
             recipients={recipients}
             enableOpenTracking={campaign.enable_open_tracking}
+            sendMode={campaign.send_mode}
           />
         )}
 
@@ -1156,13 +1163,13 @@ export default function CampaignDetailPage() {
         open={sendOpen}
         onOpenChange={setSendOpen}
         title="메일 발송 시작"
-        description={`${campaign.total_count}명에게 메일을 발송합니다. 발송 후에는 취소할 수 없습니다.`}
+        description={`${preflightLabel ?? `${campaign.total_count}명 대상`} — 서버가 1분 이내 발송을 시작하며, 창을 닫아도 발송이 계속됩니다. 발송 후에는 취소할 수 없습니다.`}
         confirmLabel="발송 시작"
-        loading={sendCampaign.isPending}
+        loading={enqueueSend.isPending}
         onConfirm={async () => {
           if (!id) return
           try {
-            await sendCampaign.mutateAsync({ campaignId: id })
+            await enqueueSend.mutateAsync({ campaignId: id })
             setSendOpen(false)
           } catch {
             // onError 에서 토스트
@@ -1203,9 +1210,9 @@ export default function CampaignDetailPage() {
         open={sendNowOpen}
         onOpenChange={setSendNowOpen}
         title="예약 해제 후 지금 발송"
-        description={`${campaign.total_count}명에게 지금 바로 메일을 발송합니다. 발송 후에는 취소할 수 없습니다.`}
+        description={`${preflightLabel ?? `${campaign.total_count}명 대상`} — 서버가 1분 이내 발송을 시작합니다. 발송 후에는 취소할 수 없습니다.`}
         confirmLabel="지금 발송 시작"
-        loading={updateCampaign.isPending || sendCampaign.isPending}
+        loading={updateCampaign.isPending || enqueueSend.isPending}
         onConfirm={handleSendNow}
       />
 
