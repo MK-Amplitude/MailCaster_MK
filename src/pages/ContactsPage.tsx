@@ -301,6 +301,8 @@ export default function ContactsPage() {
           email: c.email,
         })),
         qc,
+        // 선택 대상은 이미 그룹사가 비어있는 것들 — 과거 null 캐시 무시하고 재분석
+        { forceRefresh: true },
       )
       toast.success(`AI 그룹사 분석 완료 — ${targets.length}건 처리`)
     } catch (e) {
@@ -342,6 +344,8 @@ export default function ContactsPage() {
           email: c.email,
         })),
         qc,
+        // 과거 null 로 캐시된 회사도 개선된 프롬프트로 재분석 (키별 첫 1회만 재과금)
+        { forceRefresh: true },
       )
       toast.success(`AI 그룹사 분석 완료 — ${emptyGroupTargets.length}건 처리`)
     } catch (e) {
