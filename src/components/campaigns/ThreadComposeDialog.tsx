@@ -186,10 +186,13 @@ export function ThreadComposeDialog({
   const [toPickerOpen, setToPickerOpen] = useState(false)
   const [toSearch, setToSearch] = useState('')
 
+  // 연락처 검색 팝오버는 forward/new 모드에서만 렌더됨 → 그때만 org 전체(최대 1만) fetch.
+  // reply/followup 에서는 To 가 원본 수신자로 고정이라 불필요.
   const { data: allContacts = [] } = useContacts({
     scope: 'org',
     status: 'normal',
     sort: { field: 'name', dir: 'asc' },
+    enabled: mode === 'forward' || mode === 'new',
   })
   const candidateContacts = useMemo(() => {
     const q = toSearch.trim()

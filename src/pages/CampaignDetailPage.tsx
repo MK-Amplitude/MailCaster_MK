@@ -15,7 +15,6 @@ import {
   useEnqueueServerSend,
   useSendPreflight,
 } from '@/hooks/useCampaigns'
-import { useContacts } from '@/hooks/useContacts'
 import { ThreadComposeDialog } from '@/components/campaigns/ThreadComposeDialog'
 import { ThreadMessagesSection } from '@/components/campaigns/ThreadMessagesSection'
 import type { ThreadMode } from '@/hooks/useSendThreadMessage'
@@ -27,7 +26,7 @@ import { matchesSearch } from '@/lib/search'
 import { Search, X, UserPlus } from 'lucide-react'
 import { useCampaignBlocks } from '@/hooks/useCampaignBlocks'
 import { useCampaignAttachments } from '@/hooks/useAttachments'
-import { useContactById, useToggleUnsubscribe, useContactsTitleMap } from '@/hooks/useContacts'
+import { useContacts, useContactById, useToggleUnsubscribe, useContactsTitleMap } from '@/hooks/useContacts'
 import { ContactDetailSheet } from '@/components/contacts/ContactDetailSheet'
 import { ContactFormDialog } from '@/components/contacts/ContactFormDialog'
 import type { ContactWithGroups } from '@/types/contact'

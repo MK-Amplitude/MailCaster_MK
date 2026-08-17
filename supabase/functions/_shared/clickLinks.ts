@@ -20,7 +20,11 @@ export function buildClickPayload(target: ClickWrapTarget, url: string): string 
   return target.tmid ? `${target.tmid}||${url}` : `${target.rid}|${target.cid}|${url}`
 }
 
-export async function hmacSig(payload: string, secret: string): Promise<string> {
+// WebCrypto 키는 secret 이 같으면 isolate 수명 동안 재사용 — 발송 루프에서 링크·수신자마다
+// importKey 를 다시 하던 낭비 제거 (300명 × 링크 N개 → importKey 수백 회 → 1 회).
+let _keyCache: { secret: string; key: CryptoKey } | null = null
+async function getSigningKey(secret: string): Promise<CryptoKey> {
+  if (_keyCache?.secret === secret) return _keyCache.key
   const key = await crypto.subtle.importKey(
     'raw',
     new TextEncoder().encode(secret),
@@ -28,6 +32,12 @@ export async function hmacSig(payload: string, secret: string): Promise<string> 
     false,
     ['sign'],
   )
+  _keyCache = { secret, key }
+  return key
+}
+
+export async function hmacSig(payload: string, secret: string): Promise<string> {
+  const key = await getSigningKey(secret)
   const sigBuf = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(payload))
   const bytes = new Uint8Array(sigBuf)
   let bin = ''

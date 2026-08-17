@@ -237,7 +237,6 @@ export function useCreateContact() {
 
   return useMutation({
     mutationFn: async (data: Omit<ContactInsert, 'user_id' | 'org_id'>) => {
-      console.log('[createContact] start', { data, userId: user?.id, orgId: currentOrg?.id })
       if (!user) throw new Error('로그인이 필요합니다.')
       if (!currentOrg) throw new Error('현재 조직이 설정되지 않았습니다.')
       // email 정규화 — 019/020 트리거가 LOWER(email) 로 비교하므로
@@ -258,7 +257,6 @@ export function useCreateContact() {
         .insert(payload as any)
         .select()
         .single()
-      console.log('[createContact] result', { result, error })
       if (error) throw error
       return result
     },
@@ -331,9 +329,7 @@ export function useDeleteContacts() {
 
   return useMutation({
     mutationFn: async (ids: string[]) => {
-      console.log('[deleteContacts] start', { count: ids.length })
       const { error } = await supabase.from('contacts').delete().in('id', ids)
-      console.log('[deleteContacts] result', { error })
       if (error) throw error
     },
     onSuccess: (_, ids) => {

@@ -283,9 +283,9 @@ export default function ContactsPage() {
   // 나머지는 company_cache 활용. 1000명이라도 unique 회사명/도메인 수만큼만 과금.
   const [bulkAiPending, setBulkAiPending] = useState(false)
   const handleBulkAiResolve = async () => {
-    const ids = scope === 'common' ? expandedCommonContactIds : [...selectedIds]
+    const idSet = new Set(scope === 'common' ? expandedCommonContactIds : selectedIds)
     const targets = contacts.filter(
-      (c) => ids.includes(c.id) && !c.parent_group && c.email,
+      (c) => idSet.has(c.id) && !c.parent_group && c.email,
     )
     if (targets.length === 0) {
       toast.info('AI 분석 대상이 없습니다 — 선택한 연락처에 그룹사가 이미 채워져 있거나 이메일이 없습니다.')
