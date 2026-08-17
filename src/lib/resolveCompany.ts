@@ -110,7 +110,11 @@ export async function resolveCompanyForContact({
 // rawName 은 optional — 없으면 도메인 단독 모드로 묶음.
 export async function resolveCompaniesBatch(
   items: Array<{ id: string; rawName?: string | null; email?: string | null }>,
-  qc?: QueryClient
+  qc?: QueryClient,
+  /** true 면 query_key 별 첫 호출을 force_refresh 로 — 과거 null 캐시를 무시하고 재분석.
+   *  "빈 그룹사 채우기" 처럼 프롬프트 개선 후 stale null 을 갱신할 때 사용.
+   *  키별 첫 1회만 force → 재분석은 unique 회사 수만큼만 과금, 나머지는 새 캐시 재사용. */
+  opts?: { forceRefresh?: boolean }
 ): Promise<void> {
   const unique = new Map<string, typeof items>()
   for (const it of items) {
@@ -134,11 +138,13 @@ export async function resolveCompaniesBatch(
       const db = extractDomain(b.email) ? 1 : 0
       return db - da
     })
-    for (const it of sorted) {
+    for (let i = 0; i < sorted.length; i++) {
       await resolveCompanyForContact({
-        rawName: it.rawName,
-        contactId: it.id,
-        email: it.email,
+        rawName: sorted[i].rawName,
+        contactId: sorted[i].id,
+        email: sorted[i].email,
+        // 첫 호출만 force — 재분석 후 캐시가 갱신되므로 나머지는 그 캐시를 재사용
+        forceRefresh: i === 0 ? opts?.forceRefresh : false,
       })
     }
   }
