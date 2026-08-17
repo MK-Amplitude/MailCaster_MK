@@ -198,7 +198,6 @@ export function useCreateCampaign() {
 
   return useMutation({
     mutationFn: async (data: Omit<CampaignInsert, 'user_id' | 'org_id'>) => {
-      console.log('[createCampaign] start', { data, userId: user?.id, orgId: currentOrg?.id })
       if (!user) throw new Error('로그인이 필요합니다.')
       if (!currentOrg) throw new Error('현재 조직이 설정되지 않았습니다.')
       const { data: result, error } = await supabase
@@ -207,7 +206,6 @@ export function useCreateCampaign() {
         .insert({ ...data, user_id: user.id, org_id: currentOrg.id } as any)
         .select()
         .single()
-      console.log('[createCampaign] result', { result, error })
       if (error) throw error
       return result as Campaign
     },
@@ -244,9 +242,7 @@ export function useDeleteCampaign() {
 
   return useMutation({
     mutationFn: async (id: string) => {
-      console.log('[deleteCampaign] start', { id })
       const { error } = await supabase.from('campaigns').delete().eq('id', id)
-      console.log('[deleteCampaign] result', { error })
       if (error) throw error
     },
     onSuccess: () => {

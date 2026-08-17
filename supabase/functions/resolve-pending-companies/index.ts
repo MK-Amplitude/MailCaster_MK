@@ -94,6 +94,38 @@ Deno.serve(async (req) => {
     const runStartedAt = Date.now()
     const RUN_BUDGET_MS = 50_000
 
+    // company_cache batch prefetch — 배치 내 모든 queryKey 를 한 번에 조회 (기존엔 contact 당 1 SELECT).
+    // 이후 OpenAI 호출 결과도 이 Map 에 기록해 같은 배치 내 동일 회사명 중복 과금 방지.
+    const cacheMap = new Map<string, CompanyResult>()
+    {
+      const keys = [
+        ...new Set(
+          pending
+            .map((c) => (c.company_raw ?? c.company ?? '').toString().trim().toLowerCase())
+            .filter((k) => k.length > 0),
+        ),
+      ]
+      for (let i = 0; i < keys.length; i += 500) {
+        const { data: rows } = await supabase
+          .schema('mailcaster')
+          .from('company_cache')
+          .select('query_key, name_ko, name_en, parent_group, confidence, raw_response')
+          .in('query_key', keys.slice(i, i + 500))
+        for (const r of (rows ?? []) as Array<Record<string, unknown>>) {
+          if (!r.name_ko && !r.name_en) continue // null 결과는 cache miss 취급 (재시도)
+          const raw = (r.raw_response ?? {}) as Record<string, unknown>
+          cacheMap.set(r.query_key as string, {
+            name_ko: (r.name_ko as string) ?? null,
+            name_en: (r.name_en as string) ?? null,
+            parent_group: (r.parent_group as string) ?? null,
+            extracted_department:
+              typeof raw.extracted_department === 'string' ? raw.extracted_department : null,
+            confidence: Number(r.confidence) || 0,
+          })
+        }
+      }
+    }
+
     for (const c of pending) {
       if (Date.now() - runStartedAt > RUN_BUDGET_MS) {
         console.log('[resolve-pending] run budget exhausted — deferring rest to next tick')
@@ -117,36 +149,19 @@ Deno.serve(async (req) => {
       const emailDomain = extractDomain(c.email)
 
       try {
-        // 1) 캐시 조회 — 과거 null 결과(=식별 실패)는 cache miss 로 취급해서
-        //    도메인 힌트와 함께 다시 시도한다.
-        const { data: cacheRow } = await supabase
-          .schema('mailcaster')
-          .from('company_cache')
-          .select('name_ko, name_en, parent_group, confidence, raw_response')
-          .eq('query_key', queryKey)
-          .maybeSingle()
-
-        const hasUsefulCache =
-          cacheRow && (cacheRow.name_ko || cacheRow.name_en)
+        // 1) 캐시 조회 — batch prefetch Map 우선 (배치 내 앞선 OpenAI 결과도 포함).
+        //    Map 에 없으면 miss → OpenAI. (과거 null 결과는 prefetch 에서 제외돼 재시도됨)
+        const cached = cacheMap.get(queryKey)
 
         let result: CompanyResult
-        if (hasUsefulCache) {
+        if (cached) {
           cachedHits++
-          const cachedRaw = (cacheRow.raw_response ?? {}) as Record<string, unknown>
-          const cachedDept =
-            typeof cachedRaw.extracted_department === 'string'
-              ? (cachedRaw.extracted_department as string)
-              : null
-          result = {
-            name_ko: cacheRow.name_ko,
-            name_en: cacheRow.name_en,
-            parent_group: cacheRow.parent_group ?? null,
-            extracted_department: cachedDept,
-            confidence: Number(cacheRow.confidence) || 0,
-          }
+          result = cached
         } else {
           // 2) OpenAI 호출 — 도메인을 힌트로 전달
           result = await callOpenAI(rawName, emailDomain)
+          // 같은 배치 내 동일 회사명 재호출 방지 — 결과를 Map 에도 기록
+          if (result.name_ko || result.name_en) cacheMap.set(queryKey, result)
 
           // 3) 캐시 upsert — 유용한 결과일 때만 (null 결과 저장은 cache pollution)
           if (result.name_ko || result.name_en) {

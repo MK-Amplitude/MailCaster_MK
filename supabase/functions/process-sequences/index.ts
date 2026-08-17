@@ -135,6 +135,32 @@ Deno.serve(async (req) => {
       contactMap.set(c.id, c)
     }
 
+    // C1 멱등 가드용 batch prefetch — 클레임 튜플의 기존 sent/pending thread_messages 를
+    // 한 번에 조회해 Map(seq:contact:step) 으로 보관. 기존엔 claim 당 1 SELECT (최대 40 왕복).
+    const stepOrders = [...new Set(claimList.map((c) => c.step_order))]
+    const existingTmMap = new Map<
+      string,
+      { gmail_thread_id: string | null; rfc_message_id: string | null }
+    >()
+    {
+      const { data: tmRows } = await supabase
+        .schema('mailcaster').from('thread_messages')
+        .select('sequence_id, contact_id, sequence_step_order, gmail_thread_id, rfc_message_id')
+        .in('sequence_id', seqIds)
+        .in('contact_id', contactIds)
+        .in('sequence_step_order', stepOrders)
+        .in('status', ['sent', 'pending'])
+      for (const r of (tmRows ?? []) as Array<{
+        sequence_id: string; contact_id: string; sequence_step_order: number
+        gmail_thread_id: string | null; rfc_message_id: string | null
+      }>) {
+        existingTmMap.set(`${r.sequence_id}:${r.contact_id}:${r.sequence_step_order}`, {
+          gmail_thread_id: r.gmail_thread_id,
+          rfc_message_id: r.rfc_message_id,
+        })
+      }
+    }
+
     // 3) 발송자(user)별 그룹핑 — 각자 Gmail 토큰
     const byUser = new Map<string, Claim[]>()
     for (const c of claimList) {
@@ -229,17 +255,10 @@ Deno.serve(async (req) => {
         // C1 멱등 가드 — 이 (시퀀스, contact, 스텝) 발송이 이미 존재하면 재발송 금지.
         // (이전 run 에서 Gmail 발송 성공 후 advance_enrollment 실패/크래시 시, 클레임의 15분 hold 가
         //  만료되면 같은 스텝을 또 보낼 위험 → DB 에 sent/pending 흔적이 있으면 enrollment 만 진행시켜 복구.)
-        const { data: existingTm } = await supabase
-          .schema('mailcaster').from('thread_messages')
-          .select('id, gmail_thread_id, rfc_message_id')
-          .eq('sequence_id', claim.sequence_id)
-          .eq('contact_id', claim.contact_id)
-          .eq('sequence_step_order', claim.step_order)
-          .in('status', ['sent', 'pending'])
-          .limit(1)
-          .maybeSingle()
-        if (existingTm) {
-          const ex = existingTm as { gmail_thread_id: string | null; rfc_message_id: string | null }
+        const ex = existingTmMap.get(
+          `${claim.sequence_id}:${claim.contact_id}:${claim.step_order}`,
+        )
+        if (ex) {
           const { error: advErr } = await supabase.schema('mailcaster').rpc('advance_enrollment', {
             p_enrollment_id: claim.enrollment_id,
             p_sent_step_order: claim.step_order,
