@@ -311,6 +311,46 @@ export default function ContactsPage() {
     }
   }
 
+  // 빈 그룹사 전체 AI 채우기 — 그룹사가 비어있고 회사명 또는 회사 도메인이 있는 연락처.
+  // (회사 신호가 전혀 없는 건 resolveCompaniesBatch 가 내부에서 skip)
+  const [fillGroupsOpen, setFillGroupsOpen] = useState(false)
+  const [fillGroupsPending, setFillGroupsPending] = useState(false)
+  const emptyGroupTargets = useMemo(
+    () =>
+      allContacts.filter(
+        (c) =>
+          !c.parent_group &&
+          !c.is_bounced &&
+          (c.company?.trim() || c.company_raw?.trim() || (c.email?.includes('@') ?? false)),
+      ),
+    [allContacts],
+  )
+  const handleFillEmptyGroups = async () => {
+    if (emptyGroupTargets.length === 0) {
+      toast.info('그룹사가 비어있는 대상이 없습니다.')
+      setFillGroupsOpen(false)
+      return
+    }
+    setFillGroupsOpen(false)
+    setFillGroupsPending(true)
+    toast.info(`AI 그룹사 분석 시작 — ${emptyGroupTargets.length}건 (중복 회사/도메인은 캐시 재사용)`)
+    try {
+      await resolveCompaniesBatch(
+        emptyGroupTargets.map((c) => ({
+          id: c.id,
+          rawName: c.company_raw ?? c.company ?? null,
+          email: c.email,
+        })),
+        qc,
+      )
+      toast.success(`AI 그룹사 분석 완료 — ${emptyGroupTargets.length}건 처리`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'AI 분석 중 오류')
+    } finally {
+      setFillGroupsPending(false)
+    }
+  }
+
   const openNewForm = () => {
     setEditContact(null)
     setOcrPrefill(null)
@@ -416,6 +456,20 @@ export default function ContactsPage() {
                 <Archive className="w-4 h-4 sm:mr-1.5" />
               )}
               <span className="hidden sm:inline">비활성 자동 보관</span>
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setFillGroupsOpen(true)}
+              disabled={fillGroupsPending}
+              title="그룹사가 비어있는 연락처를 AI 로 일괄 분석해 채웁니다"
+            >
+              {fillGroupsPending ? (
+                <Loader2 className="w-4 h-4 sm:mr-1.5 animate-spin" />
+              ) : (
+                <Sparkles className="w-4 h-4 sm:mr-1.5" />
+              )}
+              <span className="hidden sm:inline">빈 그룹사 AI 채우기</span>
             </Button>
             <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
               <Upload className="w-4 h-4 sm:mr-1.5" />
@@ -714,6 +768,14 @@ export default function ContactsPage() {
         onOpenChange={setMergeOpen}
         contacts={mergeCandidates}
         onDone={clearSelection}
+      />
+      <ConfirmDialog
+        open={fillGroupsOpen}
+        onOpenChange={setFillGroupsOpen}
+        title="빈 그룹사 AI 채우기"
+        description={`그룹사가 비어있는 ${emptyGroupTargets.length}명을 AI 로 분석해 채웁니다. 이미 입력된 그룹사는 건드리지 않으며, AI 가 그룹을 못 찾은 연락처는 비워둡니다. 중복 회사·도메인은 캐시를 재사용해 비용을 아낍니다. (분석 중에는 이 창을 열어두세요.)`}
+        confirmLabel="분석 시작"
+        onConfirm={handleFillEmptyGroups}
       />
     </div>
   )
