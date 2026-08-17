@@ -175,13 +175,15 @@ Deno.serve(async (req) => {
         // 5) contact 업데이트 — 부서가 비어있고 AI 가 분리한 게 있으면 같이 채움.
         //    사용자가 직접 입력한 부서는 보존.
         const status = result.name_ko || result.name_en ? 'resolved' : 'not_found'
+        // AI 결과가 null 이면 덮어쓰지 않음 — 사용자가 수동 입력한 그룹사/회사명을
+        // 재분석이 지우는 것 방지 (resolve-company 와 동일 정책).
         const updates: Record<string, unknown> = {
-          company_ko: result.name_ko,
-          company_en: result.name_en,
-          parent_group: result.parent_group,
           company_lookup_status: status,
           company_lookup_at: new Date().toISOString(),
         }
+        if (result.name_ko) updates.company_ko = result.name_ko
+        if (result.name_en) updates.company_en = result.name_en
+        if (result.parent_group) updates.parent_group = result.parent_group
         if (result.extracted_department) {
           // 기존 department 가 비어있어야만 채움
           if (!c.department || !c.department.trim()) {
