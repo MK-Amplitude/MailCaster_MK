@@ -197,13 +197,19 @@ Deno.serve(async (req) => {
       // 기존 department 가 NULL/공백일 때만 AI 가 분리한 값으로 채움.
       // company / company_raw 도 동일 정책: raw_name 에서 부서를 떼어낸 본문이 있으면
       // company_raw 를 정리된 회사명으로 (사용자가 보는 입력 필드) 갱신해 일관성 유지.
+      //
+      // 중요: AI 결과가 null 이면 덮어쓰지 않는다.
+      //   parent_group=null 은 "그룹 못 찾음" 일 뿐 "그룹 아님" 확정이 아니다.
+      //   무조건 덮으면 사용자가 방금 수동 입력한 그룹사/회사명을 자동 분석(또는 회사명
+      //   수정 시 재분석)이 지워버려 "그룹사 추가가 안 된다" 로 보인다.
+      //   비우려면 사용자가 인라인 편집기에서 직접 null 저장(updateContact)한다.
       const updates: Record<string, unknown> = {
-        company_ko: result.name_ko,
-        company_en: result.name_en,
-        parent_group: result.parent_group,
         company_lookup_status: status,
         company_lookup_at: new Date().toISOString(),
       }
+      if (result.name_ko) updates.company_ko = result.name_ko
+      if (result.name_en) updates.company_en = result.name_en
+      if (result.parent_group) updates.parent_group = result.parent_group
 
       if (result.extracted_department) {
         // 도입부에서 이미 조회한 contact row 재사용 (같은 row 3회 조회 제거)
