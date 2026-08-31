@@ -103,7 +103,9 @@ export function useEnqueueServerSend() {
       // failed 포함: 발송 버튼이 failed 캠페인에도 노출됨 (남은 pending 수신자 재시도).
       const { data, error } = await supabase
         .from('campaigns')
-        .update({ status: 'scheduled', scheduled_at: new Date().toISOString() })
+        // send_attempts: 0 — 사용자가 명시적으로 재발송하는 것이므로 poison-pill
+        // 카운터(075)를 리셋해 서버가 새로 5회 시도할 수 있게 한다.
+        .update({ status: 'scheduled', scheduled_at: new Date().toISOString(), send_attempts: 0 })
         .eq('id', campaignId)
         .in('status', ['draft', 'scheduled', 'failed'])
         .select('id')
@@ -167,6 +169,7 @@ export function useResetStuckCampaign() {
           scheduled_at: null,
           sending_started_at: null,
           last_processed_recipient_id: null,
+          send_attempts: 0,
         })
         .eq('id', campaignId)
         .in('status', ['sending', 'scheduled', 'failed'])

@@ -94,7 +94,13 @@ interface Campaign {
   enable_open_tracking: boolean | null
   // 069 — 발송 완료 후 수신자를 등록할 후속 시퀀스
   followup_sequence_id: string | null
+  // 075 — 서버 발송 락 획득 횟수 (poison-pill 가드)
+  send_attempts: number | null
 }
+
+// 075 — 크래시 루프 차단: 락 획득 횟수가 이 값을 넘으면 failed 로 내린다.
+// (락 시점에 증가시키므로 이후 WORKER_RESOURCE_LIMIT 크래시에도 카운트가 남음)
+const MAX_SEND_ATTEMPTS = 5
 
 interface DriveAttachmentRow {
   id: string
@@ -180,7 +186,7 @@ Deno.serve(async (req) => {
     // 살아있는 실행과 겹쳐 같은 수신자에게 중복 발송되는 경쟁을 차단한다.
     const staleIso = new Date(Date.now() - 90_000).toISOString()
     const COLS =
-      'id, user_id, name, subject, body_html, signature_id, send_delay_seconds, cc, bcc, send_mode, scheduled_at, status, sending_started_at, last_processed_recipient_id, enable_open_tracking, followup_sequence_id'
+      'id, user_id, name, subject, body_html, signature_id, send_delay_seconds, cc, bcc, send_mode, scheduled_at, status, sending_started_at, last_processed_recipient_id, enable_open_tracking, followup_sequence_id, send_attempts'
 
     // 사용자 즉시 발송 경로 — 해당 campaign_id 하나만 (scheduled 또는 lease 만료된 sending).
     // 실제 발송 여부는 processCampaign 의 CAS 락이 최종 판정 (cron 과 겹쳐도 1회만).
@@ -282,11 +288,39 @@ async function processCampaign(
   //         (다른 cron 이 동시에 집는 걸 막기 위해 sending_started_at 값을 조건에 걸어 CAS)
   //
   //    어느 쪽이든 UPDATE 결과가 1건일 때만 "이 run 이 소유" 한다.
+  //
+  //    075 — poison-pill 가드: 락 획득 횟수가 상한을 넘으면 이 캠페인은
+  //    처리 불가능(예: 첨부 과대 → WORKER_RESOURCE_LIMIT 크래시 루프)으로 보고
+  //    failed 로 내려 루프를 끊는다. 사용자는 UI 에서 클라이언트 발송으로 재개 가능.
+  const attempts = c.send_attempts ?? 0
+  if (attempts >= MAX_SEND_ATTEMPTS) {
+    console.error(
+      `[send-scheduled] campaign ${c.id} exceeded ${MAX_SEND_ATTEMPTS} send attempts — marking failed (poison pill)`,
+    )
+    await supabase
+      .schema('mailcaster')
+      .from('campaigns')
+      .update({
+        status: 'failed',
+        scheduled_at: null,
+        sending_started_at: null,
+        last_processed_recipient_id: null,
+        send_attempts: 0,
+      })
+      .eq('id', c.id)
+      .in('status', ['scheduled', 'sending'])
+    return { sent: 0, failed: 0 }
+  }
+
   if (c.status === 'scheduled') {
     const { data: locked, error: lockErr } = await supabase
       .schema('mailcaster')
       .from('campaigns')
-      .update({ status: 'sending', sending_started_at: new Date().toISOString() })
+      .update({
+        status: 'sending',
+        sending_started_at: new Date().toISOString(),
+        send_attempts: attempts + 1,
+      })
       .eq('id', c.id)
       .eq('status', 'scheduled')
       .select('id, sending_started_at')
@@ -304,7 +338,7 @@ async function processCampaign(
     const { data: touched, error: lockErr } = await supabase
       .schema('mailcaster')
       .from('campaigns')
-      .update({ sending_started_at: new Date().toISOString() })
+      .update({ sending_started_at: new Date().toISOString(), send_attempts: attempts + 1 })
       .eq('id', c.id)
       .eq('status', 'sending')
       .eq('sending_started_at', c.sending_started_at)
@@ -324,7 +358,7 @@ async function processCampaign(
     const { data: recovered, error: lockErr } = await supabase
       .schema('mailcaster')
       .from('campaigns')
-      .update({ sending_started_at: new Date().toISOString() })
+      .update({ sending_started_at: new Date().toISOString(), send_attempts: attempts + 1 })
       .eq('id', c.id)
       .eq('status', 'sending')
       .is('sending_started_at', null)
@@ -439,6 +473,7 @@ async function processCampaign(
         failed_count: doneFailed ?? 0,
         sending_started_at: null,
         last_processed_recipient_id: null,
+        send_attempts: 0,
       })
       .eq('id', c.id)
     return { sent: 0, failed: 0 }
@@ -743,6 +778,7 @@ async function processCampaign(
           failed_count: invalidRecipients.length,
           sending_started_at: null,
           last_processed_recipient_id: null,
+          send_attempts: 0,
         })
         .eq('id', c.id)
       // 첨부 이력 기록 — 발송된 수신자만 (invalidRecipients 제외)
@@ -772,6 +808,7 @@ async function processCampaign(
           failed_count: recipients.length,
           sending_started_at: null,
           last_processed_recipient_id: null,
+          send_attempts: 0,
         })
         .eq('id', c.id)
       return { sent: 0, failed: recipients.length }
@@ -1001,6 +1038,7 @@ async function processCampaign(
       failed_count: failedTotal,
       sending_started_at: null,
       last_processed_recipient_id: null,
+      send_attempts: 0,
     })
     .eq('id', c.id)
 
