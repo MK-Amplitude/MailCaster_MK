@@ -13,6 +13,7 @@ import {
   useAddRecipientToCampaign,
   useRemoveRecipientFromCampaign,
   useEnqueueServerSend,
+  useResumeCampaign,
   useSendPreflight,
 } from '@/hooks/useCampaigns'
 import { ThreadComposeDialog } from '@/components/campaigns/ThreadComposeDialog'
@@ -166,6 +167,7 @@ export default function CampaignDetailPage() {
   const enqueueSend = useEnqueueServerSend()
   const deleteCampaign = useDeleteCampaign()
   const updateCampaign = useUpdateCampaign()
+  const resumeCampaign = useResumeCampaign()
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [sendOpen, setSendOpen] = useState(false)
   const [cancelScheduleOpen, setCancelScheduleOpen] = useState(false)
@@ -366,6 +368,20 @@ export default function CampaignDetailPage() {
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
+            {campaign.status === 'sending' && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => resumeCampaign.mutate({ campaignId: id! })}
+                disabled={resumeCampaign.isPending}
+                title="발송이 멈춰있으면 남은 수신자에게 발송을 재개합니다"
+              >
+                {resumeCampaign.isPending
+                  ? <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                  : <RotateCcw className="w-4 h-4 mr-1" />}
+                발송 재개
+              </Button>
+            )}
             {canSend && (
               <Button size="sm" onClick={() => setSendOpen(true)} disabled={isSending}>
                 {isSending ? (

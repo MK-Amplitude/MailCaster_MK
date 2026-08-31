@@ -139,6 +139,63 @@ export function useEnqueueServerSend() {
 }
 
 // ------------------------------------------------------------
+// 멈춘 발송 복구/재개 — status='sending' 인데 진행이 멈춘 캠페인을 사용자가 직접 재개.
+// pg_cron 이 돌지 않는 환경에서도 동작하도록 클라이언트가 함수를 직접 호출한다.
+//   1) 고착 수신자('sending' + gmail_message_id NULL)를 pending 으로 되돌림
+//   2) 캠페인을 scheduled + 체크포인트 초기화 (CAS: 현재 sending 인 것만)
+//   3) send-scheduled-campaigns 를 사용자 JWT 로 즉시 호출 (cron 무관)
+// ------------------------------------------------------------
+export function useResumeCampaign() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async ({ campaignId }: { campaignId: string }) => {
+      // 1) 고착 수신자 되돌리기 (실제 발송 안 된 것만 — gmail_message_id NULL)
+      const { error: rErr } = await supabase
+        .from('recipients')
+        .update({ status: 'pending' })
+        .eq('campaign_id', campaignId)
+        .eq('status', 'sending')
+        .is('gmail_message_id', null)
+      if (rErr) throw rErr
+
+      // 2) 캠페인을 scheduled 로 되돌리고 체크포인트 초기화 (sending 인 것만 — CAS)
+      const { data, error } = await supabase
+        .from('campaigns')
+        .update({
+          status: 'scheduled',
+          scheduled_at: new Date().toISOString(),
+          sending_started_at: null,
+          last_processed_recipient_id: null,
+        })
+        .eq('id', campaignId)
+        .eq('status', 'sending')
+        .select('id')
+      if (error) throw error
+      if (!data || data.length === 0) {
+        throw new Error('재개할 수 없는 상태입니다 (이미 완료되었거나 발송 중이 아님).')
+      }
+
+      // 3) 함수 즉시 호출 (cron 무관)
+      const { data: sessionData } = await supabase.auth.getSession()
+      const accessToken = sessionData.session?.access_token
+      if (accessToken) {
+        void supabase.functions
+          .invoke('send-scheduled-campaigns', {
+            body: { campaign_id: campaignId },
+            headers: { Authorization: `Bearer ${accessToken}` },
+          })
+          .catch((e) => console.warn('[resumeCampaign] kick failed, cron fallback:', e))
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: [QK] })
+      toast.success('발송을 재개했습니다 — 곧 남은 수신자에게 발송됩니다.', { duration: 7000 })
+    },
+    onError: (e: Error) => toast.error(e.message || '발송 재개 실패'),
+  })
+}
+
+// ------------------------------------------------------------
 // 발송 전 프리플라이트 — 서버가 발송 시점에 제외할 수신자(수신거부/반송/빈 이메일)를
 // 미리 집계해 확인 다이얼로그에 보여준다. 다이얼로그 열릴 때만 fetch.
 // ------------------------------------------------------------
