@@ -12,6 +12,12 @@ export default function LoginPage() {
   // 있는데 그동안 버튼이 무반응이면 죽은 것처럼 보인다 (중복 클릭 유발).
   // 성공 시엔 페이지가 Google 로 떠나므로 여기서 되돌릴 필요 없음.
   const [signingIn, setSigningIn] = useState(false)
+  // 홈 화면 PWA(standalone) 에서는 OAuth 가 별도 브라우저로 튕겼다 돌아오며
+  // PKCE verifier 가 유실돼 로그인이 무한 루프에 빠질 수 있다 — 사전 경고.
+  const isStandalone =
+    typeof window !== 'undefined' &&
+    (window.matchMedia('(display-mode: standalone)').matches ||
+      (navigator as { standalone?: boolean }).standalone === true)
 
   useEffect(() => {
     if (!loading && user) {
@@ -79,6 +85,17 @@ export default function LoginPage() {
             </svg>
             {signingIn ? 'Google 로 이동 중...' : 'Google 계정으로 로그인'}
           </Button>
+
+          {isStandalone && (
+            <div className="mt-4 p-4 bg-amber-50 dark:bg-amber-950 rounded-lg">
+              <p className="text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
+                <strong>홈 화면 앱에서는 Google 로그인이 실패할 수 있습니다.</strong>{' '}
+                로그인이 반복해서 되돌아온다면 Safari 또는 Chrome 브라우저에서{' '}
+                직접 주소로 접속해 로그인해주세요. 로그인 후에는 홈 화면 앱에서도
+                계속 사용할 수 있습니다.
+              </p>
+            </div>
+          )}
 
           <div className="mt-6 p-4 bg-blue-50 dark:bg-blue-950 rounded-lg">
             <p className="text-xs text-blue-700 dark:text-blue-300 leading-relaxed">
