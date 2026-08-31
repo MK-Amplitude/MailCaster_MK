@@ -175,23 +175,43 @@ export function useResumeCampaign() {
         throw new Error('재개할 수 없는 상태입니다 (이미 완료되었거나 발송 중이 아님).')
       }
 
-      // 3) 함수 즉시 호출 (cron 무관)
+      // 3) 함수 즉시 호출 — 결과를 await 해서 실제 발송/오류를 확인 (진단).
+      //    여기서 실패하면 서버 함수/토큰 문제이므로 원인 메시지를 그대로 노출한다.
       const { data: sessionData } = await supabase.auth.getSession()
       const accessToken = sessionData.session?.access_token
-      if (accessToken) {
-        void supabase.functions
-          .invoke('send-scheduled-campaigns', {
-            body: { campaign_id: campaignId },
-            headers: { Authorization: `Bearer ${accessToken}` },
-          })
-          .catch((e) => console.warn('[resumeCampaign] kick failed, cron fallback:', e))
+      if (!accessToken) throw new Error('로그인이 필요합니다.')
+      const { data: fnData, error: fnError } = await supabase.functions.invoke(
+        'send-scheduled-campaigns',
+        {
+          body: { campaign_id: campaignId },
+          headers: { Authorization: `Bearer ${accessToken}` },
+        },
+      )
+      if (fnError) {
+        // Edge Function 이 4xx/5xx 로 응답하면 본문의 error 를 추출해 표면화
+        let detail = fnError.message
+        try {
+          const resp = (fnError as { context?: Response }).context
+          if (resp) {
+            const b = (await resp.json()) as { error?: string }
+            detail = b.error || detail
+          }
+        } catch { /* ignore */ }
+        throw new Error(`발송 함수 오류: ${detail}`)
+      }
+      return fnData as { processed?: number; sent?: number; failed?: number } | null
+    },
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: [QK] })
+      const sent = r?.sent ?? 0
+      const failed = r?.failed ?? 0
+      if (sent === 0 && failed === 0) {
+        toast.info('재개 요청됨 — 아직 발송 결과가 없습니다. 잠시 후 상태를 확인해주세요.', { duration: 8000 })
+      } else {
+        toast.success(`발송 재개 — 성공 ${sent} · 실패 ${failed}`, { duration: 8000 })
       }
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: [QK] })
-      toast.success('발송을 재개했습니다 — 곧 남은 수신자에게 발송됩니다.', { duration: 7000 })
-    },
-    onError: (e: Error) => toast.error(e.message || '발송 재개 실패'),
+    onError: (e: Error) => toast.error(e.message || '발송 재개 실패', { duration: 12000 }),
   })
 }
 
