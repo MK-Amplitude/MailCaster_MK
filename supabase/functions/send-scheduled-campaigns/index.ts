@@ -183,13 +183,16 @@ Deno.serve(async (req) => {
 
     // 사용자 즉시 발송 경로 — 해당 campaign_id 하나만 (scheduled 또는 lease 만료된 sending).
     // 실제 발송 여부는 processCampaign 의 CAS 락이 최종 판정 (cron 과 겹쳐도 1회만).
+    // 재개/복구 대상:
+    //   · status='sending' + sending_started_at 90초 경과 (lease 만료 — 죽은 실행)
+    //   · status='sending' + sending_started_at IS NULL (체크포인트 없이 고착된 레거시)
     const dueQuery = userCampaignId
       ? supabase.schema('mailcaster').from('campaigns').select(COLS)
           .eq('id', userCampaignId)
-          .or(`status.eq.scheduled,and(status.eq.sending,sending_started_at.lt.${staleIso})`)
+          .or(`status.eq.scheduled,and(status.eq.sending,sending_started_at.lt.${staleIso}),and(status.eq.sending,sending_started_at.is.null)`)
       : supabase.schema('mailcaster').from('campaigns').select(COLS)
           .or(
-            `and(status.eq.scheduled,scheduled_at.lte.${nowIso}),and(status.eq.sending,sending_started_at.lt.${staleIso})`
+            `and(status.eq.scheduled,scheduled_at.lte.${nowIso}),and(status.eq.sending,sending_started_at.lt.${staleIso}),and(status.eq.sending,sending_started_at.is.null)`
           )
           .order('scheduled_at', { ascending: true })
           .limit(MAX_CAMPAIGNS_PER_RUN)
@@ -311,8 +314,28 @@ async function processCampaign(
       return { sent: 0, failed: 0 }
     }
     console.log(`[send-scheduled] campaign ${c.id} resuming from checkpoint`)
+  } else if (c.status === 'sending') {
+    // 체크포인트 없이 'sending' 에 고착된 캠페인 복구 —
+    // 옛 클라이언트 발송이 탭 종료 등으로 중간에 끊긴 레거시 상태.
+    // (현재는 모든 발송이 서버 경로라 sending 전환 시 sending_started_at 을 항상 원자적으로
+    //  같이 찍으므로, sending_started_at=NULL 인 sending 은 정의상 "죽은/고착된" 실행이다.)
+    // sending_started_at IS NULL 을 CAS 토큰으로 걸어 한 run 만 소유하도록 한다.
+    const { data: recovered, error: lockErr } = await supabase
+      .schema('mailcaster')
+      .from('campaigns')
+      .update({ sending_started_at: new Date().toISOString() })
+      .eq('id', c.id)
+      .eq('status', 'sending')
+      .is('sending_started_at', null)
+      .select('id')
+    if (lockErr) throw lockErr
+    if (!recovered || recovered.length === 0) {
+      console.log(`[send-scheduled] campaign ${c.id} recover raced — skip`)
+      return { sent: 0, failed: 0 }
+    }
+    console.log(`[send-scheduled] campaign ${c.id} recovering stuck 'sending' (no checkpoint)`)
   } else {
-    // 예상 못한 상태 (status=sending 인데 sending_started_at=NULL) — 안전하게 skip
+    // 그 외 예상 못한 상태 — 안전하게 skip
     console.log(`[send-scheduled] campaign ${c.id} unexpected state — skip`)
     return { sent: 0, failed: 0 }
   }
