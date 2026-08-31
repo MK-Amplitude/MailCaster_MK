@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import type { Session, User } from '@supabase/supabase-js'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
+import { toast } from 'sonner'
 import type { Organization, OrgRole } from '@/types/org'
 
 type OrgWithRole = Organization & { role: OrgRole }
@@ -27,6 +28,18 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | undefined>(undefined)
 
 const CURRENT_ORG_STORAGE_KEY = 'mailcaster-current-org-id'
+
+// ─────────────────────────────────────────────────────────────
+// OAuth 복귀 실패 표면화 — Google 에서 돌아왔는데 세션 교환이 실패하면
+// 지금까지는 아무 메시지 없이 로그인 화면으로 되돌아가 "그냥 안 됨"으로 보였다.
+// supabase-js 가 code 교환 후 URL 을 정리(replaceState)하기 전에, 모듈 로드
+// 시점에 쿼리 파라미터를 스냅샷해 두고 초기 세션 판정 후 실패 원인을 토스트로 노출.
+// (PKCE verifier 유실 — 홈 화면 PWA/인앱 브라우저에서 로그인 시 흔함 — 이 대표 원인)
+// ─────────────────────────────────────────────────────────────
+const initialUrl = typeof window !== 'undefined' ? new URL(window.location.href) : null
+const oauthReturnError =
+  initialUrl?.searchParams.get('error_description') ?? initialUrl?.searchParams.get('error') ?? null
+const hadOAuthCode = initialUrl?.searchParams.has('code') ?? false
 
 // 기본 카테고리는 이제 DB trigger (016) 가 삽입 — 이전의 프런트엔드 seed 는 비활성화.
 // (남은 호출이 있어도 group_categories UNIQUE(user_id, name) 때문에 중복 생성되지 않음.)
@@ -119,6 +132,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setSession(session)
       setUser(session?.user ?? null)
       setLoading(false)
+      // Google 에서 돌아왔는데(에러 파라미터 또는 code 존재) 세션이 안 만들어진 경우
+      // — 실패 원인을 사용자에게 보여준다. getSession 은 내부적으로 URL 의 code
+      // 교환(detectSessionInUrl)까지 끝난 뒤 resolve 되므로 여기서 판정 가능.
+      if (!session && (oauthReturnError || hadOAuthCode)) {
+        toast.error(
+          oauthReturnError
+            ? `로그인 실패: ${oauthReturnError}`
+            : '로그인 처리에 실패했습니다. 홈 화면 앱이나 카카오톡 등 인앱 브라우저가 아닌 Safari/Chrome 브라우저에서 직접 접속해 다시 시도해주세요.',
+          { duration: 20000 },
+        )
+      }
       if (session) {
         // getSession 이후 마이크로태스크에서 실행 — 다른 auth 이벤트와 순서 충돌 회피
         setTimeout(() => {
