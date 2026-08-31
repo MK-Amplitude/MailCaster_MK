@@ -120,9 +120,10 @@ interface PreparedAttachment {
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
 
-  if (!CRON_SECRET) return json({ error: 'CRON_SECRET not configured' }, 500)
+  // CRON_SECRET 은 cron(배치) 경로에만 필요. 사용자 JWT 경로("지금 발송"/"발송 재개")는
+  // CRON_SECRET 미설정이어도 동작해야 하므로 여기서 전역 차단하지 않는다.
   const auth = req.headers.get('Authorization') ?? ''
-  const isCron = auth === `Bearer ${CRON_SECRET}`
+  const isCron = !!CRON_SECRET && auth === `Bearer ${CRON_SECRET}`
 
   // 인증 2경로:
   //   1) pg_cron — Bearer CRON_SECRET. 도래한/재개 대상 캠페인 전체를 배치 처리.
