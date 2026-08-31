@@ -90,9 +90,10 @@ export function useCampaignRecipients(campaignId: string | undefined) {
 }
 
 // ------------------------------------------------------------
-// 서버 발송 등록 — "지금 발송" 을 서버(예약 발송 cron)에 위임.
-// scheduled_at = now 로 예약하면 매분 도는 send-scheduled-campaigns 가 1분 이내 집어
-// 발송한다. 브라우저 탭을 닫아도 발송이 계속되고, 체크포인트/재개/중복 방지가 적용됨.
+// 서버 발송 등록 — "지금 발송" 을 서버(send-scheduled-campaigns)에 위임.
+// scheduled_at=now 로 예약한 뒤, 사용자 JWT 로 함수를 "즉시" 깨워 곧바로 발송 시작.
+//   (매분 도는 cron 을 기다리지 않으므로 시작 지연 ~0. cron 은 재개/안전망으로 유지)
+// 브라우저 탭을 닫아도 발송이 계속되고, 체크포인트/재개/중복 방지가 적용됨.
 // ------------------------------------------------------------
 export function useEnqueueServerSend() {
   const qc = useQueryClient()
@@ -110,11 +111,27 @@ export function useEnqueueServerSend() {
       if (!data || data.length === 0) {
         throw new Error('발송할 수 없는 상태입니다 (이미 발송 중이거나 완료된 캠페인).')
       }
+
+      // 즉시 킥 — 함수를 지금 깨워 발송 시작 (best-effort, fire-and-forget).
+      // await 하지 않음: 대형 캠페인은 함수가 최대 ~50초 처리 후 응답하므로 기다리면 UI 가 멈춤.
+      // 요청만 띄우고 즉시 반환 → 서버가 백그라운드로 발송. 실패/미도달해도 cron 이 1분 내 집어감.
+      const { data: sessionData } = await supabase.auth.getSession()
+      const accessToken = sessionData.session?.access_token
+      if (accessToken) {
+        void supabase.functions
+          .invoke('send-scheduled-campaigns', {
+            body: { campaign_id: campaignId },
+            headers: { Authorization: `Bearer ${accessToken}` },
+          })
+          .catch((e) => {
+            console.warn('[enqueueServerSend] immediate kick failed, cron will pick up:', e)
+          })
+      }
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: [QK] })
-      toast.success('발송이 서버에 등록되었습니다 — 1분 이내 시작됩니다. 창을 닫아도 발송이 계속됩니다.', {
-        duration: 8000,
+      toast.success('발송을 시작했습니다 — 창을 닫아도 서버가 계속 발송합니다.', {
+        duration: 7000,
       })
     },
     onError: (e: Error) => toast.error(e.message || '발송 등록 실패'),
