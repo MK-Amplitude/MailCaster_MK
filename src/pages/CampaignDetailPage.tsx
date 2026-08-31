@@ -13,9 +13,10 @@ import {
   useAddRecipientToCampaign,
   useRemoveRecipientFromCampaign,
   useEnqueueServerSend,
-  useResumeCampaign,
+  useResetStuckCampaign,
   useSendPreflight,
 } from '@/hooks/useCampaigns'
+import { useSendCampaign } from '@/hooks/useSendCampaign'
 import { ThreadComposeDialog } from '@/components/campaigns/ThreadComposeDialog'
 import { ThreadMessagesSection } from '@/components/campaigns/ThreadMessagesSection'
 import type { ThreadMode } from '@/hooks/useSendThreadMessage'
@@ -167,7 +168,9 @@ export default function CampaignDetailPage() {
   const enqueueSend = useEnqueueServerSend()
   const deleteCampaign = useDeleteCampaign()
   const updateCampaign = useUpdateCampaign()
-  const resumeCampaign = useResumeCampaign()
+  const resetStuck = useResetStuckCampaign()
+  const sendCampaign = useSendCampaign()
+  const resuming = resetStuck.isPending || sendCampaign.isPending
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [sendOpen, setSendOpen] = useState(false)
   const [cancelScheduleOpen, setCancelScheduleOpen] = useState(false)
@@ -372,11 +375,15 @@ export default function CampaignDetailPage() {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => resumeCampaign.mutate({ campaignId: id! })}
-                disabled={resumeCampaign.isPending}
-                title="발송이 멈춰있으면 남은 수신자에게 발송을 재개합니다"
+                onClick={async () => {
+                  if (!id) return
+                  await resetStuck.mutateAsync({ campaignId: id })
+                  await sendCampaign.mutateAsync({ campaignId: id })
+                }}
+                disabled={resuming}
+                title="발송이 멈춰있으면 남은 수신자에게 브라우저에서 직접 발송을 재개합니다 (탭을 닫지 마세요)"
               >
-                {resumeCampaign.isPending
+                {resuming
                   ? <Loader2 className="w-4 h-4 mr-1 animate-spin" />
                   : <RotateCcw className="w-4 h-4 mr-1" />}
                 발송 재개

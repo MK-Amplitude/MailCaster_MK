@@ -139,13 +139,14 @@ export function useEnqueueServerSend() {
 }
 
 // ------------------------------------------------------------
-// 멈춘 발송 복구/재개 — status='sending' 인데 진행이 멈춘 캠페인을 사용자가 직접 재개.
-// pg_cron 이 돌지 않는 환경에서도 동작하도록 클라이언트가 함수를 직접 호출한다.
+// 멈춘 발송 리셋 — status='sending' 에 고착된 캠페인을 다시 보낼 수 있는 상태로 되돌린다.
 //   1) 고착 수신자('sending' + gmail_message_id NULL)를 pending 으로 되돌림
-//   2) 캠페인을 scheduled + 체크포인트 초기화 (CAS: 현재 sending 인 것만)
-//   3) send-scheduled-campaigns 를 사용자 JWT 로 즉시 호출 (cron 무관)
+//   2) 캠페인을 draft + 체크포인트 초기화 (CAS: 현재 sending 인 것만)
+// 되돌린 뒤 호출자(CampaignDetailPage)가 클라이언트 발송(useSendCampaign)을 실행한다.
+//   ※ 서버 Edge Function 은 첨부 큰 캠페인에서 WORKER_RESOURCE_LIMIT(메모리 한도)로
+//     죽을 수 있어, 복구 발송은 메모리 여유가 큰 브라우저(클라이언트)에서 수행한다.
 // ------------------------------------------------------------
-export function useResumeCampaign() {
+export function useResetStuckCampaign() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async ({ campaignId }: { campaignId: string }) => {
@@ -158,67 +159,27 @@ export function useResumeCampaign() {
         .is('gmail_message_id', null)
       if (rErr) throw rErr
 
-      // 2) 캠페인을 scheduled 로 되돌리고 체크포인트 초기화 (sending 인 것만 — CAS)
+      // 2) 캠페인을 draft 로 되돌리고 체크포인트 초기화 (sending 인 것만 — CAS)
       const { data, error } = await supabase
         .from('campaigns')
         .update({
-          status: 'scheduled',
-          scheduled_at: new Date().toISOString(),
+          status: 'draft',
+          scheduled_at: null,
           sending_started_at: null,
           last_processed_recipient_id: null,
         })
         .eq('id', campaignId)
-        .eq('status', 'sending')
+        .in('status', ['sending', 'scheduled', 'failed'])
         .select('id')
       if (error) throw error
       if (!data || data.length === 0) {
-        throw new Error('재개할 수 없는 상태입니다 (이미 완료되었거나 발송 중이 아님).')
+        throw new Error('재개할 수 없는 상태입니다 (이미 완료되었거나 초안 상태).')
       }
-
-      // 3) 함수 즉시 호출 — 결과를 await 해서 실제 발송/오류를 확인 (진단).
-      //    여기서 실패하면 서버 함수/토큰 문제이므로 원인 메시지를 그대로 노출한다.
-      const { data: sessionData } = await supabase.auth.getSession()
-      const accessToken = sessionData.session?.access_token
-      if (!accessToken) throw new Error('로그인이 필요합니다.')
-      const { data: fnData, error: fnError } = await supabase.functions.invoke(
-        'send-scheduled-campaigns',
-        {
-          body: { campaign_id: campaignId },
-          headers: { Authorization: `Bearer ${accessToken}` },
-        },
-      )
-      if (fnError) {
-        // Edge Function 이 4xx/5xx 로 응답하면 본문의 error 를 추출해 표면화
-        let detail = fnError.message
-        try {
-          const resp = (fnError as { context?: Response }).context
-          if (resp && typeof resp.text === 'function') {
-            const raw = await resp.text()
-            if (raw) {
-              try {
-                const b = JSON.parse(raw) as { error?: string; detail?: string }
-                detail = b.error || b.detail || raw
-              } catch {
-                detail = raw
-              }
-            }
-          }
-        } catch { /* ignore */ }
-        throw new Error(`발송 함수 오류: ${detail}`)
-      }
-      return fnData as { processed?: number; sent?: number; failed?: number } | null
     },
-    onSuccess: (r) => {
+    onSuccess: () => {
       qc.invalidateQueries({ queryKey: [QK] })
-      const sent = r?.sent ?? 0
-      const failed = r?.failed ?? 0
-      if (sent === 0 && failed === 0) {
-        toast.info('재개 요청됨 — 아직 발송 결과가 없습니다. 잠시 후 상태를 확인해주세요.', { duration: 8000 })
-      } else {
-        toast.success(`발송 재개 — 성공 ${sent} · 실패 ${failed}`, { duration: 8000 })
-      }
     },
-    onError: (e: Error) => toast.error(e.message || '발송 재개 실패', { duration: 12000 }),
+    onError: (e: Error) => toast.error(e.message || '발송 재개 준비 실패', { duration: 10000 }),
   })
 }
 
