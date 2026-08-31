@@ -33,6 +33,7 @@ import { wrapLinksForClickTracking } from '../_shared/clickLinks.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+const ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY')!
 const CRON_SECRET = Deno.env.get('CRON_SECRET') ?? ''
 // 클릭 링크 서명 전용 키 (track-click 과 동일 우선순위) — 미설정 시 CRON_SECRET 폴백
 const CLICK_SIGNING_SECRET =
@@ -121,7 +122,40 @@ Deno.serve(async (req) => {
 
   if (!CRON_SECRET) return json({ error: 'CRON_SECRET not configured' }, 500)
   const auth = req.headers.get('Authorization') ?? ''
-  if (auth !== `Bearer ${CRON_SECRET}`) return json({ error: 'unauthorized' }, 401)
+  const isCron = auth === `Bearer ${CRON_SECRET}`
+
+  // 인증 2경로:
+  //   1) pg_cron — Bearer CRON_SECRET. 도래한/재개 대상 캠페인 전체를 배치 처리.
+  //   2) 사용자 JWT — "지금 발송" 버튼이 특정 campaign_id 를 즉시 깨울 때.
+  //      매분 도는 cron 을 기다리지 않고 곧바로 발송 시작 (시작 지연 ~0).
+  //      RLS 로 소유/조직 검증 — 사용자가 SELECT 할 수 있는 캠페인만 처리.
+  let userCampaignId: string | null = null
+  if (!isCron) {
+    const token = auth.startsWith('Bearer ') ? auth.slice(7) : ''
+    if (!token) return json({ error: 'unauthorized' }, 401)
+    const authClient = createClient(SUPABASE_URL, ANON_KEY, {
+      global: { headers: { Authorization: auth } },
+      auth: { persistSession: false },
+    })
+    const { data: userData, error: userErr } = await authClient.auth.getUser()
+    if (userErr || !userData?.user) return json({ error: 'unauthorized' }, 401)
+    let body: { campaign_id?: string } = {}
+    try {
+      body = await req.json()
+    } catch { /* 빈 본문 */ }
+    if (!body.campaign_id) {
+      return json({ error: '사용자 발송에는 campaign_id 가 필요합니다.' }, 400)
+    }
+    // RLS 준수 클라이언트로 조회 가능해야 소유/조직 권한 확인됨 (campaigns_*_own_or_admin)
+    const { data: owned } = await authClient
+      .schema('mailcaster')
+      .from('campaigns')
+      .select('id')
+      .eq('id', body.campaign_id)
+      .maybeSingle()
+    if (!owned) return json({ error: '해당 캠페인에 대한 권한이 없습니다.' }, 403)
+    userCampaignId = body.campaign_id
+  }
 
   const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
     auth: { persistSession: false },
@@ -144,17 +178,23 @@ Deno.serve(async (req) => {
     // 락 획득/재개 시 sending_started_at 을 항상 새로 찍으므로 (아래 processCampaign),
     // 살아있는 실행과 겹쳐 같은 수신자에게 중복 발송되는 경쟁을 차단한다.
     const staleIso = new Date(Date.now() - 90_000).toISOString()
-    const { data: due, error: dErr } = await supabase
-      .schema('mailcaster')
-      .from('campaigns')
-      .select(
-        'id, user_id, name, subject, body_html, signature_id, send_delay_seconds, cc, bcc, send_mode, scheduled_at, status, sending_started_at, last_processed_recipient_id, enable_open_tracking, followup_sequence_id'
-      )
-      .or(
-        `and(status.eq.scheduled,scheduled_at.lte.${nowIso}),and(status.eq.sending,sending_started_at.lt.${staleIso})`
-      )
-      .order('scheduled_at', { ascending: true })
-      .limit(MAX_CAMPAIGNS_PER_RUN)
+    const COLS =
+      'id, user_id, name, subject, body_html, signature_id, send_delay_seconds, cc, bcc, send_mode, scheduled_at, status, sending_started_at, last_processed_recipient_id, enable_open_tracking, followup_sequence_id'
+
+    // 사용자 즉시 발송 경로 — 해당 campaign_id 하나만 (scheduled 또는 lease 만료된 sending).
+    // 실제 발송 여부는 processCampaign 의 CAS 락이 최종 판정 (cron 과 겹쳐도 1회만).
+    const dueQuery = userCampaignId
+      ? supabase.schema('mailcaster').from('campaigns').select(COLS)
+          .eq('id', userCampaignId)
+          .or(`status.eq.scheduled,and(status.eq.sending,sending_started_at.lt.${staleIso})`)
+      : supabase.schema('mailcaster').from('campaigns').select(COLS)
+          .or(
+            `and(status.eq.scheduled,scheduled_at.lte.${nowIso}),and(status.eq.sending,sending_started_at.lt.${staleIso})`
+          )
+          .order('scheduled_at', { ascending: true })
+          .limit(MAX_CAMPAIGNS_PER_RUN)
+
+    const { data: due, error: dErr } = await dueQuery
 
     if (dErr) throw dErr
     if (!due || due.length === 0) {
