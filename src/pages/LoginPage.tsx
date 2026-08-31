@@ -1,18 +1,33 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { Button } from '@/components/ui/button'
-import { Mail } from 'lucide-react'
+import { Mail, Loader2 } from 'lucide-react'
+import { toast } from 'sonner'
 
 export default function LoginPage() {
   const { user, loading, signInWithGoogle } = useAuth()
   const navigate = useNavigate()
+  // 클릭 → Supabase authorize → Google 리다이렉트까지 수 초의 네트워크 왕복이
+  // 있는데 그동안 버튼이 무반응이면 죽은 것처럼 보인다 (중복 클릭 유발).
+  // 성공 시엔 페이지가 Google 로 떠나므로 여기서 되돌릴 필요 없음.
+  const [signingIn, setSigningIn] = useState(false)
 
   useEffect(() => {
     if (!loading && user) {
       navigate('/', { replace: true })
     }
   }, [user, loading, navigate])
+
+  const handleSignIn = async () => {
+    setSigningIn(true)
+    try {
+      await signInWithGoogle()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Google 로그인 시작에 실패했습니다.')
+      setSigningIn(false)
+    }
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 p-4">
@@ -38,10 +53,12 @@ export default function LoginPage() {
           </p>
 
           <Button
-            onClick={signInWithGoogle}
+            onClick={handleSignIn}
+            disabled={signingIn}
             className="w-full h-12 text-base gap-3"
             variant="outline"
           >
+            {signingIn && <Loader2 className="w-5 h-5 animate-spin" />}
             <svg className="w-5 h-5" viewBox="0 0 24 24">
               <path
                 fill="#4285F4"
@@ -60,7 +77,7 @@ export default function LoginPage() {
                 d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
               />
             </svg>
-            Google 계정으로 로그인
+            {signingIn ? 'Google 로 이동 중...' : 'Google 계정으로 로그인'}
           </Button>
 
           <div className="mt-6 p-4 bg-blue-50 dark:bg-blue-950 rounded-lg">
