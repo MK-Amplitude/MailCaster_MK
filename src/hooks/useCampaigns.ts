@@ -192,9 +192,16 @@ export function useResumeCampaign() {
         let detail = fnError.message
         try {
           const resp = (fnError as { context?: Response }).context
-          if (resp) {
-            const b = (await resp.json()) as { error?: string }
-            detail = b.error || detail
+          if (resp && typeof resp.text === 'function') {
+            const raw = await resp.text()
+            if (raw) {
+              try {
+                const b = JSON.parse(raw) as { error?: string; detail?: string }
+                detail = b.error || b.detail || raw
+              } catch {
+                detail = raw
+              }
+            }
           }
         } catch { /* ignore */ }
         throw new Error(`발송 함수 오류: ${detail}`)
