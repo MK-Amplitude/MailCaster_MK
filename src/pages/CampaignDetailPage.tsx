@@ -371,7 +371,9 @@ export default function CampaignDetailPage() {
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            {campaign.status === 'sending' && (
+            {/* failed 포함: 서버 발송이 리소스 한도로 실패한 캠페인(첨부 과대 등)은
+                메모리 여유가 큰 브라우저 직접 발송으로만 안전하게 재개 가능 */}
+            {(campaign.status === 'sending' || campaign.status === 'failed') && (
               <Button
                 size="sm"
                 variant="outline"
@@ -381,12 +383,12 @@ export default function CampaignDetailPage() {
                   await sendCampaign.mutateAsync({ campaignId: id })
                 }}
                 disabled={resuming}
-                title="발송이 멈춰있으면 남은 수신자에게 브라우저에서 직접 발송을 재개합니다 (탭을 닫지 마세요)"
+                title="남은 수신자에게 브라우저에서 직접 발송을 재개합니다 (탭을 닫지 마세요). 서버 발송이 실패하는 첨부 큰 캠페인도 이 경로로는 발송됩니다."
               >
                 {resuming
                   ? <Loader2 className="w-4 h-4 mr-1 animate-spin" />
                   : <RotateCcw className="w-4 h-4 mr-1" />}
-                발송 재개
+                {campaign.status === 'failed' ? '브라우저에서 재발송' : '발송 재개'}
               </Button>
             )}
             {canSend && (
