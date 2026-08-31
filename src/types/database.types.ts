@@ -496,6 +496,8 @@ export interface Database {
           kind: 'broadcast' | 'one_to_one'
           // 069 — 발송 완료 후 수신자를 등록할 후속 시퀀스 (NULL = 후속 없음)
           followup_sequence_id: string | null
+          // 075 — 서버 발송 락 획득 횟수 (poison-pill 가드)
+          send_attempts: number
         }
         Insert: {
           id?: string
@@ -528,6 +530,7 @@ export interface Database {
           last_processed_recipient_id?: string | null
           kind?: 'broadcast' | 'one_to_one'
           followup_sequence_id?: string | null
+          send_attempts?: number
         }
         Update: {
           name?: string
@@ -556,6 +559,7 @@ export interface Database {
           last_processed_recipient_id?: string | null
           kind?: 'broadcast' | 'one_to_one'
           followup_sequence_id?: string | null
+          send_attempts?: number
         }
         Relationships: []
       }
