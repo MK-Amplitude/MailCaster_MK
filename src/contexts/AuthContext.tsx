@@ -273,9 +273,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // Drive 첨부 기능 (Phase 4)
           'https://www.googleapis.com/auth/drive.file',
           'https://www.googleapis.com/auth/drive.readonly',
-          // Calendar 통합 (Phase 11.2) — 미팅을 contact timeline 에 인입.
-          // 기존 사용자는 한 번 더 로그인해야 권한 부여됨.
-          'https://www.googleapis.com/auth/calendar.readonly',
           // Google Contacts 동기화 (Phase 14) — 리멤버 → 구글 주소록 → MailCaster.
           // 기존 사용자는 한 번 더 로그인해야 권한 부여됨.
           'https://www.googleapis.com/auth/contacts.readonly',

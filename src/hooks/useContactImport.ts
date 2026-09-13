@@ -69,7 +69,9 @@ export function useContactImport() {
       const buffer = await file.arrayBuffer()
       const wb = XLSX.read(buffer, { type: 'array' })
       const ws = wb.Sheets[wb.SheetNames[0]]
-      const data = XLSX.utils.sheet_to_json<ParsedRow>(ws, { defval: '' })
+      // raw:false — 숫자 셀(전화번호·사번 등)이 number 로 반환되면 이후
+      // row[...]?.trim() 이 TypeError 로 임포트 전체를 중단시킴. 항상 문자열로 강제.
+      const data = XLSX.utils.sheet_to_json<ParsedRow>(ws, { defval: '', raw: false })
       if (data.length > 0) {
         setHeaders(Object.keys(data[0]))
         setRows(data)
@@ -135,6 +137,9 @@ export function useContactImport() {
       }
     }
 
+    // try/finally — 배치 도중 예외가 나도 importing 플래그가 true 로 고착돼
+    // 다이얼로그가 영구 "가져오는 중" 상태로 남지 않도록 보장.
+    try {
     for (let i = 0; i < validRows.length; i += BATCH_SIZE) {
       const batch = validRows.slice(i, i + BATCH_SIZE)
       const upsertData = batch.map((b) => rowToUpsert(b.row))
@@ -244,8 +249,10 @@ export function useContactImport() {
 
       setProgress(Math.round(((i + batch.length) / validRows.length) * 100))
     }
+    } finally {
+      setImporting(false)
+    }
 
-    setImporting(false)
     qc.invalidateQueries({ queryKey: ['contacts'] })
     qc.invalidateQueries({ queryKey: ['contacts-common'] })
     qc.invalidateQueries({ queryKey: ['groups'] })

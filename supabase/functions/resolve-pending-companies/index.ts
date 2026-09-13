@@ -12,6 +12,7 @@
 //  - 'resolved' 는 손대지 않음 (idempotent).
 
 import { createClient } from 'jsr:@supabase/supabase-js@2'
+import { isCronAuthorized } from '../_shared/cronAuth.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
@@ -49,7 +50,7 @@ Deno.serve(async (req) => {
     return json({ error: 'CRON_SECRET not configured on server' }, 500)
   }
   const auth = req.headers.get('Authorization') ?? ''
-  if (auth !== `Bearer ${CRON_SECRET}`) {
+  if (!isCronAuthorized(auth, CRON_SECRET)) {
     return json({ error: 'unauthorized' }, 401)
   }
 

@@ -15,6 +15,7 @@
 
 import { createClient } from 'jsr:@supabase/supabase-js@2'
 import { decryptToken } from '../_shared/tokenCrypto.ts'
+import { isCronAuthorized } from '../_shared/cronAuth.ts'
 import { wrapLinksForClickTracking } from '../_shared/clickLinks.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
@@ -74,7 +75,7 @@ Deno.serve(async (req) => {
 
   // 내부 cron 전용 — CRON_SECRET 검증
   const auth = req.headers.get('Authorization') ?? ''
-  if (!CRON_SECRET || auth !== `Bearer ${CRON_SECRET}`) {
+  if (!isCronAuthorized(auth, CRON_SECRET)) {
     return json({ error: 'unauthorized' }, 401)
   }
 
@@ -605,12 +606,18 @@ async function fetchMessageRfcId(accessToken: string, gmailMessageId: string): P
 function buildMime(input: GmailSend): string {
   const cleanFrom = encodeAddressHeader(stripCRLF(input.from))
   const cleanTo = stripCRLF(input.to)
-  const toHeader = input.toName ? `${encodeHeader(input.toName)} <${cleanTo}>` : cleanTo
+  // 표시 이름은 encodeAddressHeader 경유 — ASCII 특수문자(콤마 등) quoted-string 처리
+  const toHeader = input.toName
+    ? encodeAddressHeader(`${stripCRLF(input.toName).replace(/[<>]/g, '')} <${cleanTo}>`)
+    : cleanTo
   const bodyBase64 = wrapBase64(utf8ToBase64(input.html))
 
   const headers: string[] = [`From: ${cleanFrom}`, `To: ${toHeader}`]
   if (input.inReplyTo) {
-    const w = input.inReplyTo.trim().startsWith('<') ? input.inReplyTo.trim() : `<${input.inReplyTo.trim()}>`
+    // stripCRLF — rfc_message_id 는 DB 를 거쳐 오므로 (recipients 행은 조직 멤버가
+    // 만질 수 있음) 다른 헤더들과 동일하게 CR/LF 인젝션을 차단한다.
+    const rid = stripCRLF(input.inReplyTo).trim()
+    const w = rid.startsWith('<') ? rid : `<${rid}>`
     headers.push(`In-Reply-To: ${w}`, `References: ${w}`)
   }
   headers.push(
@@ -634,7 +641,11 @@ function encodeAddressHeader(addr: string): string {
   const name = m[1].trim().replace(/^"(.*)"$/, '$1')
   const email = m[2].trim()
   if (!name) return `<${email}>`
-  if (/^[\x20-\x7E]+$/.test(name) && !/[<>"@,;:\\]/.test(name)) return `${name} <${email}>`
+  if (/^[\x20-\x7E]+$/.test(name)) {
+    if (!/[<>"@,;:\\]/.test(name)) return `${name} <${email}>`
+    // ASCII 특수문자(콤마 등) — quoted-string 필수. encodeHeader 는 ASCII 를 그대로 반환함.
+    return `"${name.replace(/([\\"])/g, '\\$1')}" <${email}>`
+  }
   return `${encodeHeader(name)} <${email}>`
 }
 function encodeHeader(value: string): string {

@@ -17,6 +17,7 @@
 // 출력: { inserted, duplicates, errors, scope_missing? }
 
 import { createClient } from 'jsr:@supabase/supabase-js@2'
+import { isCronAuthorized } from '../_shared/cronAuth.ts'
 import { decryptToken } from '../_shared/tokenCrypto.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
@@ -68,7 +69,7 @@ Deno.serve(async (req) => {
     })
 
     // 인증 — 사용자 JWT 또는 CRON_SECRET.
-    const isCron = !!CRON_SECRET && auth === `Bearer ${CRON_SECRET}`
+    const isCron = isCronAuthorized(auth, CRON_SECRET)
     let userId: string
     if (isCron) {
       if (!body.target_user_id) {

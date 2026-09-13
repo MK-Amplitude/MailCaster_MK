@@ -64,7 +64,13 @@ export function useCampaign(id: string | undefined) {
   })
 }
 
-export function useCampaignRecipients(campaignId: string | undefined) {
+export function useCampaignRecipients(
+  campaignId: string | undefined,
+  // 발송 진행 중일 때만 폴링 — draft/scheduled 캠페인은 전원 pending 이라
+  // "pending 있으면 폴링" 조건이 상세 페이지를 여는 내내 2초마다 최대 1만 행
+  // (개인화 override 포함)을 재요청하는 트래픽 폭탄이었음.
+  campaignStatus?: string,
+) {
   return useQuery({
     queryKey: [QK, 'recipients', campaignId],
     queryFn: async () => {
@@ -81,10 +87,12 @@ export function useCampaignRecipients(campaignId: string | undefined) {
     },
     enabled: !!campaignId,
     refetchInterval: (q) => {
+      // 캠페인이 실제 발송 중(status='sending')이거나, 개별 수신자 행이
+      // 'sending' 인 동안만 2초 폴링. 그 외엔 정지.
+      if (campaignStatus === 'sending') return 2000
       const c = q.state.data as Recipient[] | undefined
       if (!c) return false
-      const hasPending = c.some((r) => r.status === 'pending' || r.status === 'sending')
-      return hasPending ? 2000 : false
+      return c.some((r) => r.status === 'sending') ? 2000 : false
     },
   })
 }

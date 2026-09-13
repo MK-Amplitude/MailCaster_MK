@@ -22,7 +22,6 @@ import {
   Trash2,
   Loader2,
   X,
-  Calendar,
 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -45,10 +44,6 @@ import {
   useDeleteContactNote,
 } from '@/hooks/useContactNotes'
 import {
-  useContactCalendarEvents,
-  type CalendarEvent,
-} from '@/hooks/useContactCalendarEvents'
-import {
   CONTACT_NOTE_OPTIONS,
   contactNoteOption,
   type ContactNote,
@@ -59,8 +54,6 @@ import { cn } from '@/lib/utils'
 
 interface Props {
   contactId: string | null | undefined
-  /** Calendar 이벤트 검색용 — undefined 면 calendar 로딩 skip. */
-  contactEmail?: string | null
   /** 메일 표시 limit — 메일은 보통 많아 별도 cap. */
   emailLimit?: number
 }
@@ -75,24 +68,17 @@ const KIND_ICON = { Phone, Users, StickyNote } as const
 type TimelineItem =
   | { kind: 'email'; date: string; data: SendHistoryRow }
   | { kind: 'note'; date: string; data: ContactNote }
-  | { kind: 'event'; date: string; data: CalendarEvent }
 
-export function ContactTimeline({ contactId, contactEmail, emailLimit = 8 }: Props) {
+export function ContactTimeline({ contactId, emailLimit = 8 }: Props) {
   const navigate = useNavigate()
   const { user } = useAuth()
   const { data: emails = [], isLoading: emailsLoading } = useContactSendHistory(contactId)
   const { data: notes = [], isLoading: notesLoading } = useContactNotes(contactId)
-  const { data: calendarData, isLoading: eventsLoading } = useContactCalendarEvents(
-    contactEmail ?? null
-  )
-  // useMemo deps 안정화 — calendarData 가 undefined → null 로 매 렌더 새 array 생성 방지
-  const events = useMemo(() => calendarData?.events ?? [], [calendarData?.events])
-  const calendarScopeMissing = calendarData?.scope_missing === true
 
   const [composing, setComposing] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
 
-  // 메일 + 노트 + 캘린더 이벤트를 시간순 merge.
+  // 메일 + 노트를 시간순 merge.
   const items = useMemo<TimelineItem[]>(() => {
     const eitems: TimelineItem[] = emails.slice(0, emailLimit).map((e) => ({
       kind: 'email',
@@ -104,14 +90,7 @@ export function ContactTimeline({ contactId, contactEmail, emailLimit = 8 }: Pro
       date: n.occurred_at,
       data: n,
     }))
-    const cItems: TimelineItem[] = events
-      .filter((e) => e.start_at)
-      .map((e) => ({
-        kind: 'event',
-        date: e.start_at!,
-        data: e,
-      }))
-    const all = [...eitems, ...nitems, ...cItems]
+    const all = [...eitems, ...nitems]
     all.sort((a, b) => {
       if (!a.date && !b.date) return 0
       if (!a.date) return 1
@@ -119,24 +98,13 @@ export function ContactTimeline({ contactId, contactEmail, emailLimit = 8 }: Pro
       return new Date(b.date).getTime() - new Date(a.date).getTime()
     })
     return all
-  }, [emails, notes, events, emailLimit])
+  }, [emails, notes, emailLimit])
 
-  const isLoading = emailsLoading || notesLoading || eventsLoading
+  const isLoading = emailsLoading || notesLoading
   const hidden = emails.length - Math.min(emails.length, emailLimit)
 
   return (
     <div className="space-y-2">
-      {/* Calendar scope 미부여 안내 — 한 번 더 로그인하면 미팅이 timeline 에 인입 */}
-      {calendarScopeMissing && (
-        <div className="rounded-md border border-blue-200 dark:border-blue-900 bg-blue-50/60 dark:bg-blue-950/30 px-3 py-2">
-          <div className="flex items-center gap-2 text-xs">
-            <Calendar className="w-3.5 h-3.5 text-blue-700 dark:text-blue-300 shrink-0" />
-            <span className="text-blue-700 dark:text-blue-300 flex-1">
-              Google Calendar 연동 — 다시 로그인 시 미팅이 자동 표시됩니다
-            </span>
-          </div>
-        </div>
-      )}
       {/* 노트 추가 — 항상 상단에 보이는 trigger */}
       {!composing && contactId && (
         <Button
@@ -182,9 +150,6 @@ export function ContactTimeline({ contactId, contactEmail, emailLimit = 8 }: Pro
                   onClickRow={() => navigate(`/campaigns/${it.data.campaign_id}`)}
                 />
               )
-            }
-            if (it.kind === 'event') {
-              return <EventRow key={`v-${it.data.id}`} event={it.data} />
             }
             return (
               <NoteRow
@@ -324,89 +289,6 @@ function ResultBadge({
       <Icon className="w-3 h-3" />
       {label}
     </span>
-  )
-}
-
-// ─────────────────────────────────────────────────────────────
-// 캘린더 이벤트 row
-// ─────────────────────────────────────────────────────────────
-
-function EventRow({ event }: { event: CalendarEvent }) {
-  const start = event.start_at ? new Date(event.start_at) : null
-  const end = event.end_at ? new Date(event.end_at) : null
-  const isAllDay = !!(
-    event.start_at && /^\d{4}-\d{2}-\d{2}$/.test(event.start_at)
-  )
-  // 진행 상태 — past / current / future
-  const now = Date.now()
-  const isPast = start ? start.getTime() < now : false
-  const link = event.html_link
-  const handleClick = () => {
-    if (link) window.open(link, '_blank', 'noopener,noreferrer')
-  }
-
-  return (
-    <div
-      role={link ? 'button' : undefined}
-      tabIndex={link ? 0 : undefined}
-      onClick={link ? handleClick : undefined}
-      onKeyDown={
-        link
-          ? (e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault()
-                handleClick()
-              }
-            }
-          : undefined
-      }
-      className={cn(
-        'rounded-md border bg-card p-2 flex items-start gap-2',
-        link && 'cursor-pointer hover:bg-muted/40 transition-colors'
-      )}
-    >
-      <Calendar className="w-3.5 h-3.5 text-blue-700 dark:text-blue-300 mt-0.5 shrink-0" />
-      <div className="min-w-0 flex-1">
-        <div className="flex items-baseline gap-1.5">
-          <span
-            className={cn(
-              'inline-flex items-center text-[10px] px-1.5 py-0 h-4 rounded border',
-              'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 border-blue-200 dark:border-blue-800'
-            )}
-          >
-            미팅
-          </span>
-          <span className="text-[11px] text-muted-foreground tabular-nums shrink-0">
-            {start
-              ? format(start, isAllDay ? 'MM/dd' : 'MM/dd HH:mm', { locale: ko })
-              : '—'}
-            {end && start && !isAllDay
-              ? ` ~ ${format(end, 'HH:mm', { locale: ko })}`
-              : ''}
-          </span>
-          {isPast && (
-            <span className="text-[10px] text-muted-foreground">· 지난 미팅</span>
-          )}
-        </div>
-        <p className="text-sm font-medium truncate mt-0.5">
-          {event.summary ?? '(제목 없음)'}
-        </p>
-        <div className="flex items-center gap-2 mt-0.5">
-          {event.attendees_count > 0 && (
-            <span className="text-[10px] text-muted-foreground inline-flex items-center gap-0.5">
-              <Users className="w-2.5 h-2.5" />
-              {event.attendees_count}명
-            </span>
-          )}
-          {link && (
-            <span className="text-[10px] text-muted-foreground inline-flex items-center gap-0.5">
-              <ExternalLink className="w-2.5 h-2.5" />
-              Google Calendar
-            </span>
-          )}
-        </div>
-      </div>
-    </div>
   )
 }
 

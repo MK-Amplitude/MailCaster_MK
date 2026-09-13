@@ -3,7 +3,7 @@
 //   1) useGeneratePersonalizedBodies — 미리보기용 생성 (edge function 호출만)
 //   2) useCreatePersonalizedCampaign  — 검토 끝난 결과로 campaign + recipients(overrides) 생성
 
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from './useAuth'
 
@@ -85,6 +85,7 @@ interface CreateInput {
  */
 export function useCreatePersonalizedCampaign() {
   const { user, currentOrg } = useAuth()
+  const qc = useQueryClient()
   return useMutation({
     mutationFn: async (input: CreateInput): Promise<{ campaign_id: string }> => {
       if (!user) throw new Error('로그인이 필요합니다.')
@@ -156,6 +157,11 @@ export function useCreatePersonalizedCampaign() {
         .eq('id', campaignId)
 
       return { campaign_id: campaignId }
+    },
+    onSuccess: () => {
+      // 캠페인 목록 캐시 무효화 — staleTime 5분 동안 새 캠페인이 목록에서
+      // 안 보여 "사라진 것처럼" 보이던 문제 방지.
+      qc.invalidateQueries({ queryKey: ['campaigns'] })
     },
   })
 }
