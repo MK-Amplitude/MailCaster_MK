@@ -224,17 +224,56 @@ export function useSendCampaign() {
 
       // .range 명시 — PostgREST 기본 cap(1000행) 때문에 1,000명 초과 캠페인이
       // 1,000명만 발송되고 'sent' 처리되는 silent truncation 방지.
-      const { data: recipients, error: rErr } = await supabase
+      const { data: rawRecipients, error: rErr } = await supabase
         .from('recipients')
-        .select('*')
+        .select('*, contact:contacts(is_bounced, is_unsubscribed)')
         .eq('campaign_id', campaignId)
         .eq('status', 'pending')
         .order('created_at', { ascending: true })
         .range(0, 9999)
       if (rErr) throw rErr
 
+      if (rawRecipients && rawRecipients.length >= 10000) {
+        toast.warning(
+          '수신자가 10,000명을 초과합니다 — 이번 발송은 앞 10,000명까지만 처리됩니다. 완료 후 다시 발송해주세요.',
+          { duration: 15000 },
+        )
+      }
+
+      // 서버 발송 경로(send-scheduled-campaigns)와 동일한 발송 직전 안전망 —
+      // 캠페인 생성 후 수신거부/반송 처리된 연락처를 여기서 차단한다.
+      // (프리플라이트 다이얼로그가 약속하는 "수신거부 제외" 를 클라이언트 경로도 보장)
+      type ContactFlags = { is_bounced: boolean | null; is_unsubscribed: boolean | null }
+      const skippedByReason = new Map<string, string[]>()
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const recipients = ((rawRecipients ?? []) as any[]).filter((r) => {
+        const ct: ContactFlags | undefined = Array.isArray(r.contact) ? r.contact[0] : r.contact
+        const reason = ct?.is_bounced
+          ? '연락처가 반송 상태로 표시되어 발송 차단'
+          : ct?.is_unsubscribed
+            ? '연락처가 수신거부 상태로 발송 차단'
+            : null
+        if (reason) {
+          if (!skippedByReason.has(reason)) skippedByReason.set(reason, [])
+          skippedByReason.get(reason)!.push(r.id as string)
+          return false
+        }
+        return true
+      }) as Database['mailcaster']['Tables']['recipients']['Row'][]
+      // 차단된 행은 즉시 failed 처리 — 카운터/진행 표시에 잡히도록 (서버 경로와 동일 사유 문구)
+      for (const [reason, ids] of skippedByReason) {
+        await supabase
+          .from('recipients')
+          .update({ status: 'failed', error_message: reason })
+          .in('id', ids)
+      }
+
       if (!recipients || recipients.length === 0) {
-        throw new Error('발송할 수신자가 없습니다.')
+        throw new Error(
+          skippedByReason.size > 0
+            ? '모든 수신자가 수신거부/반송 상태라 발송할 대상이 없습니다.'
+            : '발송할 수신자가 없습니다.',
+        )
       }
 
       // 개인화 발송 — recipient 마다 자체 body_html_override 가 있으면 캠페인 레벨
@@ -431,9 +470,12 @@ export function useSendCampaign() {
       //    무조건 UPDATE 하면 두 탭(또는 예약발송 cron)이 동시에 같은 pending 수신자
       //    집합을 읽어 중복 발송됨 — 이미 'sending' 이면 여기서 중단.
       const previousStatus = campaign.status
+      // sending_started_at(lease) 을 반드시 함께 찍는다 — 서버 cron 의 due 쿼리가
+      // "sending + lease NULL" 을 고착 상태로 보고 즉시 가로채(복구 시도) 같은
+      // 수신자에게 중복 발송하는 레이스가 있었음. lease 는 발송 루프에서 계속 갱신.
       const { data: lockRows, error: lockErr } = await supabase
         .from('campaigns')
-        .update({ status: 'sending' })
+        .update({ status: 'sending', sending_started_at: new Date().toISOString() })
         .eq('id', campaignId)
         .neq('status', 'sending')
         .select('id')
@@ -486,7 +528,7 @@ export function useSendCampaign() {
         console.error('[sendCampaign] attachment encoding failed:', encErr)
         await supabase
           .from('campaigns')
-          .update({ status: previousStatus })
+          .update({ status: previousStatus, sending_started_at: null })
           .eq('id', campaignId)
         qc.invalidateQueries({ queryKey: ['campaigns'] })
         throw new Error(
@@ -531,7 +573,7 @@ export function useSendCampaign() {
         if (hasPersonalizedOverride) {
           await supabase
             .from('campaigns')
-            .update({ status: previousStatus })
+            .update({ status: previousStatus, sending_started_at: null })
             .eq('id', campaignId)
           qc.invalidateQueries({ queryKey: ['campaigns'] })
           throw new Error(
@@ -549,7 +591,7 @@ export function useSendCampaign() {
           // 상태를 원복 후 에러 — 이미 'sending' 으로 바뀌어 있으므로 복구해야 함
           await supabase
             .from('campaigns')
-            .update({ status: previousStatus })
+            .update({ status: previousStatus, sending_started_at: null })
             .eq('id', campaignId)
           qc.invalidateQueries({ queryKey: ['campaigns'] })
           throw new Error(
@@ -566,7 +608,7 @@ export function useSendCampaign() {
         if (totalAddresses > 500) {
           await supabase
             .from('campaigns')
-            .update({ status: previousStatus })
+            .update({ status: previousStatus, sending_started_at: null })
             .eq('id', campaignId)
           qc.invalidateQueries({ queryKey: ['campaigns'] })
           throw new Error(
@@ -675,7 +717,14 @@ export function useSendCampaign() {
 
           await supabase
             .from('campaigns')
-            .update({ status: 'sent', sent_count: sent, failed_count: 0 })
+            .update({
+              status: 'sent',
+              sent_count: sent,
+              failed_count: 0,
+              sending_started_at: null,
+              last_processed_recipient_id: null,
+              send_attempts: 0,
+            })
             .eq('id', campaignId)
 
           // 후속 시퀀스 등록 — 발송 성공한 수신자를 캠페인 스레드 followup 으로 이어간다.
@@ -704,6 +753,7 @@ export function useSendCampaign() {
               status: 'failed',
               sent_count: 0,
               failed_count: recipients.length,
+              sending_started_at: null,
             })
             .eq('id', campaignId)
           qc.invalidateQueries({ queryKey: ['campaigns'] })
@@ -844,9 +894,15 @@ export function useSendCampaign() {
             failed++
           }
 
+          // sending_started_at 갱신 = 서버 cron 의 90초 lease 연장 —
+          // 클라이언트 발송이 살아있는 동안 cron 이 이 캠페인을 가로채지 못하게 한다.
           await supabase
             .from('campaigns')
-            .update({ sent_count: sent, failed_count: failed })
+            .update({
+              sent_count: sent,
+              failed_count: failed,
+              sending_started_at: new Date().toISOString(),
+            })
             .eq('id', campaignId)
           // invalidate 는 10명마다 1회 — 매 수신자마다 하면 active 쿼리가 그때마다
           // recipients 전체(개인화 override 포함, 최대 1만 행)를 재요청해 발송 내내
@@ -861,11 +917,34 @@ export function useSendCampaign() {
           }
         }
 
-        // 4) 최종 상태 처리
-        const finalStatus = failed === recipients.length ? 'failed' : 'sent'
+        // 4) 최종 상태 처리 — 카운터는 이번 run 값이 아니라 DB 재집계로 확정.
+        //    (부분 발송 후 재개 run 이 이전 누적을 덮어써 통계가 어긋나던 버그 방지 —
+        //     서버 경로의 최종 COUNT 재계산과 동일한 방식)
+        const [sentCnt, failedCnt] = await Promise.all([
+          supabase
+            .from('recipients')
+            .select('id', { count: 'exact', head: true })
+            .eq('campaign_id', campaignId)
+            .eq('status', 'sent'),
+          supabase
+            .from('recipients')
+            .select('id', { count: 'exact', head: true })
+            .eq('campaign_id', campaignId)
+            .eq('status', 'failed'),
+        ])
+        const doneSent = sentCnt.count ?? sent
+        const doneFailed = failedCnt.count ?? failed
+        const finalStatus = doneSent === 0 ? 'failed' : 'sent'
         await supabase
           .from('campaigns')
-          .update({ status: finalStatus, sent_count: sent, failed_count: failed })
+          .update({
+            status: finalStatus,
+            sent_count: doneSent,
+            failed_count: doneFailed,
+            sending_started_at: null,
+            last_processed_recipient_id: null,
+            send_attempts: 0,
+          })
           .eq('id', campaignId)
         qc.invalidateQueries({ queryKey: ['campaigns', 'recipients', campaignId] })
         qc.invalidateQueries({ queryKey: ['campaigns', 'detail', campaignId] })
@@ -887,6 +966,7 @@ export function useSendCampaign() {
         //     소실된다. 최소 1건이라도 처리됐을 때만 카운트를 갱신.
         const rollbackUpdate: Database['mailcaster']['Tables']['campaigns']['Update'] = {
           status: rollbackStatus,
+          sending_started_at: null,
         }
         if (sent + failed > 0) {
           rollbackUpdate.sent_count = sent

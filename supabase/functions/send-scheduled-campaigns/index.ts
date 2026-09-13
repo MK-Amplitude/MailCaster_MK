@@ -28,6 +28,7 @@
 // ============================================================
 
 import { createClient } from 'jsr:@supabase/supabase-js@2'
+import { isCronAuthorized } from '../_shared/cronAuth.ts'
 import { decryptToken } from '../_shared/tokenCrypto.ts'
 import { wrapLinksForClickTracking } from '../_shared/clickLinks.ts'
 
@@ -129,7 +130,7 @@ Deno.serve(async (req) => {
   // CRON_SECRET 은 cron(배치) 경로에만 필요. 사용자 JWT 경로("지금 발송"/"발송 재개")는
   // CRON_SECRET 미설정이어도 동작해야 하므로 여기서 전역 차단하지 않는다.
   const auth = req.headers.get('Authorization') ?? ''
-  const isCron = !!CRON_SECRET && auth === `Bearer ${CRON_SECRET}`
+  const isCron = isCronAuthorized(auth, CRON_SECRET)
 
   // 인증 2경로:
   //   1) pg_cron — Bearer CRON_SECRET. 도래한/재개 대상 캠페인 전체를 배치 처리.
@@ -153,14 +154,30 @@ Deno.serve(async (req) => {
     if (!body.campaign_id) {
       return json({ error: '사용자 발송에는 campaign_id 가 필요합니다.' }, 400)
     }
-    // RLS 준수 클라이언트로 조회 가능해야 소유/조직 권한 확인됨 (campaigns_*_own_or_admin)
-    const { data: owned } = await authClient
+    // 소유권 검증 — SELECT 가시성(조직 멤버 전체)이 아니라 "소유자 또는 org admin"
+    // 만 발송을 트리거할 수 있어야 한다. 가시성 기준이면 일반 멤버가 동료 캠페인을
+    // 예약 시각 전에 강제 발송시킬 수 있음.
+    const svc = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, { auth: { persistSession: false } })
+    const { data: campRow } = await svc
       .schema('mailcaster')
       .from('campaigns')
-      .select('id')
+      .select('id, user_id, org_id')
       .eq('id', body.campaign_id)
       .maybeSingle()
-    if (!owned) return json({ error: '해당 캠페인에 대한 권한이 없습니다.' }, 403)
+    if (!campRow) return json({ error: '해당 캠페인에 대한 권한이 없습니다.' }, 403)
+    let allowed = campRow.user_id === userData.user.id
+    if (!allowed) {
+      const { data: adminRow } = await svc
+        .schema('mailcaster')
+        .from('org_members')
+        .select('role')
+        .eq('org_id', campRow.org_id)
+        .eq('user_id', userData.user.id)
+        .in('role', ['owner', 'admin'])
+        .maybeSingle()
+      allowed = !!adminRow
+    }
+    if (!allowed) return json({ error: '해당 캠페인에 대한 권한이 없습니다.' }, 403)
     userCampaignId = body.campaign_id
   }
 
@@ -1587,10 +1604,18 @@ async function fetchInline(src: string): Promise<{
     return { filename: `inline.${extFromMime(mimeType)}`, mimeType, base64, rawBytes }
   }
   if (!/^https?:\/\//.test(src)) return null
+  // SSRF 가드 — 서버가 대신 fetch 해서 결과를 메일에 되돌려주는 함수이므로,
+  // 인라인(서버 fetch) 대상을 이 프로젝트의 Supabase Storage 공개 URL 로 한정한다.
+  // (문서화된 사용처: 서명 이미지 버킷 — migration 044.)
+  // 그 외 외부 이미지는 인라인하지 않고 <img src> 그대로 두면 수신자 메일
+  // 클라이언트가 직접 로드하므로 기능 손실 없음. 내부망/메타데이터 주소로의
+  // 서버측 GET(읽기 회신 포함)을 차단.
+  const ownStoragePrefix = `${SUPABASE_URL}/storage/v1/object/public/`
+  if (!src.startsWith(ownStoragePrefix)) return null
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), INLINE_FETCH_TIMEOUT_MS)
   try {
-    const res = await fetch(src, { signal: controller.signal })
+    const res = await fetch(src, { signal: controller.signal, redirect: 'error' })
     if (!res.ok) return null
     const ct = res.headers.get('content-type') ?? 'application/octet-stream'
     if (!ct.startsWith('image/')) return null
@@ -1727,8 +1752,10 @@ function encodeAddressHeader(addr: string): string {
   const email = m[2].trim()
   if (!name) return `<${email}>`
   // deno-lint-ignore no-control-regex
-  if (/^[\x20-\x7E]+$/.test(name) && !/[<>"@,;:\\]/.test(name)) {
-    return `${name} <${email}>`
+  if (/^[\x20-\x7E]+$/.test(name)) {
+    if (!/[<>"@,;:\\]/.test(name)) return `${name} <${email}>`
+    // ASCII 특수문자(콤마 등) — quoted-string 필수. encodeHeader 는 ASCII 를 그대로 반환.
+    return `"${name.replace(/([\\"])/g, '\\$1')}" <${email}>`
   }
   return `${encodeHeader(name)} <${email}>`
 }
@@ -1771,7 +1798,10 @@ function buildMime(input: Omit<GmailSendInput, 'accessToken'>): string {
   const cleanTo = stripCRLF(to)
   const ccLine = joinAddressList(cc)
   const bccLine = joinAddressList(bcc)
-  const toHeader = toName ? `${encodeHeader(toName)} <${cleanTo}>` : cleanTo
+  // 표시 이름은 encodeAddressHeader 경유 — ASCII 특수문자(콤마 등) quoted-string 처리
+  const toHeader = toName
+    ? encodeAddressHeader(`${stripCRLF(toName).replace(/[<>]/g, '')} <${cleanTo}>`)
+    : cleanTo
   const bodyBase64 = wrapBase64(utf8ToBase64(html))
 
   const baseHeaders: string[] = [`From: ${cleanFrom}`, `To: ${toHeader}`]

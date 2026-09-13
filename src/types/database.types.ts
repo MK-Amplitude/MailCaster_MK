@@ -42,17 +42,10 @@ export interface Database {
           default_sender_name: string | null
           default_cc: string | null
           default_bcc: string | null
-          slack_webhook_url: string | null
-          slack_channel_name: string | null
           daily_send_count: number
           daily_send_count_date: string | null
           daily_send_limit: number
           // 038 — Outreach 통합용 컬럼 (현재 inert, 코드 revert 됨)
-          outreach_access_token: string | null
-          outreach_refresh_token: string | null
-          outreach_token_expires_at: string | null
-          outreach_user_id: number | null
-          outreach_connected_at: string | null
           // 039 — Google Contacts 동기화 상태
           google_contacts_sync_token: string | null
           google_contacts_last_sync_at: string | null
@@ -74,16 +67,9 @@ export interface Database {
           default_sender_name?: string | null
           default_cc?: string | null
           default_bcc?: string | null
-          slack_webhook_url?: string | null
-          slack_channel_name?: string | null
           daily_send_count?: number
           daily_send_count_date?: string | null
           daily_send_limit?: number
-          outreach_access_token?: string | null
-          outreach_refresh_token?: string | null
-          outreach_token_expires_at?: string | null
-          outreach_user_id?: number | null
-          outreach_connected_at?: string | null
           google_contacts_sync_token?: string | null
           google_contacts_last_sync_at?: string | null
           google_contacts_auto_sync?: boolean
@@ -102,16 +88,9 @@ export interface Database {
           default_sender_name?: string | null
           default_cc?: string | null
           default_bcc?: string | null
-          slack_webhook_url?: string | null
-          slack_channel_name?: string | null
           daily_send_count?: number
           daily_send_count_date?: string | null
           daily_send_limit?: number
-          outreach_access_token?: string | null
-          outreach_refresh_token?: string | null
-          outreach_token_expires_at?: string | null
-          outreach_user_id?: number | null
-          outreach_connected_at?: string | null
           google_contacts_sync_token?: string | null
           google_contacts_last_sync_at?: string | null
           google_contacts_auto_sync?: boolean
@@ -686,9 +665,6 @@ export interface Database {
           subject_override: string | null
           body_html_override: string | null
           // 038 — Outreach 통합용 (현재 inert, 코드 revert 됨. 컬럼만 유지)
-          outreach_mailing_id: number | null
-          outreach_synced_at: string | null
-          outreach_sync_error: string | null
         }
         Insert: {
           id?: string
@@ -720,9 +696,6 @@ export interface Database {
           last_reply_check_at?: string | null
           subject_override?: string | null
           body_html_override?: string | null
-          outreach_mailing_id?: number | null
-          outreach_synced_at?: string | null
-          outreach_sync_error?: string | null
         }
         Update: {
           status?: DbRecipientStatus
@@ -746,9 +719,6 @@ export interface Database {
           last_reply_check_at?: string | null
           subject_override?: string | null
           body_html_override?: string | null
-          outreach_mailing_id?: number | null
-          outreach_synced_at?: string | null
-          outreach_sync_error?: string | null
         }
         Relationships: []
       }

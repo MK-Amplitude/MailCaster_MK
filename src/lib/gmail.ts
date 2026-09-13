@@ -109,11 +109,15 @@ function encodeAddressHeader(addr: string): string {
   if (!name) return `<${email}>`
   // RFC 5322 — 따옴표 있는 경우 벗기고 인코딩 (Gmail UI 가 따옴표 두는 경우 존재).
   const naked = name.replace(/^"(.*)"$/, '$1')
-  // ASCII-only 이고 특수문자가 quoting 필요 없는 경우 그대로.
-  if (/^[\x20-\x7E]+$/.test(naked) && !/[<>"@,;:\\]/.test(naked)) {
-    return `${naked} <${email}>`
+  if (/^[\x20-\x7E]+$/.test(naked)) {
+    // ASCII-only 이고 특수문자가 quoting 필요 없는 경우 그대로.
+    if (!/[<>"@,;:\\]/.test(naked)) return `${naked} <${email}>`
+    // ASCII 인데 , ; : @ 등 특수문자 포함 — quoted-string 필수.
+    // (예: "Doe, John" — 안 감싸면 콤마가 주소 구분자로 해석돼 Gmail 400)
+    // encodeHeader 는 ASCII 를 그대로 반환하므로 여기서 직접 quoting.
+    return `"${naked.replace(/([\\"])/g, '\\$1')}" <${email}>`
   }
-  // 비-ASCII 또는 특수문자 — encoded-word 로.
+  // 비-ASCII — encoded-word 로.
   return `${encodeHeader(naked)} <${email}>`
 }
 
@@ -307,7 +311,11 @@ async function buildMime(input: Omit<SendMailInput, 'accessToken'>): Promise<str
   const cleanReplyTo = replyTo ? encodeAddressHeader(stripCRLF(replyTo)) : undefined
   const ccLine = joinAddressList(cc)
   const bccLine = joinAddressList(bcc)
-  const toHeader = toName ? `${encodeHeader(toName)} <${cleanTo}>` : cleanTo
+  // To 표시 이름도 encodeAddressHeader 경유 — ASCII 특수문자(콤마 등) quoted-string 처리.
+  // (encodeHeader 직접 호출은 ASCII 를 그대로 통과시켜 "Doe, John" 이 주소 2개로 갈라졌음)
+  const toHeader = toName
+    ? encodeAddressHeader(`${stripCRLF(toName).replace(/[<>]/g, '')} <${cleanTo}>`)
+    : cleanTo
   const bodyBase64 = wrapBase64(btoa(unescape(encodeURIComponent(html))))
 
   const baseHeaders: string[] = [`From: ${cleanFrom}`, `To: ${toHeader}`]

@@ -33,7 +33,7 @@ import { ContactDetailSheet } from '@/components/contacts/ContactDetailSheet'
 import { ContactFormDialog } from '@/components/contacts/ContactFormDialog'
 import type { ContactWithGroups } from '@/types/contact'
 import { formatBytes } from '@/lib/utils'
-import { renderTemplate, bodyAlreadyContainsSignature } from '@/lib/mailMerge'
+import { renderTemplate, renderTemplateHtml, bodyAlreadyContainsSignature } from '@/lib/mailMerge'
 import { useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
@@ -104,7 +104,7 @@ export default function CampaignDetailPage() {
   const navigate = useNavigate()
   const qc = useQueryClient()
   const { data: campaign, isLoading } = useCampaign(id)
-  const { data: recipients = [] } = useCampaignRecipients(id)
+  const { data: recipients = [] } = useCampaignRecipients(id, campaign?.status)
   const { data: blocks = [] } = useCampaignBlocks(id)
   const { data: attachments = [] } = useCampaignAttachments(id)
   // 미리보기에서 서명을 동적으로 append — body_html 에 이미 포함돼 있지 않을 때만.
@@ -129,7 +129,11 @@ export default function CampaignDetailPage() {
   // 변수 치환 — 미리보기 수신자의 variables 로 {{name}} 등 머지.
   // recipients[0] 이 없는 경우 (draft 발송 전 일부 상태) 는 raw body 그대로.
   const previewSubject = useMemo(() => {
-    const subj = campaign?.subject ?? ''
+    // 발송 경로와 동일하게 수신자별 subject_override 를 우선한다 —
+    // AI 개인화 캠페인은 진실이 override 에 있고 campaign.subject 는 비어있을 수 있음.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const override = (previewRecipient as any)?.subject_override as string | null | undefined
+    const subj = override?.trim() ? override : (campaign?.subject ?? '')
     if (!previewRecipient || !subj) return subj
     return renderTemplate(
       subj,
@@ -139,15 +143,19 @@ export default function CampaignDetailPage() {
 
   const previewBodyHtml = useMemo(() => {
     // 발송 경로 (useSendCampaign) 와 동일 순서로 합성 — 미리보기/실제 불일치 방지.
+    //   ⓪ 수신자별 body_html_override 우선 (AI 개인화 캠페인)
     //   ① 본문 + (이미 포함 안 됐으면) 시그니처 append  ② 그 후 전체 변수 치환
-    // 이렇게 해야 (a) 시그니처 내 {{변수}} 도 치환되고 (b) fuzzy 매칭으로 시그니처 중복 안 됨.
-    let finalBody = campaign?.body_html ?? ''
+    // 치환은 발송 경로와 동일하게 renderTemplateHtml(HTML 이스케이프) 사용 —
+    // 변수 값에 <, > 가 있으면 미리보기와 실발송이 달라지던 문제 방지.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const override = (previewRecipient as any)?.body_html_override as string | null | undefined
+    let finalBody = override?.trim() ? override : (campaign?.body_html ?? '')
     const sigHtml = signature?.html ?? ''
     if (sigHtml && !bodyAlreadyContainsSignature(finalBody, sigHtml)) {
       finalBody = finalBody ? `${finalBody}<br/><br/>${sigHtml}` : sigHtml
     }
     if (previewRecipient && finalBody) {
-      finalBody = renderTemplate(
+      finalBody = renderTemplateHtml(
         finalBody,
         (previewRecipient.variables ?? {}) as Record<string, string | null>,
       )
@@ -1117,13 +1125,21 @@ export default function CampaignDetailPage() {
                                       gmailMessageId: rExt.gmail_message_id ?? null,
                                       gmailThreadId: rExt.gmail_thread_id ?? null,
                                       // 제목/본문 모두 수신자별 변수 머지 — 실제로 발송된 모습을 인용 블록에 보여주기 위해.
-                                      // (캠페인 row 자체는 {{name}} 같은 placeholder 가 남아 있음)
-                                      subject: campaign?.subject
-                                        ? renderTemplate(campaign.subject, (r.variables ?? {}) as Record<string, string | null>)
-                                        : null,
-                                      bodyHtml: campaign?.body_html
-                                        ? renderTemplate(campaign.body_html, (r.variables ?? {}) as Record<string, string | null>)
-                                        : null,
+                                      // 발송 경로와 동일하게 override 우선 + 본문은 HTML 이스케이프 치환.
+                                      subject: (() => {
+                                        const ov = (rExt as { subject_override?: string | null }).subject_override
+                                        const s = ov?.trim() ? ov : campaign?.subject
+                                        return s
+                                          ? renderTemplate(s, (r.variables ?? {}) as Record<string, string | null>)
+                                          : null
+                                      })(),
+                                      bodyHtml: (() => {
+                                        const ov = (rExt as { body_html_override?: string | null }).body_html_override
+                                        const b = ov?.trim() ? ov : campaign?.body_html
+                                        return b
+                                          ? renderTemplateHtml(b, (r.variables ?? {}) as Record<string, string | null>)
+                                          : null
+                                      })(),
                                       fromLabel: `${profile?.default_sender_name ?? profile?.display_name ?? ''} <${profile?.email ?? ''}>`,
                                       sentAt: r.sent_at,
                                     },

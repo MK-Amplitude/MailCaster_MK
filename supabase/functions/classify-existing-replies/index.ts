@@ -27,6 +27,7 @@
 //   답장 1만건 백필 ≈ $0.08. 합리적.
 
 import { createClient } from 'jsr:@supabase/supabase-js@2'
+import { isCronAuthorized } from '../_shared/cronAuth.ts'
 import { z } from 'npm:zod@3'
 import { decryptToken } from '../_shared/tokenCrypto.ts'
 
@@ -115,7 +116,7 @@ Deno.serve(async (req) => {
     // 인증 — 두 경로 지원:
     //   1) 사용자 JWT (UI 의 '재분류' 버튼)
     //   2) CRON_SECRET (관리/백필 용 — 분류 정책 변경 후 일괄 재처리)
-    const isCron = !!CRON_SECRET && auth === `Bearer ${CRON_SECRET}`
+    const isCron = isCronAuthorized(auth, CRON_SECRET)
     if (!isCron) {
       const userClient = createClient(SUPABASE_URL, ANON_KEY, {
         global: { headers: { Authorization: auth } },

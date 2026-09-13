@@ -27,8 +27,6 @@ export interface Profile {
   default_sender_name: string | null
   default_cc: string | null
   default_bcc: string | null
-  slack_webhook_url: string | null
-  slack_channel_name: string | null
   daily_send_count: number
   daily_send_count_date: string | null
   daily_send_limit: number
@@ -43,8 +41,6 @@ export type ProfileEditable = Partial<
     | 'default_sender_name'
     | 'default_cc'
     | 'default_bcc'
-    | 'slack_webhook_url'
-    | 'slack_channel_name'
     | 'daily_send_limit'
   >
 >
@@ -59,7 +55,7 @@ export function useProfile() {
       const { data, error } = await supabase
         .from('profiles')
         .select(
-          'id, email, display_name, signature_html, default_sender_name, default_cc, default_bcc, slack_webhook_url, slack_channel_name, daily_send_count, daily_send_count_date, daily_send_limit, created_at',
+          'id, email, display_name, signature_html, default_sender_name, default_cc, default_bcc, daily_send_count, daily_send_count_date, daily_send_limit, created_at',
         )
         .eq('id', user.id)
         .single()

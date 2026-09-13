@@ -1,12 +1,11 @@
 // ============================================================
-// SettingsPage — 프로필 / 발송 기본값 / Slack 알림 / 계정
+// SettingsPage — 프로필 / 발송 기본값 / 계정
 // ------------------------------------------------------------
 // profiles 테이블의 편집 가능한 필드를 섹션별로 노출한다.
 //
 // 섹션 구성:
 //   1. 프로필 — display_name (email 은 readonly)
 //   2. 발송 기본값 — default_sender_name / default_cc / default_bcc / daily_send_limit
-//   3. Slack 알림 — slack_webhook_url / slack_channel_name
 //   4. 일일 발송 현황 — daily_send_count (readonly, 진행 bar)
 //   5. 계정 — 로그아웃
 //
@@ -32,7 +31,6 @@ import {
   Settings as SettingsIcon,
   User as UserIcon,
   Send,
-  Bell,
   Activity,
   LogOut,
   Save,
@@ -64,8 +62,6 @@ interface FormState {
   default_sender_name: string
   default_cc: string
   default_bcc: string
-  slack_webhook_url: string
-  slack_channel_name: string
   daily_send_limit: string
 }
 
@@ -75,8 +71,6 @@ function toForm(p: ReturnType<typeof useProfile>['data']): FormState {
     default_sender_name: p?.default_sender_name ?? '',
     default_cc: p?.default_cc ?? '',
     default_bcc: p?.default_bcc ?? '',
-    slack_webhook_url: p?.slack_webhook_url ?? '',
-    slack_channel_name: p?.slack_channel_name ?? '',
     daily_send_limit: String(p?.daily_send_limit ?? 1500),
   }
 }
@@ -127,8 +121,6 @@ export default function SettingsPage() {
       default_sender_name: form.default_sender_name,
       default_cc: form.default_cc,
       default_bcc: form.default_bcc,
-      slack_webhook_url: form.slack_webhook_url,
-      slack_channel_name: form.slack_channel_name,
       daily_send_limit: limitNum,
     }
     try {
@@ -280,48 +272,6 @@ export default function SettingsPage() {
                     <p className="text-xs text-muted-foreground">
                       Gmail 계정 타입에 따른 권장: 일반 500, Workspace 2000. 이
                       한도를 넘는 발송은 자동으로 차단됩니다.
-                    </p>
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* 3. Slack 알림 */}
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base flex items-center gap-2">
-                    <Bell className="w-4 h-4" />
-                    Slack 알림
-                  </CardTitle>
-                  <p className="text-xs text-muted-foreground">
-                    캠페인 발송 완료 / 실패 / 답장 감지 시 Slack 으로 알림을
-                    받습니다. Webhook URL 이 비어있으면 알림은 보내지 않습니다.
-                  </p>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="space-y-1.5">
-                    <Label htmlFor="slack_webhook">Incoming Webhook URL</Label>
-                    <Input
-                      id="slack_webhook"
-                      type="url"
-                      value={form.slack_webhook_url}
-                      onChange={(e) =>
-                        setField('slack_webhook_url', e.target.value)
-                      }
-                      placeholder="https://hooks.slack.com/services/..."
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="slack_channel">채널 이름 (표시용)</Label>
-                    <Input
-                      id="slack_channel"
-                      value={form.slack_channel_name}
-                      onChange={(e) =>
-                        setField('slack_channel_name', e.target.value)
-                      }
-                      placeholder="#mailcaster-alerts"
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      실제 대상 채널은 Webhook 이 결정합니다. 여기는 UI 표시용.
                     </p>
                   </div>
                 </CardContent>
