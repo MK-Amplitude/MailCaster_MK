@@ -395,7 +395,14 @@ export function useToggleUnsubscribe() {
           )
           .eq('id', id)
           .eq('is_unsubscribed', true)
-        if (updErr) throw updErr
+        if (updErr) {
+          // 080 contacts BEFORE UPDATE 트리거 — 수신자 본인 수신거부(link/one_click/reply) 기록이
+          // 남은 주소의 해제를 예외(42501, 한국어 메시지 + HINT)로 거부한다. 메시지를 그대로 노출.
+          const hint = typeof updErr.hint === 'string' && updErr.hint ? ` ${updErr.hint}` : ''
+          throw new Error(
+            updErr.message ? `${updErr.message}.${hint}` : '수신거부 해제에 실패했습니다.',
+          )
+        }
         if ((count ?? 0) === 0 && (updCount ?? 0) === 0) {
           throw new Error(
             '해제 권한이 없거나 이미 해제 상태입니다. 새로고침 후 다시 시도해 주세요. (조직 관리자 권한 필요)',
@@ -409,7 +416,15 @@ export function useToggleUnsubscribe() {
       qc.invalidateQueries({ queryKey: ['unsubscribes'] })
       toast.success(unsubscribe ? '수신거부 처리되었습니다.' : '수신거부가 해제되었습니다.')
     },
-    onError: (e) => toast.error(e instanceof Error ? e.message : '처리 실패'),
+    onError: (e) => {
+      // 해제가 DB 에서 거부됐을 수 있으므로(080 트리거) 화면 상태를 서버 값으로 되돌린다.
+      qc.invalidateQueries({ queryKey: [QUERY_KEY] })
+      const msg =
+        e && typeof (e as { message?: unknown }).message === 'string'
+          ? (e as { message: string }).message
+          : ''
+      toast.error(msg || '처리 실패', { duration: 8000 })
+    },
   })
 }
 

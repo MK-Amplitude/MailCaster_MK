@@ -43,6 +43,8 @@ export function SendSettingsCard() {
         <p className="text-xs text-muted-foreground">
           시퀀스(자동 후속) 발송에만 적용됩니다. Gmail 계정 평판 보호를 위해 하루 발송량과
           발송 시간대를 제한합니다. 한도/시간 밖이면 자동으로 다음 가능 시점으로 미뤄집니다.
+          캠페인(대량) 발송에는 이 한도가 적용되지 않으며, Gmail 자체 일일 한도(일반 약 500,
+          Workspace 약 2,000명)에 걸리면 자동으로 멈췄다가 나중에 이어서 발송됩니다.
         </p>
       </CardHeader>
       <CardContent className="space-y-5">

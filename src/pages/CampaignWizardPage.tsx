@@ -26,7 +26,7 @@ import {
 // DropdownMenu 는 ./campaign-wizard/VariableDropdown 으로 이동.
 import { SignaturePreview } from '@/components/signatures/SignaturePreview'
 import TipTapEditor from '@/components/signatures/TipTapEditor'
-import { AttachmentSection } from '@/components/attachments/AttachmentSection'
+import { AttachmentSection, ATTACHMENT_SAFE_THRESHOLD } from '@/components/attachments/AttachmentSection'
 import { RecipientBasket } from '@/components/campaigns/RecipientBasket'
 import { CcBccPicker } from '@/components/campaigns/CcBccPicker'
 import { FinalRecipientReview } from '@/components/campaigns/FinalRecipientReview'
@@ -35,11 +35,12 @@ import { useAuth } from '@/hooks/useAuth'
 import { useGroups } from '@/hooks/useGroups'
 import { useTemplates } from '@/hooks/useTemplates'
 import { useSignatures } from '@/hooks/useSignatures'
-import { useCreateCampaign, useUpdateCampaign } from '@/hooks/useCampaigns'
+import { useCreateCampaign, updateCampaignCas, CampaignStatusConflictError } from '@/hooks/useCampaigns'
 import { useSequenceOptions } from '@/hooks/useSequences'
 import { useValidateEmails, type ValidationResult } from '@/hooks/useValidateEmails'
 import { renderTemplate, renderTemplateHtml, extractVariables } from '@/lib/mailMerge'
 import { toast } from 'sonner'
+import { AMBIGUOUS_SEND_MESSAGE } from '@/lib/gmail'
 import type { Database } from '@/types/database.types'
 
 type DriveAttachmentRow = Database['mailcaster']['Tables']['drive_attachments']['Row']
@@ -61,7 +62,7 @@ import {
   Undo2,
 } from 'lucide-react'
 import { useSidebar } from '@/contexts/SidebarContext'
-import { GMAIL_ATTACHMENT_SAFE_THRESHOLD } from '@/lib/utils'
+import { fetchAllPages, chunk, IN_FILTER_CHUNK } from '@/lib/fetchAll'
 import { dedupeEmails, isMissingTableError } from './campaign-wizard/helpers'
 import { VariableDropdown } from './campaign-wizard/VariableDropdown'
 import { ScheduleSection } from './campaign-wizard/ScheduleSection'
@@ -96,62 +97,68 @@ type ReuseMode = 'all' | 'failed'
 // CC / BCC 유틸 — 그룹 / 개별 연락처 id 를 이메일로 펼치고, dedupe 한다.
 // ------------------------------------------------------------
 // 수신거부 / 반송 연락처는 제외한다 (To 측 rawUnion 과 동일한 정책).
+// 그룹 경유는 보관(archived) 연락처도 제외 — 연락처 목록 화면과 같은 기준.
 // 동일 이메일이 여러 그룹이나 contact 에서 유입돼도 한 번만 반환.
 // 이메일 대소문자는 DB 원본을 보존(Map 의 value) 하고, 비교만 lowercase 로 수행.
 async function resolveBasketEmails(
   groupIds: string[],
   contactIds: string[],
 ): Promise<string[]> {
+  type EmailRow = { email: string | null; is_unsubscribed: boolean; is_bounced: boolean }
   const emails = new Map<string, string>()
+  const add = (c: EmailRow | null) => {
+    if (!c || c.is_unsubscribed || c.is_bounced || !c.email) return
+    const em = c.email.trim()
+    if (!em) return
+    emails.set(em.toLowerCase(), em)
+  }
   if (groupIds.length > 0) {
-    const { data, error } = await supabase
-      .from('contact_groups')
-      .select('contacts!inner(email, is_unsubscribed, is_bounced)')
-      .in('group_id', groupIds)
-      // PostgREST 기본 1000행 cap 우회 — 대형 그룹 cc/bcc 시 수신자 누락 방지
-      .range(0, 9999)
-    if (error) {
+    const rows = await fetchAllPages<{ contacts: EmailRow | null }>((from, to) =>
+      supabase
+        .from('contact_groups')
+        .select('id, contacts!inner(email, is_unsubscribed, is_bounced)')
+        .in('group_id', groupIds)
+        .is('contacts.archived_at', null)
+        .order('id', { ascending: true })
+        .range(from, to),
+    ).catch((error) => {
       console.error('[wizard] resolve cc/bcc groups failed:', error)
       throw error
-    }
-    type JoinRow = {
-      contacts: {
-        email: string | null
-        is_unsubscribed: boolean
-        is_bounced: boolean
-      } | null
-    }
-    for (const row of (data as unknown as JoinRow[]) ?? []) {
-      const c = row.contacts
-      if (!c || c.is_unsubscribed || c.is_bounced || !c.email) continue
-      const em = c.email.trim()
-      if (!em) continue
-      emails.set(em.toLowerCase(), em)
-    }
+    })
+    for (const row of rows) add(row.contacts)
   }
-  if (contactIds.length > 0) {
+  for (const ids of chunk(contactIds, IN_FILTER_CHUNK)) {
     const { data, error } = await supabase
       .from('contacts')
       .select('email, is_unsubscribed, is_bounced')
-      .in('id', contactIds)
-      // PostgREST 기본 1000행 cap 우회 — 대량 cc/bcc 선택 시 일부 누락 방지
-      .range(0, 9999)
+      .in('id', ids)
     if (error) {
       console.error('[wizard] resolve cc/bcc contacts failed:', error)
       throw error
     }
-    for (const c of (data ?? []) as Array<{
-      email: string | null
-      is_unsubscribed: boolean
-      is_bounced: boolean
-    }>) {
-      if (!c || c.is_unsubscribed || c.is_bounced || !c.email) continue
-      const em = c.email.trim()
-      if (!em) continue
-      emails.set(em.toLowerCase(), em)
-    }
+    for (const c of (data ?? []) as EmailRow[]) add(c)
   }
   return [...emails.values()]
+}
+
+// 발송 간격 상한 — 서버 발송은 1회 실행(~50초) 안에서 간격을 두므로 30초를 넘기면
+// 실행당 1통 수준으로 느려진다 (send-scheduled-campaigns 도 같은 값으로 상한 적용).
+const MAX_SEND_DELAY_SECONDS = 30
+function clampDelaySeconds(v: number): number {
+  const n = Number.isFinite(v) ? Math.round(v) : 0
+  return Math.min(MAX_SEND_DELAY_SECONDS, Math.max(0, n))
+}
+
+// 수신자 스냅샷(recipients.variables) 과 같은 키 — 빈 값 사전 점검용.
+function previewContactVars(c: PreviewContact): Record<string, string> {
+  return {
+    name: c.name ?? '',
+    email: c.email ?? '',
+    company: c.company ?? '',
+    department: c.department ?? '',
+    job_title: c.job_title ?? '',
+    job_title_raw: c.job_title_raw ?? c.job_title ?? '',
+  }
 }
 
 // dedupeEmails / isMissingTableError 는 ./campaign-wizard/helpers.ts 로 이동.
@@ -316,6 +323,9 @@ export default function CampaignWizardPage() {
   const [bccBasketEmails, setBccBasketEmails] = useState<string[]>([])
   const [loadingCcBasket, setLoadingCcBasket] = useState(false)
   const [loadingBccBasket, setLoadingBccBasket] = useState(false)
+  // 펼치기 실패 시 저장을 막는다 — 실패를 무시하고 저장하면 그 그룹 주소가 빠진 채 발송됨
+  const [ccBasketError, setCcBasketError] = useState(false)
+  const [bccBasketError, setBccBasketError] = useState(false)
 
   // 발송 모드: 'individual' = 수신자별 개별 발송 (기본), 'bulk' = 1회 브로드캐스트 (BCC 전원)
   const [sendMode, setSendMode] = useState<'individual' | 'bulk'>('individual')
@@ -335,6 +345,9 @@ export default function CampaignWizardPage() {
   // 오픈/클릭 트래킹 — 기본 ON. 픽셀 오픈 + 링크 클릭 추적을 동시에 제어 (072).
   const [enableTracking, setEnableTracking] = useState(true)
 
+  // 수신거부 링크 (079) — 기본 ON. 메일 하단 수신거부 footer + List-Unsubscribe 헤더.
+  const [includeUnsubscribeLink, setIncludeUnsubscribeLink] = useState(true)
+
   // 첨부 파일 — 블록 추가 시 해당 템플릿의 첨부가 자동 포함 + 수동 추가 가능
   const [attachments, setAttachments] = useState<DriveAttachmentRow[]>([])
 
@@ -343,12 +356,15 @@ export default function CampaignWizardPage() {
   const [fixedRecipients, setFixedRecipients] = useState<PreviewContact[] | null>(null)
   const [reuseLoading, setReuseLoading] = useState(!!reuseFrom || !!editCampaignId)
   const [reuseSourceName, setReuseSourceName] = useState<string>('')
+  // 편집 모드: 이미 발송 처리(sent/failed/bounced 등)된 수신자 수 — 저장 시 이 행들은 보존되고
+  // 다시 발송되지 않는다. 개인화 override 가 있는 수신자 수 — 이들은 아래 제목/본문 대신 override 로 발송.
+  const [lockedRecipientCount, setLockedRecipientCount] = useState(0)
+  const [overrideRecipientCount, setOverrideRecipientCount] = useState(0)
 
   const { data: groups = [] } = useGroups()
   const { data: templates = [] } = useTemplates()
   const { data: signatures = [] } = useSignatures()
   const createCampaign = useCreateCampaign()
-  const updateCampaign = useUpdateCampaign()
 
   // 새 캠페인 — 사용자의 기본 서명(signatures.is_default) 을 자동 선택.
   // 편집/재사용 모드는 db 에서 로드된 signature_id 가 우선 (별도 useEffect 에서 setSignatureId).
@@ -383,8 +399,31 @@ export default function CampaignWizardPage() {
   //   rawUnion       = 그룹 ∪ 개별, 수신거부/반송 제외한 순수 후보
   //   previewContacts = rawUnion − 제외 명단 (최종 발송 대상)
   //   excludedMeta    = rawUnion 중 제외 명단에 속한 것 (UI 칩 표시용)
-  const [rawUnion, setRawUnion] = useState<PreviewContact[]>([])
+  // fetchedContacts = 그룹 ∪ 개별 조회 결과 (수신거부/반송 제외, 이메일 중복 포함 — dedupe 는 rawUnion 에서)
+  const [fetchedContacts, setFetchedContacts] = useState<PreviewContact[]>([])
   const [loadingPreview, setLoadingPreview] = useState(false)
+  // 조회 실패 시 저장 금지 — 이전 결과로 저장하면 campaign_groups 와 recipients 가 어긋난다
+  const [previewError, setPreviewError] = useState(false)
+  const rawUnion = useMemo(() => {
+    if (fixedRecipients !== null) return fixedRecipients
+    // 같은 이메일의 연락처가 여러 개(조직 내 다른 소유자)면 하나만 남긴다. 제외 명단에 든 사본이
+    // 있으면 그 사본을 대표로 삼아, 조회 순서에 따라 제외가 풀리는 일이 없게 한다.
+    const excluded = new Set(excludedContactIds)
+    const byEmail = new Map<string, PreviewContact>()
+    for (const c of fetchedContacts) {
+      const em = (c.email ?? '').trim().toLowerCase()
+      if (!em) continue
+      const prev = byEmail.get(em)
+      if (!prev) byEmail.set(em, c)
+      else if (!excluded.has(prev.id) && excluded.has(c.id)) byEmail.set(em, c)
+    }
+    return Array.from(byEmail.values())
+  }, [fixedRecipients, fetchedContacts, excludedContactIds])
+  // 저장 시 제외 명단 정리 기준 — 현재 선택에서 조회된 모든 연락처 id (이메일 중복 사본 포함)
+  const fetchedContactIds = useMemo(
+    () => new Set(fetchedContacts.map((c) => c.id)),
+    [fetchedContacts],
+  )
   const previewContacts = useMemo(() => {
     if (excludedContactIds.length === 0) return rawUnion
     const excluded = new Set(excludedContactIds)
@@ -475,12 +514,24 @@ export default function CampaignWizardPage() {
       try {
         const { data, error: cErr } = await supabase
           .from('campaigns')
-          .select('name, subject, signature_id, send_delay_seconds, cc, bcc, send_mode, body_html, scheduled_at, status, followup_sequence_id, enable_open_tracking')
+          .select('name, subject, signature_id, send_delay_seconds, cc, bcc, send_mode, body_html, scheduled_at, status, followup_sequence_id, enable_open_tracking, include_unsubscribe_link')
           .eq('id', loadFrom)
           .single()
         if (cancelled) return
         if (cErr) throw cErr
         c = data as Record<string, unknown> | null
+        // 발송 중 / 완료 캠페인은 편집 불가 — 저장이 진행 중인 발송과 경합하거나 발송 이력을 덮어씀.
+        const st = c?.status as string | undefined
+        if (isEditMode && st !== 'draft' && st !== 'scheduled') {
+          toast.error(
+            st === 'sending'
+              ? '발송 중인 캠페인은 편집할 수 없습니다.'
+              : '이미 발송이 시작되었거나 완료된 캠페인은 편집할 수 없습니다. 재사용(복제)을 이용해주세요.',
+          )
+          setReuseLoading(false)
+          navigate(`/campaigns/${loadFrom}`)
+          return
+        }
       } catch (e) {
         if (cancelled) return
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -513,11 +564,13 @@ export default function CampaignWizardPage() {
           setName(`${c.name as string}${suffix}`)
           setSubject((c.subject as string) ?? '')
           setSignatureId((c.signature_id as string | null) ?? '')
-          setDelaySeconds((c.send_delay_seconds as number | null) ?? 3)
+          setDelaySeconds(clampDelaySeconds((c.send_delay_seconds as number | null) ?? 3))
           setSendMode((c.send_mode as 'individual' | 'bulk' | null) === 'bulk' ? 'bulk' : 'individual')
           setFollowupSequenceId((c.followup_sequence_id as string | null) ?? null)
           // 기존값 없으면(복제/legacy) 기본 ON
           setEnableTracking((c.enable_open_tracking as boolean | null) ?? true)
+          // 기존값 없으면(legacy) DB 기본값과 같이 ON
+          setIncludeUnsubscribeLink((c.include_unsubscribe_link as boolean | null) ?? true)
 
           // Phase 7: CC/BCC 구조화 — 직접 입력 / 그룹 / 개별 연락처 각각 복원.
           // campaigns.cc 는 발송 시 사용되는 최종 이메일 배열(스냅샷) 이고,
@@ -626,11 +679,18 @@ export default function CampaignWizardPage() {
         // Phase 5: 개별 연락처 바구니 복원 (campaign_contacts 테이블)
         // 편집 모드에서도, 재사용(복제) 모드에서도 원본의 개별 선택을 계승한다.
         // (reuseMode='failed' 는 아래 recipients 기반 fixedRecipients 로 대체되므로 이 로드가 덮여도 무해)
-        const { data: ccs, error: ccsErr } = await supabase
-          .from('campaign_contacts')
-          .select('contact_id')
-          .eq('campaign_id', loadFrom)
-          .range(0, 9999) // PostgREST 1000행 cap — 잘리면 저장 시 바구니가 축소 재기록됨
+        // PostgREST max_rows(1000) — 잘리면 저장 시 바구니가 축소 재기록되므로 페이지 단위로 전부 읽음
+        const { data: ccs, error: ccsErr } = await fetchAllPages<{ contact_id: string }>((from, to) =>
+          supabase
+            .from('campaign_contacts')
+            .select('id, contact_id')
+            .eq('campaign_id', loadFrom)
+            .order('id', { ascending: true })
+            .range(from, to),
+        ).then(
+          (data) => ({ data, error: null }),
+          (error) => ({ data: null, error }),
+        )
         if (cancelled) return
         if (ccsErr) {
           if (isMissingTableError(ccsErr)) {
@@ -646,11 +706,17 @@ export default function CampaignWizardPage() {
         // Phase 6 (B): 제외 명단 복원 (campaign_exclusions 테이블)
         // 재사용/편집 모두에서 계승. fixedRecipients 모드에서는 사용하지 않지만
         // state 가 남아있어도 UI 가 렌더하지 않으므로 무해.
-        const { data: exs, error: exsErr } = await supabase
-          .from('campaign_exclusions')
-          .select('contact_id')
-          .eq('campaign_id', loadFrom)
-          .range(0, 9999) // PostgREST 1000행 cap 방지
+        const { data: exs, error: exsErr } = await fetchAllPages<{ contact_id: string }>((from, to) =>
+          supabase
+            .from('campaign_exclusions')
+            .select('id, contact_id')
+            .eq('campaign_id', loadFrom)
+            .order('id', { ascending: true })
+            .range(from, to),
+        ).then(
+          (data) => ({ data, error: null }),
+          (error) => ({ data: null, error }),
+        )
         if (cancelled) return
         if (exsErr) {
           if (isMissingTableError(exsErr)) {
@@ -692,12 +758,46 @@ export default function CampaignWizardPage() {
         //   (기존엔 gs.length === 0 만 체크 → 개별 연락처만 담은 캠페인 편집 시 바구니 상태가 손실됨)
         const hasBasket =
           (gs && gs.length > 0) || (ccs && ccs.length > 0)
+        type RecipientLoadRow = {
+          contact_id: string | null
+          email: string
+          name: string | null
+          variables: unknown
+          error_message?: string | null
+        }
+        if (isEditMode) {
+          // 부분 발송 캠페인 안내용 — 발송 이력 행 / 개인화 override 행 수
+          const [lockedRes, ovRes] = await Promise.all([
+            supabase
+              .from('recipients')
+              .select('id', { count: 'exact', head: true })
+              .eq('campaign_id', loadFrom)
+              .or('status.neq.pending,gmail_message_id.not.is.null'),
+            supabase
+              .from('recipients')
+              .select('id', { count: 'exact', head: true })
+              .eq('campaign_id', loadFrom)
+              .or('subject_override.not.is.null,body_html_override.not.is.null'),
+          ])
+          if (cancelled) return
+          if (lockedRes.error) console.warn('[wizard] locked recipient count warn:', lockedRes.error)
+          if (ovRes.error) console.warn('[wizard] override recipient count warn:', ovRes.error)
+          setLockedRecipientCount(lockedRes.count ?? 0)
+          setOverrideRecipientCount(ovRes.count ?? 0)
+        }
         if (isEditMode && !hasBasket) {
-          const { data: rs, error: rErr } = await supabase
-            .from('recipients')
-            .select('contact_id, email, name, variables')
-            .eq('campaign_id', loadFrom)
-            .range(0, 9999) // PostgREST 1000행 cap — 잘리면 저장 시 수신자가 유실됨
+          // PostgREST max_rows(1000) — 잘리면 저장 시 수신자가 유실되므로 페이지 단위로 전부 읽음
+          const { data: rs, error: rErr } = await fetchAllPages<RecipientLoadRow>((from, to) =>
+            supabase
+              .from('recipients')
+              .select('id, contact_id, email, name, variables')
+              .eq('campaign_id', loadFrom)
+              .order('id', { ascending: true })
+              .range(from, to),
+          ).then(
+            (data) => ({ data, error: null }),
+            (error) => ({ data: null, error }),
+          )
           if (cancelled) return
           if (rErr) {
             if (isMissingTableError(rErr)) {
@@ -720,12 +820,18 @@ export default function CampaignWizardPage() {
           })
           setFixedRecipients(fixed)
         } else if (!isEditMode && reuseMode === 'failed') {
-          const { data: rs, error: rErr } = await supabase
-            .from('recipients')
-            .select('contact_id, email, name, variables')
-            .eq('campaign_id', loadFrom)
-            .eq('status', 'failed')
-            .range(0, 9999) // PostgREST 1000행 cap — 실패 재발송 대상 유실 방지
+          const { data: rs, error: rErr } = await fetchAllPages<RecipientLoadRow>((from, to) =>
+            supabase
+              .from('recipients')
+              .select('id, contact_id, email, name, variables, error_message')
+              .eq('campaign_id', loadFrom)
+              .eq('status', 'failed')
+              .order('id', { ascending: true })
+              .range(from, to),
+          ).then(
+            (data) => ({ data, error: null }),
+            (error) => ({ data: null, error }),
+          )
           if (cancelled) return
           if (rErr) {
             if (isMissingTableError(rErr)) {
@@ -734,7 +840,18 @@ export default function CampaignWizardPage() {
               throw rErr
             }
           }
-          const fixed: PreviewContact[] = (rs ?? []).map((r) => {
+          // '전송 결과 불확실' 행은 이미 받았을 수 있어 일괄 재발송 대상에서 제외 —
+          // 사용자가 Gmail 보낸편지함을 확인한 뒤 개별로 처리해야 한다 (중복 발송 방지).
+          const uncertain = (rs ?? []).filter((r) => r.error_message === AMBIGUOUS_SEND_MESSAGE)
+          if (uncertain.length > 0) {
+            toast.warning(
+              `전송 결과가 불확실한 ${uncertain.length}명은 이미 받았을 수 있어 제외했습니다. Gmail 보낸편지함을 확인 후 필요하면 개별로 보내주세요.`,
+              { duration: 15000 },
+            )
+          }
+          const fixed: PreviewContact[] = (rs ?? [])
+            .filter((r) => r.error_message !== AMBIGUOUS_SEND_MESSAGE)
+            .map((r) => {
             const vars = (r.variables ?? {}) as Record<string, string | undefined>
             return {
               id: (r.contact_id as string) ?? '',
@@ -781,17 +898,18 @@ export default function CampaignWizardPage() {
   }, [reuseFrom, reuseMode, editCampaignId, isEditMode, navigate])
 
   // Phase 5: 수신자 preview 계산
-  //   - fixedRecipients 모드: 그대로 통과 (실패 재발송 / 편집모드 recipient-only)
+  //   - fixedRecipients 모드: 조회 없음 (rawUnion 이 그대로 사용)
   //   - 일반 모드: 그룹에서 풀어낸 연락처 ∪ 개별 선택 연락처
-  //     → id 기준 dedupe + 이메일 기준 dedupe 둘 다 적용
-  //     → 수신거부/반송 은 양쪽 모두에서 제외
+  //     → 수신거부/반송 은 양쪽 모두에서 제외, 그룹 경유는 보관(archived) 연락처도 제외
+  //     → 이메일 dedupe 는 rawUnion useMemo 에서 (제외 명단 우선 규칙 적용)
   useEffect(() => {
     if (fixedRecipients !== null) {
-      setRawUnion(fixedRecipients)
+      setPreviewError(false)
       return
     }
     if (selectedGroupIds.length === 0 && selectedContactIds.length === 0) {
-      setRawUnion([])
+      setFetchedContacts([])
+      setPreviewError(false)
       return
     }
     // C5: cleanup guard — 그룹/연락처 선택을 빠르게 바꿀 때 오래된 fetch 가 나중 결과를 덮어쓰는 race 방지
@@ -809,61 +927,52 @@ export default function CampaignWizardPage() {
         is_unsubscribed: boolean
         is_bounced: boolean
       }
+      const CONTACT_COLS =
+        'id, email, name, company, department, job_title, display_title, is_unsubscribed, is_bounced'
 
-      // 1) 그룹 → 연락처 (inner join)
-      const groupContacts: ContactRow[] = []
-      if (selectedGroupIds.length > 0) {
-        const { data, error } = await supabase
-          .from('contact_groups')
-          .select(
-            'contacts!inner(id, email, name, company, department, job_title, display_title, is_unsubscribed, is_bounced)'
+      const all: ContactRow[] = []
+      try {
+        // 1) 그룹 → 연락처 (inner join). PostgREST max_rows(1000) 를 넘는 멤버십도 끝까지 페이지 조회.
+        if (selectedGroupIds.length > 0) {
+          const rows = await fetchAllPages<{ contacts: ContactRow | null }>((from, to) =>
+            supabase
+              .from('contact_groups')
+              .select(`id, contacts!inner(${CONTACT_COLS})`)
+              .in('group_id', selectedGroupIds)
+              // 연락처 목록 화면과 같은 기준 — 보관된(1년 이상 비활성) 연락처는 그룹 발송에서 제외
+              .is('contacts.archived_at', null)
+              .order('id', { ascending: true })
+              .range(from, to),
           )
-          .in('group_id', selectedGroupIds)
-          // PostgREST 기본 1000행 cap 우회 — 대형 그룹 선택 시 수신자 누락 방지
-          .range(0, 9999)
-
-        if (cancelled) return
-        if (error) {
-          console.error('[wizard] preview group fetch failed:', error)
-          toast.error('그룹 수신자 조회 실패')
-          setLoadingPreview(false)
-          return
+          for (const r of rows) if (r.contacts) all.push(r.contacts)
         }
-        type JoinRow = { contacts: ContactRow }
-        const rows = (data as unknown as JoinRow[]) ?? []
-        for (const r of rows) if (r.contacts) groupContacts.push(r.contacts)
-      }
 
-      // 2) 개별 연락처 직접 조회
-      const individualContacts: ContactRow[] = []
-      if (selectedContactIds.length > 0) {
-        const { data, error } = await supabase
-          .from('contacts')
-          .select('id, email, name, company, department, job_title, display_title, is_unsubscribed, is_bounced')
-          .in('id', selectedContactIds)
-          // PostgREST 기본 1000행 cap 우회 — 미리보기/발송 단계에서 수신자 누락 방지
-          .range(0, 9999)
-
-        if (cancelled) return
-        if (error) {
-          console.error('[wizard] preview contact fetch failed:', error)
-          toast.error('개별 연락처 조회 실패')
-          setLoadingPreview(false)
-          return
+        // 2) 개별 연락처 직접 조회 — id 목록이 URL 에 실리므로 묶음 단위로 나눠 조회
+        for (const ids of chunk(selectedContactIds, IN_FILTER_CHUNK)) {
+          const { data, error } = await supabase
+            .from('contacts')
+            .select(CONTACT_COLS)
+            .in('id', ids)
+          if (error) throw error
+          for (const c of (data ?? []) as ContactRow[]) all.push(c)
         }
-        for (const c of (data ?? []) as ContactRow[]) individualContacts.push(c)
+      } catch (error) {
+        if (cancelled) return
+        console.error('[wizard] preview recipient fetch failed:', error)
+        toast.error('수신자 조회 실패 — 다시 시도해주세요. (조회가 끝나기 전에는 저장할 수 없습니다)')
+        setFetchedContacts([])
+        setPreviewError(true)
+        setLoadingPreview(false)
+        return
       }
+      if (cancelled) return
 
-      // 3) dedupe by id + email, exclude 수신거부/반송
+      // 3) id dedupe + 수신거부/반송 제외 (이메일 dedupe 는 rawUnion 에서)
       const byId = new Map<string, PreviewContact>()
-      const seenEmails = new Set<string>()
-      for (const c of [...groupContacts, ...individualContacts]) {
+      for (const c of all) {
         if (!c || c.is_unsubscribed || c.is_bounced) continue
         if (byId.has(c.id)) continue
-        const em = (c.email ?? '').trim().toLowerCase()
-        if (!em) continue
-        if (seenEmails.has(em)) continue
-        seenEmails.add(em)
+        if (!(c.email ?? '').trim()) continue
         // 사용 직책 우선 — 비어있으면 원본 직책 사용. 메일 템플릿 {{job_title}} 가 이 값을 받음.
         const effectiveTitle = c.display_title?.trim() || c.job_title || null
         byId.set(c.id, {
@@ -877,12 +986,14 @@ export default function CampaignWizardPage() {
         })
       }
 
-      if (cancelled) return
+      setPreviewError(false)
       setLoadingPreview(false)
-      setRawUnion(Array.from(byId.values()))
+      setFetchedContacts(Array.from(byId.values()))
     })()
     return () => {
       cancelled = true
+      // 취소된 fetch 가 loading 을 해제하지 못하고 끝나는 경우 대비 — 다음 effect 가 다시 true 로 세팅
+      setLoadingPreview(false)
     }
   }, [selectedGroupIds, selectedContactIds, fixedRecipients])
 
@@ -894,39 +1005,62 @@ export default function CampaignWizardPage() {
   // 주의:
   //   - 수신거부(is_unsubscribed) / 반송(is_bounced) 연락처는 여기서도 조용히 제외
   //   - 동일 contact 가 그룹과 개별에 동시에 있어도 dedupe 로 1 회만 반영
+  //   - 조회 실패 시 바구니를 비우고 error 플래그 → 저장 버튼 비활성
   useEffect(() => {
     if (ccGroupIds.length === 0 && ccContactIds.length === 0) {
       setCcBasketEmails([])
+      setCcBasketError(false)
       return
     }
     let cancelled = false
     setLoadingCcBasket(true)
     ;(async () => {
-      const emails = await resolveBasketEmails(ccGroupIds, ccContactIds)
-      if (cancelled) return
-      setCcBasketEmails(emails)
-      setLoadingCcBasket(false)
+      try {
+        const emails = await resolveBasketEmails(ccGroupIds, ccContactIds)
+        if (cancelled) return
+        setCcBasketEmails(emails)
+        setCcBasketError(false)
+      } catch {
+        if (cancelled) return
+        toast.error('참조(Cc) 그룹/연락처 조회 실패 — 다시 선택해주세요.')
+        setCcBasketEmails([])
+        setCcBasketError(true)
+      } finally {
+        if (!cancelled) setLoadingCcBasket(false)
+      }
     })()
     return () => {
       cancelled = true
+      setLoadingCcBasket(false)
     }
   }, [ccGroupIds, ccContactIds])
 
   useEffect(() => {
     if (bccGroupIds.length === 0 && bccContactIds.length === 0) {
       setBccBasketEmails([])
+      setBccBasketError(false)
       return
     }
     let cancelled = false
     setLoadingBccBasket(true)
     ;(async () => {
-      const emails = await resolveBasketEmails(bccGroupIds, bccContactIds)
-      if (cancelled) return
-      setBccBasketEmails(emails)
-      setLoadingBccBasket(false)
+      try {
+        const emails = await resolveBasketEmails(bccGroupIds, bccContactIds)
+        if (cancelled) return
+        setBccBasketEmails(emails)
+        setBccBasketError(false)
+      } catch {
+        if (cancelled) return
+        toast.error('숨은참조(Bcc) 그룹/연락처 조회 실패 — 다시 선택해주세요.')
+        setBccBasketEmails([])
+        setBccBasketError(true)
+      } finally {
+        if (!cancelled) setLoadingBccBasket(false)
+      }
     })()
     return () => {
       cancelled = true
+      setLoadingBccBasket(false)
     }
   }, [bccGroupIds, bccContactIds])
 
@@ -1055,6 +1189,26 @@ export default function CampaignWizardPage() {
     }
   }, [subject, effectiveBody, previewContacts])
 
+  // 빈 개인화 값 사전 점검 — 미리보기는 샘플 값으로 채워 보이지만 실제 발송은 빈칸으로 나간다.
+  // 제목/본문에 쓰인 변수별로 값이 비어 있는 수신자 수와 예시 이메일을 집계.
+  const blankFieldStats = useMemo(() => {
+    if (usedVariables.length === 0 || previewContacts.length === 0) return []
+    const out: Array<{ key: string; count: number; samples: string[] }> = []
+    for (const key of usedVariables) {
+      let count = 0
+      const samples: string[] = []
+      for (const c of previewContacts) {
+        const v = previewContactVars(c)[key]
+        if (v == null || !String(v).trim()) {
+          count++
+          if (samples.length < 3) samples.push(c.email)
+        }
+      }
+      if (count > 0) out.push({ key, count, samples })
+    }
+    return out
+  }, [usedVariables, previewContacts])
+
   const insertVariableIntoSubject = (key: string) => setSubject((s) => s + `{{${key}}}`)
 
   const addBlock = (templateId: string) => {
@@ -1113,7 +1267,14 @@ export default function CampaignWizardPage() {
       // Phase 5: 예약 + 첨부 조합 지원 — 엣지 함수에서 Drive 다운로드/공유 수행.
       // 별도 UI 차단 없음. 큰 첨부는 자동으로 링크 모드로 전환됨.
     }
+    const delayToSave = clampDelaySeconds(delaySeconds)
     setSubmitting(true)
+    // 편집: 상태를 draft 로 붙잡은 뒤 자식 행을 쓰고, 마지막에만 예약으로 전환한다.
+    // 신규: draft 로 만든 뒤 자식 행을 쓰고, 마지막에만 예약으로 전환한다.
+    // → 중간 실패 시 수신자 일부만 가진 캠페인이 예약 상태로 남아 자동 발송되는 일이 없다.
+    let heldAsDraft = false
+    let createdCampaignId: string | null = null
+    let completed = false
     // 저장 경로에서 "테이블 없음"(42P01/PGRST205) 으로 skip 한 보조 테이블을 모아뒀다가
     // 완료 직전에 한 번에 경고 토스트로 알려준다. (save 마다 여러 개가 나오면 시끄러우므로)
     // campaigns / campaign_blocks / campaign_attachments / recipients 는 core 로 간주해
@@ -1122,17 +1283,17 @@ export default function CampaignWizardPage() {
     try {
       if (isEditMode && editCampaignId) {
         // ===== 편집 모드: 기존 draft/scheduled 캠페인 덮어쓰기 =====
-        // status / scheduled_at 도 이 경로에서 갱신한다 (예약 시각을 편집 중 변경할 수 있게).
         // child rows 는 delete→insert 로 교체 (Supabase JS 클라이언트는 트랜잭션 미지원).
-        await updateCampaign.mutateAsync({
-          id: editCampaignId,
-          data: {
+        // 0) CAS — 아직 draft/scheduled 일 때만. 그 사이 cron 이 발송을 시작했으면 여기서 중단.
+        //    저장하는 동안 cron 이 집어가지 않도록 일단 draft + 예약 해제로 붙잡는다.
+        await updateCampaignCas(
+          editCampaignId,
+          {
             name: name.trim(),
             signature_id: signatureId || null,
             subject: subject.trim(),
             body_html: effectiveBody,
-            total_count: previewContacts.length,
-            send_delay_seconds: delaySeconds,
+            send_delay_seconds: delayToSave,
             // Phase 7: cc / bcc 는 "직접 입력 + 그룹 멤버 + 개별 연락처" 의
             // union+dedupe 결과를 저장 (발송 시 Gmail 이 그대로 사용).
             cc: resolvedCcEmails,
@@ -1140,13 +1301,13 @@ export default function CampaignWizardPage() {
             send_mode: sendMode,
             followup_sequence_id: followupSequenceId,
             enable_open_tracking: enableTracking,
-            // 예약 시각 변경:
-            //   scheduledAt 설정 → status='scheduled' + scheduled_at
-            //   scheduledAt null → status='draft'     + scheduled_at=null (예약 해제)
-            status: scheduledAt ? 'scheduled' : 'draft',
-            scheduled_at: scheduledAt,
+            include_unsubscribe_link: includeUnsubscribeLink,
+            status: 'draft',
+            scheduled_at: null,
           },
-        })
+          ['draft', 'scheduled'],
+        )
+        heldAsDraft = true
 
         // 1) blocks 교체
         {
@@ -1210,8 +1371,8 @@ export default function CampaignWizardPage() {
         }
 
         // 2-c) Phase 6 (B): 제외 명단 교체
-        // rawUnion 에 현재 존재하는 exclusions 만 저장 — 그룹이 바뀌어
-        // 더 이상 union 에 없는 고아(orphan) 제외는 자동 정리.
+        // 현재 선택에서 조회된 연락처(이메일 중복 사본 포함)에 해당하는 exclusions 만 저장 —
+        // 그룹이 바뀌어 더 이상 후보에 없는 고아(orphan) 제외는 자동 정리.
         // migration 010 미적용 시 동일하게 skip + 경고.
         {
           const { error: delErr } = await supabase
@@ -1226,9 +1387,8 @@ export default function CampaignWizardPage() {
               throw delErr
             }
           } else if (fixedRecipients === null && excludedContactIds.length > 0) {
-            const unionIds = new Set(rawUnion.map((c) => c.id))
             const validExclusions = excludedContactIds.filter(
-              (id) => id && unionIds.has(id)
+              (id) => id && fetchedContactIds.has(id)
             )
             if (validExclusions.length > 0) {
               const { error: insErr } = await supabase.from('campaign_exclusions').insert(
@@ -1283,77 +1443,145 @@ export default function CampaignWizardPage() {
           }
         }
 
-        // 4) recipients 교체 — draft/scheduled 캠페인은 모두 pending 이라 발송 이력 손실은 없음.
-        //    단, AI 개인화 발송으로 만든 subject_override / body_html_override 는
-        //    delete-and-reinsert 사이클에서 사라지므로 사전에 보존한다.
-        //    contact_id 가 있으면 그걸 키로, 없으면 email 을 키로 매칭.
+        // 4) recipients — 발송 이력(sent/failed/bounced/skipped/sending 또는 gmail_message_id 있음)
+        //    행은 절대 건드리지 않는다. 지우면 발송 이력·오픈/클릭이 cascade 삭제되고,
+        //    pending 으로 다시 넣으면 이미 받은 사람에게 또 발송된다.
+        //    AI 개인화 subject_override / body_html_override 는 재삽입 시 보존.
         {
-          const { data: existingRaw } = await supabase
-            .from('recipients')
-            .select('contact_id, email, subject_override, body_html_override')
-            .eq('campaign_id', editCampaignId)
-            .range(0, 9999) // PostgREST 1000행 cap — 잘리면 개인화 오버라이드 유실
-          const existing = (existingRaw ?? []) as Array<{
+          type ExistingRow = {
+            id: string
             contact_id: string | null
             email: string
+            status: string
+            gmail_message_id: string | null
             subject_override: string | null
             body_html_override: string | null
-          }>
-          const overrideMap = new Map<string, {
-            subject_override: string | null
-            body_html_override: string | null
-          }>()
-          for (const r of existing) {
-            if (!r.subject_override && !r.body_html_override) continue
-            const key = r.contact_id ?? `email:${r.email}`
-            overrideMap.set(key, {
-              subject_override: r.subject_override,
-              body_html_override: r.body_html_override,
-            })
+          }
+          const existing = await fetchAllPages<ExistingRow>((from, to) =>
+            supabase
+              .from('recipients')
+              .select('id, contact_id, email, status, gmail_message_id, subject_override, body_html_override')
+              .eq('campaign_id', editCampaignId)
+              .order('id', { ascending: true })
+              .range(from, to),
+          )
+          const lower = (e: string | null | undefined) => (e ?? '').trim().toLowerCase()
+          const isPendingRow = (r: ExistingRow) => r.status === 'pending' && !r.gmail_message_id
+          const lockedEmails = new Set(existing.filter((r) => !isPendingRow(r)).map((r) => lower(r.email)))
+          const pendingRows = existing.filter(isPendingRow)
+
+          const toRow = (c: PreviewContact) => ({
+            campaign_id: editCampaignId,
+            contact_id: c.id || null,
+            email: c.email,
+            name: c.name,
+            variables: {
+              name: c.name ?? '',
+              email: c.email,
+              company: c.company ?? '',
+              department: c.department ?? '',
+              job_title: c.job_title ?? '',
+              job_title_raw: c.job_title_raw ?? c.job_title ?? '',
+            },
+            status: 'pending' as const,
+          })
+          const insertBatches = async (rows: Array<Record<string, unknown>>) => {
+            for (const part of chunk(rows, 500)) {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const { error: insErr } = await supabase.from('recipients').insert(part as any)
+              if (insErr) throw insErr
+            }
           }
 
-          const { error: delErr } = await supabase
-            .from('recipients')
-            .delete()
-            .eq('campaign_id', editCampaignId)
-          if (delErr) throw delErr
-          const BATCH = 500
-          for (let i = 0; i < previewContacts.length; i += BATCH) {
-            const chunk = previewContacts.slice(i, i + BATCH)
-            const rows = chunk.map((c) => {
-              // c.id 는 "contact 없음" 을 '' 로 표현하므로 ?? 가 아니라 || 로 판정 —
-              // ?? 를 쓰면 key 가 '' 이 되어 email 키로 저장된 개인화 오버라이드를
-              // 못 찾고 조용히 소실됨 (저장 시 아래 contact_id 도 || 사용).
-              const key = c.id || `email:${c.email}`
-              const ov = overrideMap.get(key)
-              return {
-                campaign_id: editCampaignId,
-                contact_id: c.id || null,
-                email: c.email,
-                name: c.name,
-                variables: {
-                  name: c.name ?? '',
-                  email: c.email,
-                  company: c.company ?? '',
-                  department: c.department ?? '',
-                  job_title: c.job_title ?? '',
-                },
-                status: 'pending' as const,
-                ...(ov && {
-                  subject_override: ov.subject_override,
-                  body_html_override: ov.body_html_override,
-                }),
-              }
+          if (lockedEmails.size === 0) {
+            // 전원 미발송 — pending 전체 교체 (연락처 최신값으로 스냅샷 갱신)
+            const overrideMap = new Map<string, {
+              subject_override: string | null
+              body_html_override: string | null
+            }>()
+            for (const r of pendingRows) {
+              if (!r.subject_override && !r.body_html_override) continue
+              const key = r.contact_id ?? `email:${r.email}`
+              overrideMap.set(key, {
+                subject_override: r.subject_override,
+                body_html_override: r.body_html_override,
+              })
+            }
+            const { error: delErr } = await supabase
+              .from('recipients')
+              .delete()
+              .eq('campaign_id', editCampaignId)
+              .eq('status', 'pending')
+              .is('gmail_message_id', null)
+            if (delErr) throw delErr
+            await insertBatches(
+              previewContacts.map((c) => {
+                // c.id 는 "contact 없음" 을 '' 로 표현하므로 ?? 가 아니라 || 로 판정 —
+                // ?? 를 쓰면 key 가 '' 이 되어 email 키로 저장된 개인화 오버라이드를
+                // 못 찾고 조용히 소실됨 (저장 시 contact_id 도 || 사용).
+                const ov = overrideMap.get(c.id || `email:${c.email}`)
+                return {
+                  ...toRow(c),
+                  ...(ov && {
+                    subject_override: ov.subject_override,
+                    body_html_override: ov.body_html_override,
+                  }),
+                }
+              }),
+            )
+          } else {
+            // 부분 발송 캠페인 — pending 행만 diff. 선택에서 빠진 pending 행 삭제,
+            // 아직 행이 없는 이메일만 추가 (대소문자 무시). 남는 pending 행은 그대로 둔다.
+            const selectedEmails = new Set(previewContacts.map((c) => lower(c.email)))
+            const removeIds = pendingRows
+              .filter((r) => !selectedEmails.has(lower(r.email)))
+              .map((r) => r.id)
+            for (const ids of chunk(removeIds, IN_FILTER_CHUNK)) {
+              const { error: delErr } = await supabase
+                .from('recipients')
+                .delete()
+                .in('id', ids)
+                .eq('status', 'pending')
+                .is('gmail_message_id', null)
+              if (delErr) throw delErr
+            }
+            const haveEmails = new Set([
+              ...lockedEmails,
+              ...pendingRows.filter((r) => selectedEmails.has(lower(r.email))).map((r) => lower(r.email)),
+            ])
+            const seen = new Set<string>()
+            const additions = previewContacts.filter((c) => {
+              const em = lower(c.email)
+              if (!em || haveEmails.has(em) || seen.has(em)) return false
+              seen.add(em)
+              return true
             })
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const { error: insErr } = await supabase.from('recipients').insert(rows as any)
-            if (insErr) throw insErr
+            await insertBatches(additions.map(toRow))
           }
         }
 
-        // useUpdateCampaign 은 ['campaigns'] prefix 만 무효화하므로
-        // 다른 key space 를 쓰는 child 쿼리들은 여기서 명시적으로 무효화해야
+        // 5) 최종 — total_count 를 실제 행 수로 맞추고, 자식 행을 모두 쓴 뒤에만 예약으로 전환.
+        {
+          const { count, error: cntErr } = await supabase
+            .from('recipients')
+            .select('id', { count: 'exact', head: true })
+            .eq('campaign_id', editCampaignId)
+          if (cntErr) throw cntErr
+          await updateCampaignCas(
+            editCampaignId,
+            {
+              total_count: count ?? previewContacts.length,
+              status: scheduledAt ? 'scheduled' : 'draft',
+              scheduled_at: scheduledAt,
+            },
+            ['draft'],
+          )
+          completed = true
+        }
+
+        // campaigns 와 다른 key space 를 쓰는 child 쿼리들도 명시적으로 무효화해야
         // Detail 페이지로 돌아갔을 때 옛 블록/첨부가 잠깐이라도 보이지 않는다.
+        qc.invalidateQueries({ queryKey: ['campaigns'] })
         qc.invalidateQueries({ queryKey: ['campaign-blocks', editCampaignId] })
         qc.invalidateQueries({ queryKey: ['campaign_attachments', editCampaignId] })
 
@@ -1375,24 +1603,27 @@ export default function CampaignWizardPage() {
       } else {
         // ===== 신규 생성 모드 (재사용/복제 포함) =====
         // 1) 캠페인 생성 — body_html 은 작성 시점 스냅샷으로 저장
-        //    scheduledAt 이 있으면 status='scheduled' + scheduled_at 으로 저장 → pg_cron 이 자동 발송
         const campaign = await createCampaign.mutateAsync({
           name: name.trim(),
           template_id: null,
           signature_id: signatureId || null,
           subject: subject.trim(),
           body_html: effectiveBody,
-          status: scheduledAt ? 'scheduled' : 'draft',
-          scheduled_at: scheduledAt,
+          // 예약이어도 일단 draft 로 생성 — 수신자를 다 넣은 뒤 마지막에 예약으로 전환
+          status: 'draft',
+          scheduled_at: null,
           total_count: previewContacts.length,
-          send_delay_seconds: delaySeconds,
+          send_delay_seconds: delayToSave,
           // Phase 7: 최종 union+dedupe 이메일 배열 — 발송 경로(useSendCampaign)가 이 값 사용
           cc: resolvedCcEmails,
           bcc: resolvedBccEmails,
           send_mode: sendMode,
           followup_sequence_id: followupSequenceId,
           enable_open_tracking: enableTracking,
+          include_unsubscribe_link: includeUnsubscribeLink,
         })
+
+        createdCampaignId = campaign.id
 
         // 2) campaign_blocks
         const blockRows = blocks.map((b, i) => ({
@@ -1427,11 +1658,10 @@ export default function CampaignWizardPage() {
           }
         }
 
-        // 3-c) Phase 6 (B): 제외 명단 저장 — rawUnion 에 속한 것만 저장 (orphan 정리)
+        // 3-c) Phase 6 (B): 제외 명단 저장 — 현재 후보에 속한 것만 저장 (orphan 정리)
         if (fixedRecipients === null && excludedContactIds.length > 0) {
-          const unionIds = new Set(rawUnion.map((c) => c.id))
           const validExclusions = excludedContactIds.filter(
-            (id) => id && unionIds.has(id)
+            (id) => id && fetchedContactIds.has(id)
           )
           if (validExclusions.length > 0) {
             const { error: exErr } = await supabase.from('campaign_exclusions').insert(
@@ -1502,6 +1732,16 @@ export default function CampaignWizardPage() {
           if (rErr) throw rErr
         }
 
+        // 6) 수신자까지 모두 저장된 뒤에만 예약으로 전환 (pg_cron 이 자동 발송)
+        if (scheduledAt) {
+          await updateCampaignCas(
+            campaign.id,
+            { status: 'scheduled', scheduled_at: scheduledAt, last_error: null },
+            ['draft'],
+          )
+        }
+        completed = true
+
         // migration 미적용으로 skip 된 보조 테이블이 있으면 1회 안내 (발송은 정상)
         if (missingAuxTables.length > 0) {
           const unique = Array.from(new Set(missingAuxTables))
@@ -1531,12 +1771,29 @@ export default function CampaignWizardPage() {
         raw: e,
       })
       // 사용자용 메시지: 가장 유의미한 필드 우선 (hint 는 PostgREST 가 해결책을 제안할 때만 옴)
-      const userMsg =
-        anyErr?.hint ||
-        anyErr?.details ||
-        anyErr?.message ||
-        (isEditMode ? '메일 발송 저장 실패' : '메일 발송 생성 실패')
-      toast.error(userMsg)
+      const baseMsg =
+        e instanceof CampaignStatusConflictError
+          ? '발송이 이미 시작되었거나 완료되어 저장할 수 없습니다. 상세 화면에서 상태를 확인해주세요.'
+          : anyErr?.hint ||
+            anyErr?.details ||
+            anyErr?.message ||
+            (isEditMode ? '메일 발송 저장 실패' : '메일 발송 생성 실패')
+      // 신규: 반쯤 만들어진 draft 는 지운다 (재시도 시 중복 캠페인 방지). 위저드 입력값은 그대로 남아 있음.
+      if (!completed && createdCampaignId) {
+        const { error: cleanupErr } = await supabase
+          .from('campaigns')
+          .delete()
+          .eq('id', createdCampaignId)
+          .eq('status', 'draft')
+        if (cleanupErr) console.warn('[wizard] partial campaign cleanup failed:', cleanupErr)
+        qc.invalidateQueries({ queryKey: ['campaigns'] })
+      }
+      const suffix =
+        !completed && heldAsDraft
+          ? ' — 캠페인은 초안 상태로 보류되었습니다 (예약 해제). 다시 저장해주세요.'
+          : ''
+      toast.error(`${baseMsg}${suffix}`, { duration: suffix ? 10000 : undefined })
+      if (heldAsDraft) qc.invalidateQueries({ queryKey: ['campaigns'] })
     } finally {
       setSubmitting(false)
     }
@@ -1591,6 +1848,26 @@ export default function CampaignWizardPage() {
             )}
             {!reuseLoading && (
               <>
+                {/* 편집 모드 — 부분 발송 / 개인화 override 안내 */}
+                {isEditMode && (lockedRecipientCount > 0 || overrideRecipientCount > 0) && (
+                  <Card className="border-amber-300 bg-amber-50/50 dark:border-amber-800/60 dark:bg-amber-950/20">
+                    <CardContent className="p-3 space-y-1 text-xs text-amber-900 dark:text-amber-200">
+                      {lockedRecipientCount > 0 && (
+                        <p>
+                          이미 발송 처리된(성공·실패·반송 등) 수신자 {lockedRecipientCount.toLocaleString()}명은 그대로 유지되며
+                          다시 발송되지 않습니다. 수신자 추가·제외는 아직 발송되지 않은 대상에만 적용됩니다.
+                        </p>
+                      )}
+                      {overrideRecipientCount > 0 && (
+                        <p>
+                          개인화(AI) 제목/본문이 지정된 수신자 {overrideRecipientCount.toLocaleString()}명은 아래 제목·본문 대신
+                          개인화 내용이 그대로 발송됩니다.
+                        </p>
+                      )}
+                    </CardContent>
+                  </Card>
+                )}
+
                 {/* 수신자 */}
                 <Step1
                   name={name}
@@ -1667,13 +1944,14 @@ export default function CampaignWizardPage() {
                       <Input
                         type="number"
                         min={0}
-                        max={60}
+                        max={MAX_SEND_DELAY_SECONDS}
                         value={delaySeconds}
-                        onChange={(e) => setDelaySeconds(Math.max(0, Number(e.target.value) || 0))}
+                        onChange={(e) => setDelaySeconds(clampDelaySeconds(Number(e.target.value)))}
                         className="max-w-[120px]"
                       />
                       <p className="text-xs text-muted-foreground">
-                        Gmail 일일 한도 초과를 방지하기 위해 메일 간 지연 시간을 설정합니다.
+                        메일 사이 대기 시간 (0–{MAX_SEND_DELAY_SECONDS}초). 간격을 늘려도 Gmail 일일 한도는
+                        줄지 않으며, 너무 길면 서버 발송이 크게 느려집니다. 보통 3–10초면 충분합니다.
                       </p>
                     </div>
                   )}
@@ -1691,6 +1969,27 @@ export default function CampaignWizardPage() {
                       checked={enableTracking}
                       onCheckedChange={setEnableTracking}
                       disabled={sendMode === 'bulk'}
+                    />
+                  </div>
+
+                  {/* 수신거부 링크 토글 (079) */}
+                  <div className="flex items-start justify-between gap-3 rounded-lg border p-3">
+                    <div className="min-w-0">
+                      <Label htmlFor="include-unsubscribe-link" className="text-sm">
+                        수신거부 링크 포함 (권장 · 광고성 메일은 법적 의무)
+                      </Label>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        {sendMode === 'bulk'
+                          ? "메일 하단에 '수신거부'라고 회신해 달라는 안내를 붙입니다. (한 번에 보내기는 수신자별 링크를 넣을 수 없습니다.)"
+                          : '메일 하단에 수신자별 수신거부 링크를 붙이고, Gmail 등의 원클릭 수신거부 헤더를 추가합니다.'}
+                        {!includeUnsubscribeLink &&
+                          ' 끄면 수신거부 방법이 본문에 표시되지 않습니다 — 광고성 메일에는 사용하지 마세요.'}
+                      </p>
+                    </div>
+                    <Switch
+                      id="include-unsubscribe-link"
+                      checked={includeUnsubscribeLink}
+                      onCheckedChange={setIncludeUnsubscribeLink}
                     />
                   </div>
 
@@ -1764,7 +2063,7 @@ export default function CampaignWizardPage() {
                       </Badge>
                     )}
                     {attachments.length > 0 && (
-                      <Badge variant={attachments.reduce((s, a) => s + (a.file_size ?? 0), 0) > GMAIL_ATTACHMENT_SAFE_THRESHOLD ? 'default' : 'secondary'}>
+                      <Badge variant={attachments.reduce((s, a) => s + (a.file_size ?? 0), 0) > ATTACHMENT_SAFE_THRESHOLD ? 'default' : 'secondary'}>
                         <Paperclip className="w-3 h-3 mr-1" />
                         첨부 {attachments.length}개
                       </Badge>
@@ -1802,6 +2101,28 @@ export default function CampaignWizardPage() {
                         : `수신자 ${previewContacts.length}명 전원이 To에 공개되어 1회 발송됩니다.`}
                     </div>
                   )}
+                  {/* 빈 개인화 값 — 실제 발송에서는 빈칸으로 나감 */}
+                  {sendMode === 'individual' && blankFieldStats.length > 0 && (
+                    <div className="text-xs rounded p-2 bg-amber-50/70 dark:bg-amber-950/20 text-amber-800 dark:text-amber-300 space-y-0.5">
+                      {blankFieldStats.map((b) => (
+                        <div key={b.key}>
+                          ⚠️ {`{{${b.key}}}`} 값이 비어 있는 수신자 {b.count}명 — 해당 자리는 빈칸으로 발송됩니다
+                          {' '}(예: {b.samples.join(', ')}{b.count > b.samples.length ? ' 등' : ''})
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {/* 개별 발송 + CC/BCC — 수신자마다 1통씩 복제됨 */}
+                  {sendMode === 'individual' &&
+                    previewContacts.length > 1 &&
+                    resolvedCcEmails.length + resolvedBccEmails.length > 0 && (
+                      <div className="text-xs rounded p-2 bg-amber-50/70 dark:bg-amber-950/20 text-amber-800 dark:text-amber-300">
+                        ⚠️ 참조/숨은참조 {resolvedCcEmails.length + resolvedBccEmails.length}개 주소가 수신자{' '}
+                        {previewContacts.length}명의 메일마다 포함되어, 주소마다 {previewContacts.length}통씩 받습니다
+                        (총 {(previewContacts.length * (1 + resolvedCcEmails.length + resolvedBccEmails.length)).toLocaleString()}명분이
+                        Gmail 일일 한도에 집계).
+                      </div>
+                    )}
                   {/* CC/BCC compact */}
                   {(resolvedCcEmails.length > 0 || resolvedBccEmails.length > 0) && (
                     <div className="text-xs space-y-0.5 pt-1 border-t">
@@ -1872,7 +2193,7 @@ export default function CampaignWizardPage() {
                         <div className="text-sm font-medium leading-snug">{previewRendered.subject || '(제목 없음)'}</div>
                         {previewRendered.usedSamples && Object.values(previewRendered.usedSamples).some(Boolean) && (
                           <div className="text-[11px] text-amber-700 dark:text-amber-400">
-                            💡 샘플 값 적용: {[
+                            💡 미리보기 전용 샘플 값 (실제 발송은 빈칸): {[
                               previewRendered.usedSamples.name && '이름=홍길동',
                               previewRendered.usedSamples.company && '회사=주식회사 예시',
                               previewRendered.usedSamples.department && '부서=마케팅팀',
@@ -1933,6 +2254,13 @@ export default function CampaignWizardPage() {
           disabled={
             submitting ||
             reuseLoading ||
+            // 수신자 / CC·BCC 조회가 끝나지 않았거나 실패했으면 낡은 목록이 저장되므로 금지
+            loadingPreview ||
+            loadingCcBasket ||
+            loadingBccBasket ||
+            previewError ||
+            ccBasketError ||
+            bccBasketError ||
             previewContacts.length === 0 ||
             !subject.trim() ||
             blocks.length === 0 ||
@@ -2210,12 +2538,18 @@ function Step2({
           onChange={(e) => setSubject(e.target.value)}
           placeholder="안녕하세요 {{name}}님"
         />
+        <p className="text-xs text-muted-foreground">
+          광고성 정보라면 제목 앞에 (광고)를 붙여야 합니다 (정보통신망법 제50조).
+        </p>
       </div>
 
       <div className="space-y-1.5">
         <Label>참조 (Cc)</Label>
         <p className="text-xs text-muted-foreground">
-          이메일을 직접 입력하거나, 그룹 / 개별 연락처를 담을 수 있습니다. 모든 수신자에게 동일하게 참조로 포함됩니다.
+          이메일을 직접 입력하거나, 그룹 / 개별 연락처를 담을 수 있습니다.
+          {sendMode === 'individual'
+            ? ' 개별 발송에서는 수신자마다 보내는 각 메일에 참조로 들어갑니다 — 참조 주소는 수신자 수만큼 메일을 받고, 모든 수신자가 참조 주소를 보게 됩니다.'
+            : ' 한 번에 보내기에서는 1통의 메일에 참조로 포함됩니다.'}
         </p>
         <CcBccPicker
           kind="cc"
@@ -2229,6 +2563,7 @@ function Step2({
           resolvedEmails={resolvedCcEmails}
           loading={loadingCcBasket}
           recipientEmails={recipientEmails}
+          sendMode={sendMode}
         />
       </div>
 
@@ -2236,6 +2571,7 @@ function Step2({
         <Label>숨은참조 (Bcc)</Label>
         <p className="text-xs text-muted-foreground">
           이메일을 직접 입력하거나, 그룹 / 개별 연락처를 담을 수 있습니다. 다른 수신자에겐 보이지 않습니다.
+          {sendMode === 'individual' && ' 개별 발송에서는 수신자마다 보내는 각 메일에 포함되어, 숨은참조 주소는 수신자 수만큼 메일을 받습니다.'}
         </p>
         <CcBccPicker
           kind="bcc"
@@ -2249,6 +2585,7 @@ function Step2({
           resolvedEmails={resolvedBccEmails}
           loading={loadingBccBasket}
           recipientEmails={recipientEmails}
+          sendMode={sendMode}
         />
       </div>
 

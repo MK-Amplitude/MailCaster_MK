@@ -70,10 +70,12 @@ interface Props {
   loading?: boolean
   /**
    * 같은 이메일이 이미 To(받는사람)에 들어있을 때 충돌 경고 표시용.
-   * Gmail 은 같은 주소가 To + Cc 양쪽에 있으면 내부에서 dedupe 하지만,
-   * 사용자에게 "내가 뭘 선택했는지" 를 명확히 알리는 게 좋다.
+   * 개별 발송은 수신자마다 별도 메일이라 Gmail 이 메일 사이의 중복을 없애지 않는다 —
+   * 겹친 주소는 본인 메일 외에 다른 모든 수신자의 메일도 참조로 받는다.
    */
   recipientEmails?: string[]
+  /** 발송 방식 — 경고 문구가 달라진다 (기본 individual) */
+  sendMode?: 'individual' | 'bulk'
 }
 
 export function CcBccPicker({
@@ -88,6 +90,7 @@ export function CcBccPicker({
   resolvedEmails,
   loading,
   recipientEmails,
+  sendMode = 'individual',
 }: Props) {
   const recipSet = useMemo(
     () => new Set((recipientEmails ?? []).map((e) => e.trim().toLowerCase())),
@@ -163,6 +166,8 @@ export function CcBccPicker({
           resolvedEmails={resolvedEmails}
           loading={loading}
           overlapWithRecipients={overlapWithRecipients}
+          sendMode={sendMode}
+          recipientCount={recipientEmails?.length ?? 0}
         />
       )}
     </div>
@@ -443,6 +448,8 @@ function SelectedSummary({
   resolvedEmails,
   loading,
   overlapWithRecipients,
+  sendMode,
+  recipientCount,
 }: {
   kind: 'cc' | 'bcc'
   emails: string[]
@@ -455,6 +462,8 @@ function SelectedSummary({
   resolvedEmails: string[]
   loading?: boolean
   overlapWithRecipients: string[]
+  sendMode: 'individual' | 'bulk'
+  recipientCount: number
 }) {
   const selectedGroups = useMemo(
     () => groups.filter((g) => groupIds.includes(g.id)),
@@ -539,7 +548,10 @@ function SelectedSummary({
 
         {overlapWithRecipients.length > 0 && (
           <p className="text-[11px] text-amber-700 dark:text-amber-300 bg-amber-50/60 dark:bg-amber-950/20 rounded p-1.5">
-            ⚠️ {kind === 'cc' ? 'Cc' : 'Bcc'} 주소 중 {overlapWithRecipients.length}개가 받는사람(To)과 겹칩니다. Gmail 에서 자동으로 중복이 제거되지만, 의도한 구성인지 확인해주세요.
+            ⚠️ {kind === 'cc' ? 'Cc' : 'Bcc'} 주소 중 {overlapWithRecipients.length}개가 받는사람(To)과 겹칩니다.{' '}
+            {sendMode === 'individual'
+              ? `개별 발송은 수신자마다 별도 메일이라 중복이 제거되지 않습니다 — 이 주소는 본인 메일 외에 다른 수신자 ${Math.max(0, recipientCount - 1)}명의 메일도 ${kind === 'cc' ? '참조' : '숨은참조'}로 받습니다. 의도한 구성이 아니면 제거해주세요.`
+              : '한 번에 보내기는 1통이라 같은 주소는 한 번만 받지만, 의도한 구성인지 확인해주세요.'}
           </p>
         )}
       </CardContent>

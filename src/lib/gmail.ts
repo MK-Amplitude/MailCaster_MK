@@ -68,6 +68,11 @@ interface SendMailInput {
   threadId?: string
   /** 답장 대상 원본 메시지의 Message-ID (꺽쇠 포함/미포함 모두 허용). */
   inReplyTo?: string
+  /**
+   * 079 — RFC 8058 List-Unsubscribe 헤더 URL (https 만). 지정 시
+   * List-Unsubscribe + List-Unsubscribe-Post(One-Click) 헤더 추가. 개별 캠페인 발송 전용.
+   */
+  listUnsubscribeUrl?: string | null
 }
 
 /**
@@ -110,10 +115,11 @@ function encodeAddressHeader(addr: string): string {
   // RFC 5322 — 따옴표 있는 경우 벗기고 인코딩 (Gmail UI 가 따옴표 두는 경우 존재).
   const naked = name.replace(/^"(.*)"$/, '$1')
   if (/^[\x20-\x7E]+$/.test(naked)) {
-    // ASCII-only 이고 특수문자가 quoting 필요 없는 경우 그대로.
-    if (!/[<>"@,;:\\]/.test(naked)) return `${naked} <${email}>`
-    // ASCII 인데 , ; : @ 등 특수문자 포함 — quoted-string 필수.
-    // (예: "Doe, John" — 안 감싸면 콤마가 주소 구분자로 해석돼 Gmail 400)
+    // ASCII-only 이고 RFC 5322 specials 가 없는 경우 그대로.
+    if (!/[()<>[\]:;@\\,."]/.test(naked)) return `${naked} <${email}>`
+    // ASCII 인데 specials 포함 — quoted-string 필수.
+    // (예: "Doe, John" — 안 감싸면 콤마가 주소 구분자로 해석돼 Gmail 400,
+    //  "[VIP] John" 은 Invalid To header, "John (Sales)" 는 괄호가 comment 로 먹혀 이름이 잘림)
     // encodeHeader 는 ASCII 를 그대로 반환하므로 여기서 직접 quoting.
     return `"${naked.replace(/([\\"])/g, '\\$1')}" <${email}>`
   }
@@ -279,7 +285,31 @@ function joinAddressList(list: string[] | undefined): string | undefined {
   const cleaned = list
     .map((a) => encodeAddressHeader(stripCRLF(a).trim()))
     .filter(Boolean)
-  return cleaned.length > 0 ? cleaned.join(', ') : undefined
+  return cleaned.length > 0 ? foldAddressList(cleaned) : undefined
+}
+
+/**
+ * 주소 목록 헤더 folding (RFC 5322 §2.1.1 — 한 줄 998자 한도, 권장 78자).
+ * 콤마 뒤에서 CRLF + SP 로 줄을 접는다 (send-scheduled-campaigns 의 foldAddressList 와 동일 규칙).
+ * 각 주소는 이미 stripCRLF 를 거쳤으므로 결과의 CRLF 는 여기서 넣은 folding 뿐이다.
+ * bulk 발송의 To(최대 500명 ≈ 15k자)가 한 줄로 나가 Gmail/수신 MTA 가 거부·절단하던 문제 방지.
+ */
+function foldAddressList(items: string[]): string {
+  let out = ''
+  let lineLen = 4 // "To: " / "Cc: " 접두
+  items.forEach((item, idx) => {
+    if (idx === 0) {
+      out = item
+      lineLen += item.length
+    } else if (lineLen + 2 + item.length > 76) {
+      out += `,\r\n ${item}`
+      lineLen = 1 + item.length
+    } else {
+      out += `, ${item}`
+      lineLen += 2 + item.length
+    }
+  })
+  return out
 }
 
 // "Display Name <a@b>" 또는 raw 주소에서 이메일 부분만 추출.
@@ -299,13 +329,17 @@ function assertValidEmail(addr: string, field: string): void {
 }
 
 async function buildMime(input: Omit<SendMailInput, 'accessToken'>): Promise<string> {
-  const { from, to, toName, subject, html, replyTo, attachments, cc, bcc, inlineImages, inReplyTo } = input
+  const { from, to, toName, subject, html, replyTo, attachments, cc, bcc, inReplyTo, listUnsubscribeUrl } = input
+  // 최종 html 이 참조하지 않는 cid 이미지는 제외 — 개인화 override 본문 등에서
+  // 미참조 inline 파트가 수신 클라이언트에 정체불명 첨부(inline.png)로 보이는 문제 방지.
+  const inlineImages = input.inlineImages?.filter((img) => html.includes(`cid:${img.cid}`))
   // 모든 헤더 입력값은 CR/LF 인젝션 방지를 위해 선제 sanitize.
   const cleanFrom = encodeAddressHeader(stripCRLF(from))
   const cleanTo = stripCRLF(to)
   // 이메일 주소 형식 검증 — 잘못된 주소가 Gmail API 에 전달되기 전에 차단.
   // To 는 bulk 발송에서 "a@x.com, b@y.com" 콤마 목록이 올 수 있으므로 분리 후 개별 검증.
-  for (const part of cleanTo.split(',')) assertValidEmail(part, 'To')
+  const toParts = cleanTo.split(',').map((p) => p.trim())
+  for (const part of toParts) assertValidEmail(part, 'To')
   if (cc) for (const c of cc) assertValidEmail(stripCRLF(c), 'Cc')
   if (bcc) for (const b of bcc) assertValidEmail(stripCRLF(b), 'Bcc')
   const cleanReplyTo = replyTo ? encodeAddressHeader(stripCRLF(replyTo)) : undefined
@@ -313,9 +347,13 @@ async function buildMime(input: Omit<SendMailInput, 'accessToken'>): Promise<str
   const bccLine = joinAddressList(bcc)
   // To 표시 이름도 encodeAddressHeader 경유 — ASCII 특수문자(콤마 등) quoted-string 처리.
   // (encodeHeader 직접 호출은 ASCII 를 그대로 통과시켜 "Doe, John" 이 주소 2개로 갈라졌음)
-  const toHeader = toName
-    ? encodeAddressHeader(`${stripCRLF(toName).replace(/[<>]/g, '')} <${cleanTo}>`)
-    : cleanTo
+  // 콤마 목록(bulk)은 주소 단위로 folding — 998자 줄 한도 초과 방지.
+  const toHeader =
+    toParts.length > 1
+      ? foldAddressList(toParts.map((p) => encodeAddressHeader(p)))
+      : toName
+        ? encodeAddressHeader(`${stripCRLF(toName).replace(/[<>]/g, '')} <${cleanTo.trim()}>`)
+        : cleanTo.trim()
   const bodyBase64 = wrapBase64(btoa(unescape(encodeURIComponent(html))))
 
   const baseHeaders: string[] = [`From: ${cleanFrom}`, `To: ${toHeader}`]
@@ -330,6 +368,11 @@ async function buildMime(input: Omit<SendMailInput, 'accessToken'>): Promise<str
     const wrapped = inReplyTo.trim().startsWith('<') ? inReplyTo.trim() : `<${inReplyTo.trim()}>`
     baseHeaders.push(`In-Reply-To: ${wrapped}`)
     baseHeaders.push(`References: ${wrapped}`)
+  }
+  // RFC 8058 — Gmail/Yahoo 대량 발신자 요건. https URL 만 (꺾쇠/공백/CRLF 제거 후)
+  const cleanUnsub = listUnsubscribeUrl ? stripCRLF(listUnsubscribeUrl).replace(/[<>\s]/g, '') : ''
+  if (/^https:\/\//i.test(cleanUnsub)) {
+    baseHeaders.push(`List-Unsubscribe: <${cleanUnsub}>`, 'List-Unsubscribe-Post: List-Unsubscribe=One-Click')
   }
   baseHeaders.push(`Subject: ${encodeHeader(subject)}`, 'MIME-Version: 1.0')
 
@@ -440,6 +483,138 @@ export interface GmailSendResult {
   threadId: string
 }
 
+/**
+ * sendGmail 이 던지는 에러. status 외에 Google 에러 reason 을 보존해 호출자가
+ * 일일 한도 / 속도 제한 / 권한 오류를 구분할 수 있게 한다.
+ */
+export type GmailSendError = Error & {
+  status?: number
+  /** error.errors[0].reason (dailyLimitExceeded / rateLimitExceeded / insufficientPermissions ...) */
+  reason?: string
+  /** error.status (RESOURCE_EXHAUSTED / PERMISSION_DENIED ...) */
+  googleStatus?: string
+  /** Retry-After 헤더 또는 "Retry after <ISO>" 메시지에서 계산한 대기 시간 */
+  retryAfterMs?: number
+  /**
+   * 클라이언트 측 타임아웃 abort / 네트워크 단절 — 요청이 Gmail 에 도달해 이미 발송됐을 수
+   * 있으므로 절대 자동 재시도하면 안 된다 (중복 발송).
+   */
+  timedOut?: boolean
+  networkError?: boolean
+}
+
+/**
+ * - auth: 401 (토큰 만료/폐기 — 호출자가 1회 강제 refresh 후에도 401 이면 재로그인 필요)
+ * - account: 계정 단위 영구 거부 (403 insufficientPermissions/domainPolicy/forbidden,
+ *   400 failedPrecondition 'Mail service not enabled' 등) — 다음 수신자도 똑같이 실패하므로
+ *   발송 루프 전체를 멈춰야 한다 (수신자별 failed 박제 금지).
+ * - timeout/network: 결과 불명 — 재시도 금지 (중복 발송).
+ */
+/**
+ * 결과 불명 발송(타임아웃/연결 끊김 — 요청이 Gmail 에 도달했을 수 있음)의 수신자 error_message.
+ * send-scheduled-campaigns 와 동일 문구. 이런 수신자는 재시도·pending 복귀 금지 (중복 발송).
+ */
+export const AMBIGUOUS_SEND_MESSAGE =
+  '전송 결과 불확실 — Gmail 보낸편지함 확인 후 필요 시 개별 재발송'
+
+/** 요청이 Gmail 에 도달했는지 알 수 없는 오류 (타임아웃 abort / 네트워크 단절). */
+export function isAmbiguousSendError(e: unknown): boolean {
+  const err = e as GmailSendError
+  return !!(err?.timedOut || err?.networkError)
+}
+
+export type GmailErrorKind =
+  | 'daily_quota'
+  | 'rate_limit'
+  | 'auth'
+  | 'account'
+  | 'timeout'
+  | 'network'
+  | 'other'
+
+const QUOTA_REASONS = new Set(['dailyLimitExceeded', 'quotaExceeded', 'dailyLimitExceededUnreg'])
+const RATE_REASONS = new Set(['rateLimitExceeded', 'userRateLimitExceeded'])
+const ACCOUNT_403_REASONS = new Set(['insufficientPermissions', 'domainPolicy', 'forbidden'])
+// "Retry after" 가 이보다 길면 일시적 속도 제한이 아니라 발송 한도 소진으로 본다.
+const QUOTA_RETRY_AFTER_MS = 10 * 60_000
+
+function isAccountWideFailure(err: GmailSendError): boolean {
+  const status = err.status
+  const reason = err.reason ?? ''
+  const msg = (err.message ?? '').toLowerCase()
+  if (status === 400) {
+    return (
+      reason === 'failedPrecondition' ||
+      err.googleStatus === 'FAILED_PRECONDITION' ||
+      msg.includes('mail service not enabled') ||
+      msg.includes('precondition check failed')
+    )
+  }
+  if (status === 403) {
+    return (
+      ACCOUNT_403_REASONS.has(reason) ||
+      err.googleStatus === 'PERMISSION_DENIED' ||
+      msg.includes('insufficient permission') ||
+      msg.includes('domain policy') ||
+      msg.includes('delegation denied')
+    )
+  }
+  return false
+}
+
+/** Gmail 발송 에러 분류 — 발송 루프의 재시도/중단 판단용. */
+export function classifyGmailError(e: unknown): GmailErrorKind {
+  const err = e as GmailSendError
+  if (err?.timedOut) return 'timeout'
+  if (err?.networkError) return 'network'
+  const status = err?.status
+  if (status === 401) return 'auth'
+  if (status === 400) return isAccountWideFailure(err) ? 'account' : 'other'
+  if (status !== 429 && status !== 403) return 'other'
+  const reason = err.reason ?? ''
+  const msg = (err.message ?? '').toLowerCase()
+  if (
+    QUOTA_REASONS.has(reason) ||
+    msg.includes('daily') ||
+    msg.includes('sending limit') ||
+    (err.retryAfterMs ?? 0) > QUOTA_RETRY_AFTER_MS
+  ) {
+    return 'daily_quota'
+  }
+  if (status === 429 || RATE_REASONS.has(reason) || err.googleStatus === 'RESOURCE_EXHAUSTED') {
+    return 'rate_limit'
+  }
+  if (isAccountWideFailure(err)) return 'account'
+  return 'other'
+}
+
+function parseRetryAfter(headerValue: string | null, message: string): number | undefined {
+  if (headerValue) {
+    const secs = Number(headerValue)
+    if (Number.isFinite(secs)) return Math.max(0, secs * 1000)
+    const at = Date.parse(headerValue)
+    if (!Number.isNaN(at)) return Math.max(0, at - Date.now())
+  }
+  // Gmail 발송 한도: "User-rate limit exceeded.  Retry after 2026-10-06T01:23:45.678Z"
+  const m = message.match(/retry after (\d{4}-\d{2}-\d{2}T[\d:.]+Z)/i)
+  if (m) {
+    const at = Date.parse(m[1])
+    if (!Number.isNaN(at)) return Math.max(0, at - Date.now())
+  }
+  return undefined
+}
+
+// JSON {raw} 메타데이터 엔드포인트는 소형 메시지 전용 — 요청 본문이 수 MB 를 넘으면 413.
+// 그 이상은 /upload 엔드포인트(최대 35MB, base64 이중 인코딩 없음)로 보낸다.
+const JSON_ENDPOINT_MAX_RAW_CHARS = 4.5 * 1024 * 1024
+const SEND_JSON_URL = 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send'
+const SEND_UPLOAD_URL = 'https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/send'
+
+// 업로드 크기에 비례한 타임아웃 — 큰 첨부를 느린 업링크로 올릴 때 업로드 도중 abort 되지 않게.
+function sendTimeoutMs(bodyBytes: number): number {
+  return Math.min(180_000, 30_000 + Math.ceil((bodyBytes / (1024 * 1024)) * 15_000))
+}
+
 export async function sendGmail(input: SendMailInput): Promise<GmailSendResult> {
   // threadId 는 Gmail 내부 hex 문자열 — 다른 형식은 API 오류를 일으키거나
   // 로그에 사용자 입력이 그대로 남을 수 있어 화이트리스트 검증.
@@ -447,51 +622,119 @@ export async function sendGmail(input: SendMailInput): Promise<GmailSendResult> 
     throw new Error(`Invalid threadId format: ${input.threadId.slice(0, 40)}`)
   }
   const mime = await buildMime(input)
-  const raw = b64url(mime)
+  const mimeBlob = new Blob([mime], { type: 'message/rfc822' })
+  // base64url 결과 길이 ≈ 바이트 × 4/3
+  const estRawChars = Math.ceil(mimeBlob.size / 3) * 4
 
-  // 명시적 25초 타임아웃 — fetch 의 default 는 무한대. Gmail 이 hang 하면
-  // 사용자가 발송 버튼 누른 채 영원히 기다리게 됨. 25초 후 abort + 재시도 가능.
+  let url: string
+  let contentType: string
+  let body: BodyInit
+  let bodyBytes: number
+  if (estRawChars < JSON_ENDPOINT_MAX_RAW_CHARS) {
+    const raw = b64url(mime)
+    url = SEND_JSON_URL
+    contentType = 'application/json'
+    body = JSON.stringify(input.threadId ? { raw, threadId: input.threadId } : { raw })
+    bodyBytes = raw.length
+  } else if (!input.threadId) {
+    url = `${SEND_UPLOAD_URL}?uploadType=media`
+    contentType = 'message/rfc822'
+    body = mimeBlob
+    bodyBytes = mimeBlob.size
+  } else {
+    // threadId 메타데이터가 필요하면 multipart 업로드 (JSON 메타 파트 + message/rfc822 파트).
+    const boundary = `MCU_${crypto.randomUUID().replace(/-/g, '')}`
+    const multipart = new Blob([
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n`,
+      JSON.stringify({ threadId: input.threadId }),
+      `\r\n--${boundary}\r\nContent-Type: message/rfc822\r\n\r\n`,
+      mimeBlob,
+      `\r\n--${boundary}--`,
+    ])
+    url = `${SEND_UPLOAD_URL}?uploadType=multipart`
+    contentType = `multipart/related; boundary=${boundary}`
+    body = multipart
+    bodyBytes = multipart.size
+  }
+
+  // fetch 의 default 타임아웃은 무한대 — Gmail 이 hang 하면 발송 버튼이 영원히 대기.
+  // 타임아웃은 "결과 불명" 이므로 호출자는 재시도하지 말아야 한다 (timedOut 플래그).
+  const timeoutMs = sendTimeoutMs(bodyBytes)
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 25_000)
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
   let res: Response
   try {
-    res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+    res = await fetch(url, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${input.accessToken}`,
-        'Content-Type': 'application/json',
+        'Content-Type': contentType,
       },
-      body: JSON.stringify(
-        input.threadId ? { raw, threadId: input.threadId } : { raw },
-      ),
+      body,
       signal: controller.signal,
     })
   } catch (e) {
     if ((e as Error).name === 'AbortError') {
-      const err = new Error('Gmail API 호출 타임아웃 (25초 초과)') as Error & { status?: number }
+      const err = new Error(
+        `Gmail API 호출 타임아웃 (${Math.round(timeoutMs / 1000)}초 초과) — 발송 여부 불확실`,
+      ) as GmailSendError
       err.status = 504
+      err.timedOut = true
       throw err
     }
-    throw e
+    // fetch 거부 = 응답을 받지 못함 (오프라인 / 연결 끊김 / 리셋 등) — 업로드 후 끊겼으면
+    // 이미 발송됐을 수도 있으므로 전부 결과 불명(networkError)으로 표시한다. 재시도 금지.
+    const err = new Error(
+      `Gmail API 네트워크 오류: ${e instanceof Error ? e.message : String(e)}`,
+    ) as GmailSendError
+    err.networkError = true
+    throw err
   } finally {
     clearTimeout(timer)
   }
 
   if (!res.ok) {
-    const body = await res.text()
+    const text = await res.text()
     let message = `Gmail API ${res.status}`
+    let reason: string | undefined
+    let googleStatus: string | undefined
     try {
-      const j = JSON.parse(body)
+      const j = JSON.parse(text)
       message = j?.error?.message || message
+      reason =
+        j?.error?.errors?.[0]?.reason ??
+        (Array.isArray(j?.error?.details)
+          ? j.error.details.find((d: { reason?: string }) => d?.reason)?.reason
+          : undefined)
+      googleStatus = j?.error?.status
     } catch {
-      if (body) message = body
+      if (text) message = text
     }
-    const err = new Error(message) as Error & { status?: number }
+    const err = new Error(message) as GmailSendError
     err.status = res.status
+    err.reason = reason
+    err.googleStatus = googleStatus
+    err.retryAfterMs = parseRetryAfter(res.headers.get('Retry-After'), message)
     throw err
   }
 
-  const json = (await res.json()) as GmailSendResult
+  // 2xx = Gmail 이 이미 발송함. 응답 본문을 못 읽으면 id 를 모를 뿐 발송은 된 것이므로
+  // 결과 불명으로 표시해 호출자가 재시도/pending 복귀하지 않게 한다.
+  let json: GmailSendResult
+  try {
+    json = (await res.json()) as GmailSendResult
+  } catch (e) {
+    const err = new Error(
+      `Gmail API 응답 읽기 실패 (발송됐을 수 있음): ${e instanceof Error ? e.message : String(e)}`,
+    ) as GmailSendError
+    err.networkError = true
+    throw err
+  }
+  if (!json?.id) {
+    const err = new Error('Gmail API 응답에 message id 가 없습니다 (발송됐을 수 있음)') as GmailSendError
+    err.networkError = true
+    throw err
+  }
   return json
 }
 

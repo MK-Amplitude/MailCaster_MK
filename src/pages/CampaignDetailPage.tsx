@@ -15,7 +15,11 @@ import {
   useEnqueueServerSend,
   useResetStuckCampaign,
   useSendPreflight,
+  isSendLeaseStale,
+  restoreAfterFailedResume,
 } from '@/hooks/useCampaigns'
+import { useAuth } from '@/hooks/useAuth'
+import { SendConfirmDialog } from '@/components/campaigns/SendConfirmDialog'
 import { useSendCampaign } from '@/hooks/useSendCampaign'
 import { ThreadComposeDialog } from '@/components/campaigns/ThreadComposeDialog'
 import { ThreadMessagesSection } from '@/components/campaigns/ThreadMessagesSection'
@@ -33,9 +37,9 @@ import { ContactDetailSheet } from '@/components/contacts/ContactDetailSheet'
 import { ContactFormDialog } from '@/components/contacts/ContactFormDialog'
 import type { ContactWithGroups } from '@/types/contact'
 import { formatBytes } from '@/lib/utils'
-import { renderTemplate, renderTemplateHtml, bodyAlreadyContainsSignature } from '@/lib/mailMerge'
+import { renderTemplate, renderTemplateHtml, bodyAlreadyContainsSignature, extractVariables } from '@/lib/mailMerge'
 import { useQueryClient } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import {
@@ -103,6 +107,7 @@ export default function CampaignDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const qc = useQueryClient()
+  const { user } = useAuth()
   const { data: campaign, isLoading } = useCampaign(id)
   const { data: recipients = [] } = useCampaignRecipients(id, campaign?.status)
   const { data: blocks = [] } = useCampaignBlocks(id)
@@ -131,34 +136,31 @@ export default function CampaignDetailPage() {
   const previewSubject = useMemo(() => {
     // 발송 경로와 동일하게 수신자별 subject_override 를 우선한다 —
     // AI 개인화 캠페인은 진실이 override 에 있고 campaign.subject 는 비어있을 수 있음.
+    // override 는 두 발송 경로 모두 변수 치환 없이 그대로 보내므로 미리보기도 그대로 보여준다.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const override = (previewRecipient as any)?.subject_override as string | null | undefined
-    const subj = override?.trim() ? override : (campaign?.subject ?? '')
+    if (override?.trim()) return override
+    const subj = campaign?.subject ?? ''
     if (!previewRecipient || !subj) return subj
-    return renderTemplate(
-      subj,
-      (previewRecipient.variables ?? {}) as Record<string, string | null>,
-    )
+    return renderTemplate(subj, sendVariables(previewRecipient))
   }, [campaign?.subject, previewRecipient])
 
   const previewBodyHtml = useMemo(() => {
-    // 발송 경로 (useSendCampaign) 와 동일 순서로 합성 — 미리보기/실제 불일치 방지.
-    //   ⓪ 수신자별 body_html_override 우선 (AI 개인화 캠페인)
-    //   ① 본문 + (이미 포함 안 됐으면) 시그니처 append  ② 그 후 전체 변수 치환
+    // 발송 경로 (useSendCampaign / send-scheduled-campaigns) 와 동일 규칙 — 미리보기/실제 불일치 방지.
+    //   ⓪ 수신자별 body_html_override 가 있으면 그대로 (발송 경로는 서명 append·변수 치환 없이 보냄)
+    //   ① 없으면 공통 본문 + (이미 포함 안 됐으면) 시그니처 append  ② 그 후 전체 변수 치환
     // 치환은 발송 경로와 동일하게 renderTemplateHtml(HTML 이스케이프) 사용 —
     // 변수 값에 <, > 가 있으면 미리보기와 실발송이 달라지던 문제 방지.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const override = (previewRecipient as any)?.body_html_override as string | null | undefined
-    let finalBody = override?.trim() ? override : (campaign?.body_html ?? '')
+    if (override?.trim()) return override
+    let finalBody = campaign?.body_html ?? ''
     const sigHtml = signature?.html ?? ''
-    if (sigHtml && !bodyAlreadyContainsSignature(finalBody, sigHtml)) {
-      finalBody = finalBody ? `${finalBody}<br/><br/>${sigHtml}` : sigHtml
+    if (sigHtml && finalBody.trim() && !bodyAlreadyContainsSignature(finalBody, sigHtml)) {
+      finalBody = `${finalBody}<br/><br/>${sigHtml}`
     }
     if (previewRecipient && finalBody) {
-      finalBody = renderTemplateHtml(
-        finalBody,
-        (previewRecipient.variables ?? {}) as Record<string, string | null>,
-      )
+      finalBody = renderTemplateHtml(finalBody, sendVariables(previewRecipient))
     }
     return finalBody
   }, [campaign?.body_html, signature?.html, previewRecipient])
@@ -273,6 +275,86 @@ export default function CampaignDetailPage() {
   )
   const { data: liveTitleMap } = useContactsTitleMap(recipientContactIds)
 
+  // lease 만료 판정용 현재 시각 — 'sending' 동안만 5초마다 갱신 (캠페인 폴링 주기와 동일)
+  const [nowTick, setNowTick] = useState(() => Date.now())
+  useEffect(() => {
+    if (campaign?.status !== 'sending') return
+    setNowTick(Date.now())
+    const t = setInterval(() => setNowTick(Date.now()), 5_000)
+    return () => clearInterval(t)
+  }, [campaign?.status])
+
+  // 발송 확인 다이얼로그 경고 — Gmail 일일 한도 / CC·BCC 복제 / 빈 개인화 값
+  const sendWarnings = useMemo(() => {
+    if (!campaign) return [] as string[]
+    const out: string[] = []
+    const targets = recipients.filter(
+      (r) => (r.status === 'pending' || r.status === 'sending') && !r.gmail_message_id,
+    )
+    const n = preflight?.sendable ?? targets.length
+    const ccN = Array.isArray(campaign.cc) ? campaign.cc.length : 0
+    const bccN = Array.isArray(campaign.bcc) ? campaign.bcc.length : 0
+    const isBulk = campaign.send_mode === 'bulk'
+
+    // Gmail 은 메일마다 To+Cc+Bcc 주소 수를 일일 수신자 한도에 센다.
+    const quotaUnits = isBulk ? n + ccN + bccN : n * (1 + ccN + bccN)
+    if (quotaUnits > 1500) {
+      out.push(
+        `Gmail 일일 한도 주의: 이번 발송은 수신 주소 기준 약 ${quotaUnits.toLocaleString()}건입니다` +
+          (!isBulk && ccN + bccN > 0 ? ` (수신자 ${n.toLocaleString()}명 × (1 + 참조 ${ccN} + 숨은참조 ${bccN}))` : '') +
+          '. Gmail Workspace 는 하루 약 2,000명, 일반 Gmail 은 약 500명까지 보낼 수 있어, 한도에 걸리면 발송이 자동으로 멈췄다가 나중에 나머지를 이어서 보냅니다.',
+      )
+    }
+    if (!isBulk && n > 1 && ccN + bccN > 0) {
+      out.push(
+        `참조 ${ccN}개 / 숨은참조 ${bccN}개 주소가 수신자마다 보내는 각 메일에 포함됩니다 — 주소마다 ${n.toLocaleString()}통씩 받게 됩니다.` +
+          (ccN > 0 ? ' 참조(Cc) 주소는 모든 수신자에게 보입니다.' : ''),
+      )
+    }
+
+    // 빈 개인화 값 — 발송 경로와 같은 변수 맵으로, override 가 없는 부분만 검사
+    if (!isBulk) {
+      const subjVars = extractVariables(campaign.subject ?? '')
+      const bodyVars = extractVariables(`${campaign.body_html ?? ''}${signature?.html ?? ''}`)
+      if (subjVars.length + bodyVars.length > 0) {
+        const perKey = new Map<string, number>()
+        const samples: string[] = []
+        let blankCount = 0
+        for (const r of targets) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const ext = r as any as { subject_override?: string | null; body_html_override?: string | null }
+          const keys = new Set<string>([
+            ...(ext.subject_override?.trim() ? [] : subjVars),
+            ...(ext.body_html_override?.trim() ? [] : bodyVars),
+          ])
+          if (keys.size === 0) continue
+          const vars = sendVariables(r)
+          let blank = false
+          for (const k of keys) {
+            if (!(vars[k] ?? '').trim()) {
+              blank = true
+              perKey.set(k, (perKey.get(k) ?? 0) + 1)
+            }
+          }
+          if (blank) {
+            blankCount++
+            if (samples.length < 3) samples.push(r.email)
+          }
+        }
+        if (blankCount > 0) {
+          const detail = [...perKey.entries()]
+            .sort((a, b) => b[1] - a[1])
+            .map(([k, c]) => `{{${k}}} ${c.toLocaleString()}명`)
+            .join(', ')
+          out.push(
+            `개인화 값이 비어 있는 수신자 ${blankCount.toLocaleString()}명 (${detail}) — 해당 자리는 빈칸으로 발송됩니다. 예: ${samples.join(', ')}${blankCount > samples.length ? ' 등' : ''}`,
+          )
+        }
+      }
+    }
+    return out
+  }, [campaign, recipients, preflight?.sendable, signature?.html])
+
   if (isLoading || !campaign) {
     return (
       <div className="p-4 sm:p-6 space-y-3">
@@ -294,6 +376,17 @@ export default function CampaignDetailPage() {
   const canReuse = campaign.status !== 'draft' && campaign.status !== 'scheduled'
   // 아직 발송되지 않은 캠페인만 편집 가능
   const canEdit = campaign.status === 'draft' || campaign.status === 'scheduled'
+  // '발송 재개' 는 죽은 실행(lease 10분 경과 — C-1)일 때만 — 살아 있는 서버 실행 옆에서 재개하면 중복 발송.
+  // 서버는 run 사이(cron 2분 간격)에 lease 를 일부러 낡게 반납하고 여러 캠페인을 라운드로빈으로 처리하므로,
+  // 짧은 기준이면 정상 발송도 멈춘 것처럼 보인다. 낡은 lease 는 서버가 스스로 재개한다.
+  const leaseStale = isSendLeaseStale(campaign, nowTick)
+  // 브라우저 재개/재발송은 작성자 본인만 — 지금 로그인한 계정의 Gmail 로 나가고(useSendCampaign 이 거부),
+  // 다른 사람이 누르면 리셋만 되고 발송은 안 돼 캠페인이 draft 로 주차된다.
+  const isOwner = !!user && campaign.user_id === user.id
+  const canResume = isOwner && (campaign.status === 'failed' || leaseStale)
+  // 작성자가 아닌 사람에게는 멈춘 발송을 안내만 (서버 cron 이 자동 재개하거나, 작성자가 재개)
+  const stalledForViewer = !isOwner && leaseStale
+  const serverSendingLive = campaign.status === 'sending' && !leaseStale
 
   // ----------------------------------------------------------------
   // 예약 제어 핸들러 — 낙관적으로 업데이트 후 invalidate
@@ -306,15 +399,19 @@ export default function CampaignDetailPage() {
   const handleCancelSchedule = async () => {
     if (!id) return
     try {
+      // CAS — 아직 예약 상태일 때만. cron 이 이미 발송을 시작했으면 취소되지 않음을 알린다.
       await updateCampaign.mutateAsync({
         id,
         data: { status: 'draft', scheduled_at: null },
+        expectStatus: ['scheduled'],
+        conflictMessage: '이미 발송이 시작되어 예약을 취소할 수 없습니다. 진행 상황을 확인해주세요.',
       })
       invalidateAfterSchedule()
       setCancelScheduleOpen(false)
       toast.success('예약이 취소되어 초안으로 되돌아갔습니다.')
     } catch {
-      // onError
+      // onError 에서 토스트 (상태 충돌이면 캠페인 쿼리도 무효화됨)
+      setCancelScheduleOpen(false)
     }
   }
 
@@ -335,13 +432,17 @@ export default function CampaignDetailPage() {
         data: {
           status: 'scheduled',
           scheduled_at: new Date(rescheduleDraft).toISOString(),
+          last_error: null,
         },
+        expectStatus: ['scheduled'],
+        conflictMessage: '이미 발송이 시작되어 시각을 변경할 수 없습니다. 진행 상황을 확인해주세요.',
       })
       invalidateAfterSchedule()
       setRescheduleOpen(false)
       toast.success('발송 시각이 변경되었습니다.')
     } catch {
-      // onError
+      // onError 에서 토스트 (상태 충돌이면 캠페인 쿼리도 무효화됨)
+      setRescheduleOpen(false)
     }
   }
 
@@ -381,17 +482,58 @@ export default function CampaignDetailPage() {
           <div className="flex items-center gap-2 shrink-0">
             {/* failed 포함: 서버 발송이 리소스 한도로 실패한 캠페인(첨부 과대 등)은
                 메모리 여유가 큰 브라우저 직접 발송으로만 안전하게 재개 가능 */}
-            {(campaign.status === 'sending' || campaign.status === 'failed') && (
+            {serverSendingLive && (
+              <Badge
+                variant="secondary"
+                className="h-8 px-2.5 text-xs gap-1"
+                title="서버가 발송을 진행 중입니다. 창을 닫아도 계속되며, 진행률은 자동으로 갱신됩니다."
+              >
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                서버에서 발송 중
+              </Badge>
+            )}
+            {stalledForViewer && (
+              <Badge
+                variant="outline"
+                className="h-8 px-2.5 text-xs gap-1"
+                title="서버 발송이 10분 넘게 진행되지 않았습니다. 서버가 자동으로 이어서 보내며, 브라우저에서 직접 재개하는 것은 캠페인 작성자 본인만 할 수 있습니다."
+              >
+                <Clock className="w-3.5 h-3.5" />
+                발송 대기 중 (작성자만 재개 가능)
+              </Badge>
+            )}
+            {canResume && (
               <Button
                 size="sm"
                 variant="outline"
                 onClick={async () => {
-                  if (!id) return
-                  await resetStuck.mutateAsync({ campaignId: id })
-                  await sendCampaign.mutateAsync({ campaignId: id })
+                  if (!id || !user) return
+                  const previousStatus = campaign.status
+                  try {
+                    // 리셋 CAS 가 lease 만료·작성자를 DB 에서 다시 확인 — 그 사이 서버가 재개했으면 여기서 거부됨
+                    await resetStuck.mutateAsync({ campaignId: id })
+                  } catch {
+                    // onError 에서 토스트 — 리셋이 안 됐으므로 상태 그대로
+                    return
+                  }
+                  try {
+                    await sendCampaign.mutateAsync({ campaignId: id })
+                  } catch {
+                    // onError 에서 토스트. 발송이 한 통도 못 나간 채 실패(토큰/Drive/프리플라이트 등)하면
+                    // draft 로 남아 cron 이 다시 집지 않으므로 리셋 전 상태로 복구한다.
+                    const restored = await restoreAfterFailedResume(id, user.id, previousStatus)
+                    if (restored && previousStatus === 'sending') {
+                      toast.info('브라우저 재개에 실패해 서버 자동 재개 대기 상태로 되돌렸습니다.')
+                    }
+                    qc.invalidateQueries({ queryKey: ['campaigns'] })
+                  }
                 }}
                 disabled={resuming}
-                title="남은 수신자에게 브라우저에서 직접 발송을 재개합니다 (탭을 닫지 마세요). 서버 발송이 실패하는 첨부 큰 캠페인도 이 경로로는 발송됩니다."
+                title={
+                  campaign.status === 'sending'
+                    ? '서버 발송이 10분 넘게 진행되지 않았습니다. 보통은 서버가 자동으로 이어서 보내므로, 계속 멈춰 있을 때만 사용하세요. 남은 수신자에게 브라우저에서 직접 발송합니다 (탭을 닫지 마세요).'
+                    : '남은 수신자에게 브라우저에서 직접 발송을 재개합니다 (탭을 닫지 마세요). 서버 발송이 실패하는 첨부 큰 캠페인도 이 경로로는 발송됩니다.'
+                }
               >
                 {resuming
                   ? <Loader2 className="w-4 h-4 mr-1 animate-spin" />
@@ -506,6 +648,24 @@ export default function CampaignDetailPage() {
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
+        {/* 서버가 남긴 중단/연기 사유 (080 campaigns.last_error) — 실패 또는 재예약 상태에서만 */}
+        {(campaign.status === 'failed' || isScheduled) && campaign.last_error && (
+          <Card className="border-amber-300 bg-amber-50/60 dark:border-amber-900/60 dark:bg-amber-950/20">
+            <CardContent className="p-3">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0 text-xs text-amber-900 dark:text-amber-100">
+                  <span className="font-medium">
+                    {campaign.status === 'failed' ? '발송 중단 사유' : '발송 연기 사유'}
+                  </span>
+                  {' · '}
+                  <span className="break-words">{campaign.last_error}</span>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* 예약 발송 안내 — status='scheduled' 일 때만 */}
         {isScheduled && campaign.scheduled_at && (
           <Card className="border-blue-300 bg-blue-50/60 dark:border-blue-900/60 dark:bg-blue-950/20">
@@ -1126,19 +1286,18 @@ export default function CampaignDetailPage() {
                                       gmailThreadId: rExt.gmail_thread_id ?? null,
                                       // 제목/본문 모두 수신자별 변수 머지 — 실제로 발송된 모습을 인용 블록에 보여주기 위해.
                                       // 발송 경로와 동일하게 override 우선 + 본문은 HTML 이스케이프 치환.
+                                      // override 는 발송 경로처럼 치환 없이 그대로.
                                       subject: (() => {
                                         const ov = (rExt as { subject_override?: string | null }).subject_override
-                                        const s = ov?.trim() ? ov : campaign?.subject
-                                        return s
-                                          ? renderTemplate(s, (r.variables ?? {}) as Record<string, string | null>)
-                                          : null
+                                        if (ov?.trim()) return ov
+                                        const s = campaign?.subject
+                                        return s ? renderTemplate(s, sendVariables(r)) : null
                                       })(),
                                       bodyHtml: (() => {
                                         const ov = (rExt as { body_html_override?: string | null }).body_html_override
-                                        const b = ov?.trim() ? ov : campaign?.body_html
-                                        return b
-                                          ? renderTemplateHtml(b, (r.variables ?? {}) as Record<string, string | null>)
-                                          : null
+                                        if (ov?.trim()) return ov
+                                        const b = campaign?.body_html
+                                        return b ? renderTemplateHtml(b, sendVariables(r)) : null
                                       })(),
                                       fromLabel: `${profile?.default_sender_name ?? profile?.display_name ?? ''} <${profile?.email ?? ''}>`,
                                       sentAt: r.sent_at,
@@ -1199,11 +1358,12 @@ export default function CampaignDetailPage() {
         {id && <ThreadMessagesSection campaignId={id} />}
       </div>
 
-      <ConfirmDialog
+      <SendConfirmDialog
         open={sendOpen}
         onOpenChange={setSendOpen}
         title="메일 발송 시작"
         description={`${preflightLabel ?? `${campaign.total_count}명 대상`} — 서버가 1분 이내 발송을 시작하며, 창을 닫아도 발송이 계속됩니다. 발송 후에는 취소할 수 없습니다.`}
+        warnings={sendWarnings}
         confirmLabel="발송 시작"
         loading={enqueueSend.isPending}
         onConfirm={async () => {
@@ -1246,11 +1406,12 @@ export default function CampaignDetailPage() {
         onConfirm={handleCancelSchedule}
       />
 
-      <ConfirmDialog
+      <SendConfirmDialog
         open={sendNowOpen}
         onOpenChange={setSendNowOpen}
         title="예약 해제 후 지금 발송"
         description={`${preflightLabel ?? `${campaign.total_count}명 대상`} — 서버가 1분 이내 발송을 시작합니다. 발송 후에는 취소할 수 없습니다.`}
+        warnings={sendWarnings}
         confirmLabel="지금 발송 시작"
         loading={updateCampaign.isPending || enqueueSend.isPending}
         onConfirm={handleSendNow}
@@ -1343,6 +1504,22 @@ export default function CampaignDetailPage() {
       )}
     </div>
   )
+}
+
+// 발송 경로(send-scheduled-campaigns buildVariables / useSendCampaign)와 같은 변수 맵 —
+// email/name 기본값 위에 스냅샷 variables 를 덮고, null 은 빈 문자열.
+function sendVariables(r: {
+  email: string
+  name: string | null
+  variables: unknown
+}): Record<string, string> {
+  const base: Record<string, string> = { email: r.email, name: r.name ?? '' }
+  if (r.variables && typeof r.variables === 'object') {
+    for (const [k, v] of Object.entries(r.variables as Record<string, unknown>)) {
+      base[k] = v == null ? '' : String(v)
+    }
+  }
+  return base
 }
 
 // "5분 뒤", "3시간 뒤", "2일 뒤" 같이 상대 시간 표시

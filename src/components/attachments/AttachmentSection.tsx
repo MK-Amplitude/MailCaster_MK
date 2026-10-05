@@ -3,7 +3,7 @@
 // - 템플릿/캠페인 양쪽에서 동일 UI 사용
 // - 부모가 attachments 배열을 소유 (controlled) — 저장 시점에 template/campaign_attachments 링크 삽입 담당
 // - 이 컴포넌트는 업로드/Drive picker/삭제만 담당
-// - 캠페인 모드(showSizeGauge) 에서는 총 크기 게이지 + 25MB 초과 시 link fallback 배지 표시
+// - 캠페인 모드(showSizeGauge) 에서는 총 크기 게이지 + 안전 용량 초과 시 link fallback 배지 표시
 
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { Button } from '@/components/ui/button'
@@ -30,16 +30,15 @@ import {
   Link as LinkIcon,
   ExternalLink,
 } from 'lucide-react'
-import {
-  formatBytes,
-  GMAIL_ATTACHMENT_LIMIT,
-  GMAIL_ATTACHMENT_SAFE_THRESHOLD,
-  cn,
-} from '@/lib/utils'
-// 참고: overLimit/nearLimit 기준은 SAFE_THRESHOLD(18MB)
-//   — base64 인코딩 시 약 1.333배 팽창하므로 실제 Gmail 25MB 제한에 도달하기 전에 fallback 발동.
-//   useSendCampaign.ts 의 deliveryMode 결정 로직과 동일한 threshold 사용.
+import { formatBytes, GMAIL_ATTACHMENT_LIMIT, cn } from '@/lib/utils'
 import type { Database } from '@/types/database.types'
+
+/**
+ * 첨부 → Drive 링크 전환 기준 (원본 바이트 합계, 본문 인라인 이미지 포함).
+ * 두 발송 경로(useSendCampaign 15MB, send-scheduled-campaigns 15MB)의 실제 전환점과 같아야 한다 —
+ * base64(×1.33) + 본문/헤더가 Gmail 25MB 메시지 한도 안에 들어가는 값.
+ */
+export const ATTACHMENT_SAFE_THRESHOLD = 15 * 1024 * 1024
 
 type DriveAttachmentRow = Database['mailcaster']['Tables']['drive_attachments']['Row']
 
@@ -79,10 +78,9 @@ export function AttachmentSection({
   const pick = usePickDriveFile()
 
   const totalSize = attachments.reduce((sum, a) => sum + (a.file_size ?? 0), 0)
-  // SAFE_THRESHOLD(18MB) 기준 — 실제 fallback 발동점과 일치
-  const overLimit = totalSize > GMAIL_ATTACHMENT_SAFE_THRESHOLD
-  const nearLimit = totalSize > GMAIL_ATTACHMENT_SAFE_THRESHOLD * 0.8 && !overLimit
-  const percent = Math.min(100, (totalSize / GMAIL_ATTACHMENT_SAFE_THRESHOLD) * 100)
+  const overLimit = totalSize > ATTACHMENT_SAFE_THRESHOLD
+  const nearLimit = totalSize > ATTACHMENT_SAFE_THRESHOLD * 0.8 && !overLimit
+  const percent = Math.min(100, (totalSize / ATTACHMENT_SAFE_THRESHOLD) * 100)
 
   const handleFilesSelected = async (files: FileList | null) => {
     if (!files || files.length === 0) return
@@ -223,7 +221,7 @@ export function AttachmentSection({
             <div className="flex items-center justify-between text-xs">
               <span className="text-muted-foreground">총 첨부 용량</span>
               <span className="font-medium">
-                {formatBytes(totalSize)} / {formatBytes(GMAIL_ATTACHMENT_SAFE_THRESHOLD)}
+                {formatBytes(totalSize)} / {formatBytes(ATTACHMENT_SAFE_THRESHOLD)}
                 <span className="text-muted-foreground ml-1">
                   (Gmail {formatBytes(GMAIL_ATTACHMENT_LIMIT)} 한도)
                 </span>
@@ -234,18 +232,22 @@ export function AttachmentSection({
               <div className="flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-300">
                 <LinkIcon className="w-3.5 h-3.5 shrink-0 mt-0.5" />
                 <span>
-                  Gmail 안전 용량({formatBytes(GMAIL_ATTACHMENT_SAFE_THRESHOLD)}) 초과 — 발송 시 자동으로{' '}
-                  <strong>Drive 공유 링크</strong> 로 전환됩니다.
+                  안전 용량({formatBytes(ATTACHMENT_SAFE_THRESHOLD)}) 초과 — 발송 시 자동으로{' '}
+                  <strong>Drive 공유 링크</strong>(링크가 있는 누구나 열람 가능)로 전환됩니다.
+                  기밀 문서라면 용량을 줄이거나 첨부를 나눠 보내세요.
                 </span>
               </div>
             ) : nearLimit ? (
               <div className="flex items-start gap-1.5 text-xs text-yellow-700 dark:text-yellow-300">
                 <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                <span>Gmail 안전 용량에 근접했습니다 — 파일 추가 시 링크로 전환될 수 있습니다.</span>
+                <span>
+                  안전 용량({formatBytes(ATTACHMENT_SAFE_THRESHOLD)})에 근접했습니다 — 본문 인라인 이미지까지 합쳐
+                  넘으면 Drive 공유 링크로 전환됩니다.
+                </span>
               </div>
             ) : (
               <div className="text-xs text-muted-foreground">
-                모두 메일 첨부로 발송됩니다.
+                메일 첨부로 발송됩니다. (본문 인라인 이미지도 {formatBytes(ATTACHMENT_SAFE_THRESHOLD)} 용량에 포함 — 합계가 넘으면 Drive 링크로 전환)
               </div>
             )}
           </CardContent>
