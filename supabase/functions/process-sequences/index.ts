@@ -31,6 +31,20 @@ const RUN_BUDGET_MS = 50_000
 const GMAIL_CALL_BUDGET_MS = 4_000
 const MAX_STEPS_PER_RUN = 40
 
+// C-5 — 요청 송신 후 결과를 모름(타임아웃/네트워크 오류/2xx 응답 해석 실패). Gmail 이 이미
+// 발송했을 수 있으므로 재시도·재예약 금지 → thread_message 는 이 문구로 failed, enrollment 는 종료.
+const UNCERTAIN_SEND_MESSAGE = '전송 결과 불확실 — Gmail 보낸편지함 확인 후 필요 시 개별 재발송'
+
+// PostgREST max-rows 와 무관하게 빈 페이지까지 읽는 페이지 크기 (C-7)
+const PAGE_SIZE = 1000
+
+// sendGmail 이 던지는 오류 — ambiguous 면 발송됐을 수 있음(재시도 금지).
+type SendError = Error & { status?: number; ambiguous?: boolean }
+
+// supabase-js 클라이언트 (Edge 에서는 생성 타입을 쓰지 않음 — send-scheduled-campaigns 와 동일)
+// deno-lint-ignore no-explicit-any
+type Db = any // eslint-disable-line @typescript-eslint/no-explicit-any
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -100,6 +114,16 @@ Deno.serve(async (req) => {
     return g
   }
 
+  // org 별 수신거부 주소(소문자) 캐시 — contact 플래그와 별개로 mailcaster.unsubscribes 대조.
+  // (contacts.is_unsubscribed 동기화가 늦거나 빠진 경우 대비) 조회 실패 시 null → 발송 보류.
+  const orgUnsubs = new Map<string, Set<string> | null>()
+  async function unsubscribedFor(orgId: string): Promise<Set<string> | null> {
+    if (orgUnsubs.has(orgId)) return orgUnsubs.get(orgId) ?? null
+    const set = await loadOrgUnsubscribes(supabase, orgId)
+    orgUnsubs.set(orgId, set)
+    return set
+  }
+
   try {
     // 1) due enrollment 원자적 클레임
     const { data: claims, error: claimErr } = await supabase
@@ -136,30 +160,47 @@ Deno.serve(async (req) => {
       contactMap.set(c.id, c)
     }
 
-    // C1 멱등 가드용 batch prefetch — 클레임 튜플의 기존 sent/pending thread_messages 를
-    // 한 번에 조회해 Map(seq:contact:step) 으로 보관. 기존엔 claim 당 1 SELECT (최대 40 왕복).
+    // C1 멱등 가드용 batch prefetch — 클레임 튜플의 기존 sent/pending thread_messages 와
+    // '결과 불확실' failed 행(C-5)을 한 번에 조회해 Map(seq:contact:step) 으로 보관.
+    // 조회 실패 시 가드가 비어 재발송될 수 있으므로 run 전체를 중단한다 (claim 15분 hold 후 재시도).
+    // 빈 페이지까지 페이지네이션 (C-7).
     const stepOrders = [...new Set(claimList.map((c) => c.step_order))]
     const existingTmMap = new Map<
       string,
-      { gmail_thread_id: string | null; rfc_message_id: string | null }
+      { gmail_thread_id: string | null; rfc_message_id: string | null; uncertain: boolean }
     >()
-    {
-      const { data: tmRows } = await supabase
+    for (let offset = 0; ; ) {
+      const { data: tmRows, error: tmPrefetchErr } = await supabase
         .schema('mailcaster').from('thread_messages')
-        .select('sequence_id, contact_id, sequence_step_order, gmail_thread_id, rfc_message_id')
+        .select('id, sequence_id, contact_id, sequence_step_order, status, error_message, gmail_thread_id, rfc_message_id')
         .in('sequence_id', seqIds)
         .in('contact_id', contactIds)
         .in('sequence_step_order', stepOrders)
-        .in('status', ['sent', 'pending'])
-      for (const r of (tmRows ?? []) as Array<{
+        .in('status', ['sent', 'pending', 'failed'])
+        .order('id', { ascending: true })
+        .range(offset, offset + PAGE_SIZE - 1)
+      if (tmPrefetchErr) throw tmPrefetchErr
+      const rows = (tmRows ?? []) as Array<{
         sequence_id: string; contact_id: string; sequence_step_order: number
+        status: string; error_message: string | null
         gmail_thread_id: string | null; rfc_message_id: string | null
-      }>) {
-        existingTmMap.set(`${r.sequence_id}:${r.contact_id}:${r.sequence_step_order}`, {
+      }>
+      for (const r of rows) {
+        const uncertain = r.status === 'failed'
+        // 일반 failed(미발송 확정) 는 재시도 대상 — 가드에서 제외
+        if (uncertain && r.error_message !== UNCERTAIN_SEND_MESSAGE) continue
+        const key = `${r.sequence_id}:${r.contact_id}:${r.sequence_step_order}`
+        const prev = existingTmMap.get(key)
+        // sent/pending 흔적이 있으면 그쪽 우선 (advance 로 복구), 불확실만 있으면 종료 대상
+        if (prev && !prev.uncertain) continue
+        existingTmMap.set(key, {
           gmail_thread_id: r.gmail_thread_id,
           rfc_message_id: r.rfc_message_id,
+          uncertain,
         })
       }
+      if (rows.length === 0) break
+      offset += rows.length
     }
 
     // 3) 발송자(user)별 그룹핑 — 각자 Gmail 토큰
@@ -219,7 +260,14 @@ Deno.serve(async (req) => {
           continue
         }
         // 가드: 수신거부/반송 → 정지
-        if (contact.is_unsubscribed) {
+        // contact 플래그 + 조직 수신거부 목록(unsubscribes, lower(email)) 둘 다 대조.
+        const unsubs = await unsubscribedFor(claim.org_id)
+        if (!unsubs) {
+          // 수신거부 목록을 확인하지 못함 — 보내지 않는다. claim 의 15분 hold 후 재시도.
+          console.warn('[process-sequences] unsubscribes lookup failed — skip', claim.enrollment_id)
+          continue
+        }
+        if (contact.is_unsubscribed || unsubs.has(normalizeEmail(contact.email))) {
           await supabase.schema('mailcaster').rpc('stop_active_enrollments_for_contact', {
             p_org_id: claim.org_id, p_contact_id: claim.contact_id, p_reason: 'unsubscribed',
           })
@@ -246,6 +294,8 @@ Deno.serve(async (req) => {
         }
         if (guard.sentToday >= effectiveDailyLimit(guard)) {
           // 일일 한도 소진 — 다음 날 창까지 미룸(6시간 후 재평가).
+          // (profiles.daily_send_limit 은 설정 화면 안내대로 기록용 — 여기서 강제하지 않음.
+          //  시퀀스 한도는 org_send_settings 하나만 적용)
           await supabase.schema('mailcaster').rpc('defer_enrollment', {
             p_enrollment_id: claim.enrollment_id, p_minutes: 360,
           })
@@ -259,6 +309,13 @@ Deno.serve(async (req) => {
         const ex = existingTmMap.get(
           `${claim.sequence_id}:${claim.contact_id}:${claim.step_order}`,
         )
+        if (ex?.uncertain) {
+          // C-5 — 이전 발송 결과 불확실(이미 발송됐을 수 있음). 이전 run 의 enrollment 종료가
+          // 반영되지 않은 경우 — 재발송하지 않고 다시 종료한다.
+          await terminate(supabase, claim.enrollment_id, 'failed', UNCERTAIN_SEND_MESSAGE)
+          failed++
+          continue
+        }
         if (ex) {
           const { error: advErr } = await supabase.schema('mailcaster').rpc('advance_enrollment', {
             p_enrollment_id: claim.enrollment_id,
@@ -314,7 +371,11 @@ Deno.serve(async (req) => {
           SUPABASE_URL,
           CLICK_SIGNING_SECRET,
         )
-        const htmlWithPixel = injectTrackingPixel(linkWrapped, buildThreadTrackingPixel(tmId))
+        // 수신거부 안내 — 시퀀스는 반복 자동 발송이라 광고성 정보의 수신거부 방법 고지가 필수
+        // (정보통신망법 제50조). 회신 '수신거부' 는 check-replies 가 감지해 등록·시퀀스 정지.
+        // 문구는 캠페인 일괄 모드와 동일해야 check-replies 의 자체 footer 제거(OWN_FOOTER_PATTERNS)가 동작.
+        const withFooter = appendOptOutFooter(linkWrapped)
+        const htmlWithPixel = injectTrackingPixel(withFooter, buildThreadTrackingPixel(tmId))
 
         // 발송
         let result: { id: string; threadId: string } | null = null
@@ -331,6 +392,22 @@ Deno.serve(async (req) => {
           })
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e)
+          if ((e as SendError)?.ambiguous) {
+            // C-5 — 요청 송신 후 결과 불명. Gmail 이 이미 발송했을 수 있으므로 재시도/재예약하지
+            // 않는다: thread_message 는 '결과 불확실' failed, enrollment 는 failed 로 종료
+            // (자동 재발송 경로 차단). thread_message 갱신이 실패해 pending 으로 남아도 C1 가드가
+            // '흔적 있음' 으로 보고 재발송하지 않는다.
+            console.error('[process-sequences] send outcome unknown', claim.enrollment_id, msg)
+            const { error: tmUpdErr } = await supabase.schema('mailcaster').from('thread_messages')
+              .update({ status: 'failed', error_message: UNCERTAIN_SEND_MESSAGE })
+              .eq('id', tmId)
+            if (tmUpdErr) console.error('[process-sequences] uncertain-mark fail', tmId, tmUpdErr.message)
+            await terminate(supabase, claim.enrollment_id, 'failed', UNCERTAIN_SEND_MESSAGE)
+            guard.sentToday++ // 발송됐을 수 있음 — 일일 한도는 보수적으로 차감
+            failed++
+            continue
+          }
+          // Gmail 이 응답한 오류(429/5xx 등) 또는 연결 단계 실패(미송신 확정) — 재시도 예약.
           await supabase.schema('mailcaster').from('thread_messages')
             .update({ status: 'failed', error_message: msg.slice(0, 500) })
             .eq('id', tmId)
@@ -383,14 +460,47 @@ Deno.serve(async (req) => {
 
 // enrollment 을 터미널 상태로 직접 마킹 (service_role).
 async function terminate(
-  supabase: ReturnType<typeof createClient>,
+  supabase: Db,
   enrollmentId: string,
   status: 'failed' | 'stopped',
   reason: string,
 ) {
-  await supabase.schema('mailcaster').from('sequence_enrollments')
+  const { error } = await supabase.schema('mailcaster').from('sequence_enrollments')
     .update({ status, stopped_reason: status, last_error: reason.slice(0, 500), next_run_at: null })
     .eq('id', enrollmentId)
+  if (error) console.error('[process-sequences] terminate fail', enrollmentId, error.message)
+}
+
+function normalizeEmail(s: string | null | undefined): string {
+  return (s ?? '').trim().toLowerCase()
+}
+
+// 조직 수신거부 주소(소문자) — 빈 페이지까지 페이지네이션 (C-7). 실패 시 null (발송 보류).
+async function loadOrgUnsubscribes(
+  supabase: Db,
+  orgId: string,
+): Promise<Set<string> | null> {
+  const out = new Set<string>()
+  for (let offset = 0; ; ) {
+    const { data, error } = await supabase
+      .schema('mailcaster').from('unsubscribes')
+      .select('id, email')
+      .eq('org_id', orgId)
+      .order('id', { ascending: true })
+      .range(offset, offset + PAGE_SIZE - 1)
+    if (error) {
+      console.error('[process-sequences] unsubscribes load fail', orgId, error.message)
+      return null
+    }
+    const rows = (data ?? []) as Array<{ email: string | null }>
+    for (const r of rows) {
+      const e = normalizeEmail(r.email)
+      if (e) out.add(e)
+    }
+    if (rows.length === 0) break
+    offset += rows.length
+  }
+  return out
 }
 
 // ---- Tier 2 발송 가드레일 (org_send_settings) ----
@@ -502,6 +612,14 @@ function buildThreadTrackingPixel(tmId: string): string {
   return `<img src="${url}" alt="" width="1" height="1" style="display:block;width:1px;height:1px;border:0;margin:0;padding:0;overflow:hidden;" />`
 }
 
+const OPT_OUT_FOOTER_HTML =
+  `<p style="margin:24px 0 0 0;font-size:11px;line-height:1.5;color:#9ca3af;">본 메일의 수신을 원하지 않으시면 이 메일에 '수신거부'라고 회신해 주세요.</p>`
+
+function appendOptOutFooter(html: string): string {
+  if (/<\/body>/i.test(html)) return html.replace(/<\/body>/i, `${OPT_OUT_FOOTER_HTML}</body>`)
+  return html + OPT_OUT_FOOTER_HTML
+}
+
 function injectTrackingPixel(html: string, pixelHtml: string): string {
   if (/<\/body>/i.test(html)) return html.replace(/<\/body>/i, `${pixelHtml}</body>`)
   return html + pixelHtml
@@ -567,24 +685,50 @@ async function sendGmail(input: GmailSend): Promise<{ id: string; threadId: stri
       signal: controller.signal,
     })
   } catch (e) {
-    if ((e as Error).name === 'AbortError') {
-      const err = new Error('Gmail API 타임아웃(25초)') as Error & { status?: number }
-      err.status = 504
-      throw err
+    const msg = e instanceof Error ? e.message : String(e)
+    // 연결 수립 단계 실패(DNS/TCP connect/TLS) — 요청이 나가기 전이라 미발송 확정 → 재시도 가능.
+    if ((e as Error)?.name !== 'AbortError' && isPreSendNetworkError(msg)) {
+      throw new Error(`Gmail API 연결 실패: ${msg}`) as SendError
     }
-    throw e
+    // 타임아웃/그 외 네트워크 오류 — 요청이 이미 전송돼 Gmail 이 발송했을 수 있다 (C-5).
+    const detail = (e as Error)?.name === 'AbortError' ? '타임아웃 25초 초과' : msg
+    const err = new Error(`${UNCERTAIN_SEND_MESSAGE} (${detail})`) as SendError
+    err.ambiguous = true
+    throw err
   } finally {
     clearTimeout(timer)
   }
   if (!res.ok) {
-    const body = await res.text()
+    const body = await res.text().catch(() => '')
     let message = `Gmail API ${res.status}`
     try { message = JSON.parse(body)?.error?.message || message } catch { if (body) message = body }
-    const err = new Error(message) as Error & { status?: number }
+    const err = new Error(message) as SendError
     err.status = res.status
     throw err
   }
-  return (await res.json()) as { id: string; threadId: string }
+  // 2xx — 발송은 됐을 가능성이 높다. 본문을 못 읽거나 id 가 없으면 결과 불확실 (재시도 금지).
+  let parsed: { id?: string; threadId?: string } | null = null
+  try {
+    parsed = (await res.json()) as { id?: string; threadId?: string }
+  } catch (e) {
+    const err = new Error(
+      `${UNCERTAIN_SEND_MESSAGE} (응답 해석 실패: ${e instanceof Error ? e.message : String(e)})`,
+    ) as SendError
+    err.ambiguous = true
+    throw err
+  }
+  if (!parsed?.id) {
+    const err = new Error(`${UNCERTAIN_SEND_MESSAGE} (응답에 message id 없음)`) as SendError
+    err.ambiguous = true
+    throw err
+  }
+  return { id: parsed.id, threadId: parsed.threadId ?? parsed.id }
+}
+
+// Deno fetch 의 연결 수립 단계 오류 — 이 단계에서는 요청이 서버에 도달하지 않는다.
+// (send-scheduled-campaigns 의 isPreSendNetworkError 와 동일 기준)
+function isPreSendNetworkError(msg: string): boolean {
+  return /error trying to connect|dns error|failed to lookup address|connection refused/i.test(msg)
 }
 
 async function fetchMessageRfcId(accessToken: string, gmailMessageId: string): Promise<string | null> {
