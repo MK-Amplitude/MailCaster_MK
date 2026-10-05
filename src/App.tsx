@@ -32,6 +32,8 @@ const CampaignDetailPage = lazy(() => import('@/pages/CampaignDetailPage'))
 const AttachmentsPage = lazy(() => import('@/pages/AttachmentsPage'))
 const UnsubscribesPage = lazy(() => import('@/pages/UnsubscribesPage'))
 const SettingsPage = lazy(() => import('@/pages/SettingsPage'))
+// 공개 수신거부 페이지 — 메일 하단 링크 착지점. 로그인/앱 레이아웃 없이 단독 렌더.
+const UnsubscribePage = lazy(() => import('@/pages/UnsubscribePage'))
 
 // React Query 기본값.
 //   - refetchOnWindowFocus: false
@@ -80,6 +82,8 @@ export default function App() {
             <Suspense fallback={<PageFallback />}>
               <Routes>
                 <Route path="/login" element={<LoginPage />} />
+                {/* 공개 라우트 — ProtectedRoute/AppLayout 밖. 수신자가 로그인 없이 연다 (C-2). */}
+                <Route path="/unsubscribe" element={<UnsubscribePage />} />
                 <Route
                   element={
                     <ProtectedRoute>

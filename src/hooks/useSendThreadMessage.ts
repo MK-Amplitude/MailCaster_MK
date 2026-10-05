@@ -12,8 +12,13 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from './useAuth'
-import { sendGmail, fetchMessageRfcId } from '@/lib/gmail'
-import { getFreshGoogleToken } from '@/lib/googleToken'
+import {
+  sendGmail,
+  fetchMessageRfcId,
+  isAmbiguousSendError,
+  AMBIGUOUS_SEND_MESSAGE,
+} from '@/lib/gmail'
+import { getFreshGoogleToken, forceRefreshGoogleToken } from '@/lib/googleToken'
 import { extractAndInlineImages } from '@/lib/inlineImages'
 import { buildThreadTrackingPixel, injectTrackingPixel } from './useSendCampaign'
 import { threadModeLabel } from '@/lib/threadLabels'
@@ -87,7 +92,7 @@ export function useSendThreadMessage() {
       // 2) access_token + RFC Message-ID (있으면)
       //   - 이미 알고 있는 rfc id (input.inReplyToRfcMessageId) 우선 사용 → Gmail API 호출 스킵
       //   - 없으면 inReplyToGmailMessageId 로 fetchMessageRfcId 호출
-      const accessToken = await getFreshGoogleToken(user.id)
+      let accessToken = await getFreshGoogleToken(user.id)
       let inReplyTo: string | null = input.inReplyToRfcMessageId ?? null
       if (!inReplyTo && input.inReplyToGmailMessageId) {
         inReplyTo = await fetchMessageRfcId(
@@ -180,8 +185,7 @@ export function useSendThreadMessage() {
       // - result 가 null 이면 = sendGmail 자체가 실패. status='failed' 로 마킹 OK.
       let result: { id: string; threadId: string } | null = null
       try {
-        result = await sendGmail({
-          accessToken,
+        const mailInput = {
           from,
           to: input.toEmail,
           toName: input.toName,
@@ -201,7 +205,16 @@ export function useSendThreadMessage() {
                   data: f,
                 }))
               : undefined,
-        })
+        }
+        try {
+          result = await sendGmail({ ...mailInput, accessToken })
+        } catch (sendErr) {
+          // 401 = 토큰 만료/폐기 — 1회 강제 refresh 후 같은 메시지 재시도.
+          // (타임아웃 등 결과 불명 오류는 중복 발송 위험이 있어 재시도하지 않는다)
+          if ((sendErr as { status?: number }).status !== 401) throw sendErr
+          accessToken = await forceRefreshGoogleToken()
+          result = await sendGmail({ ...mailInput, accessToken })
+        }
 
         // 발송 성공 — 즉시 gmail_message_id / gmail_thread_id 부터 먼저 UPDATE.
         // 성공 시 reconcile cron 의 branch 1 (gmail_message_id 있는 pending → sent) 이 정상 동작.
@@ -284,6 +297,12 @@ export function useSendThreadMessage() {
         }
 
         if (result === null) {
+          // 타임아웃/연결 끊김 = 요청이 Gmail 에 도달했을 수 있음 — 재시도하지 않고(중복 발송)
+          // 캠페인 경로와 같은 고정 문구로 남겨 사용자가 보낸편지함에서 확인하게 한다 (C-5).
+          if (isAmbiguousSendError(e)) {
+            await tryUpdate({ status: 'failed', error_message: AMBIGUOUS_SEND_MESSAGE })
+            throw new Error(AMBIGUOUS_SEND_MESSAGE)
+          }
           await tryUpdate({ status: 'failed', error_message: msg })
         } else {
           // pending 유지 + error_message (마커 포함) 기록 → reconcile cron 이 마커 추출 후 정정.

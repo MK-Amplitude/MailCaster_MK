@@ -254,6 +254,9 @@ export interface Database {
           reason: string | null
           source_campaign_id: string | null
           unsubscribed_at: string
+          // 078 — 등록 경로. NULL/'manual' = 조직 멤버 수동, 'link'/'one_click'/'reply' = 수신자 본인
+          //        (user_id NULL, admin 만 수정/삭제 — RLS)
+          source: 'manual' | 'link' | 'one_click' | 'reply' | null
         }
         Insert: {
           id?: string
@@ -269,6 +272,21 @@ export interface Database {
           org_id?: string
           reason?: string | null
         }
+        Relationships: []
+      }
+      // 080 — 수신거부 토큰 → (org, email) 영구 매핑. 캠페인이 삭제돼도 링크가 동작하도록
+      //        recipients INSERT 트리거가 채운다. RLS 활성 + 정책 없음 = service_role 전용
+      //        (클라이언트에서는 조회되지 않음 — 타입은 참고용).
+      unsubscribe_tokens: {
+        Row: {
+          token: string
+          org_id: string
+          email: string
+          campaign_id: string | null
+          created_at: string
+        }
+        Insert: Record<string, never>
+        Update: Record<string, never>
         Relationships: []
       }
       blacklist: {
@@ -477,6 +495,9 @@ export interface Database {
           followup_sequence_id: string | null
           // 075 — 서버 발송 락 획득 횟수 (poison-pill 가드)
           send_attempts: number
+          // 080 — 서버 발송 워커가 남긴 마지막 중단/연기 사유 (치명적 중단·할당량 재예약·poison-pill).
+          //        정상 완료 시 / 사용자가 재등록할 때 NULL 로 지워진다.
+          last_error: string | null
         }
         Insert: {
           id?: string
@@ -510,6 +531,7 @@ export interface Database {
           kind?: 'broadcast' | 'one_to_one'
           followup_sequence_id?: string | null
           send_attempts?: number
+          last_error?: string | null
         }
         Update: {
           name?: string
@@ -539,6 +561,7 @@ export interface Database {
           kind?: 'broadcast' | 'one_to_one'
           followup_sequence_id?: string | null
           send_attempts?: number
+          last_error?: string | null
         }
         Relationships: []
       }
@@ -665,6 +688,8 @@ export interface Database {
           subject_override: string | null
           body_html_override: string | null
           // 038 — Outreach 통합용 (현재 inert, 코드 revert 됨. 컬럼만 유지)
+          // 079 — 수신거부 링크 / List-Unsubscribe 토큰 (DB 기본값 gen_random_uuid())
+          unsubscribe_token: string
         }
         Insert: {
           id?: string
@@ -696,6 +721,7 @@ export interface Database {
           last_reply_check_at?: string | null
           subject_override?: string | null
           body_html_override?: string | null
+          unsubscribe_token?: string
         }
         Update: {
           status?: DbRecipientStatus
@@ -719,6 +745,7 @@ export interface Database {
           last_reply_check_at?: string | null
           subject_override?: string | null
           body_html_override?: string | null
+          unsubscribe_token?: string
         }
         Relationships: []
       }

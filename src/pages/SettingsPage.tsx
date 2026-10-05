@@ -270,8 +270,10 @@ export default function SettingsPage() {
                       className="w-40"
                     />
                     <p className="text-xs text-muted-foreground">
-                      Gmail 계정 타입에 따른 권장: 일반 500, Workspace 2000. 이
-                      한도를 넘는 발송은 자동으로 차단됩니다.
+                      Gmail 계정 타입에 따른 참고값: 일반 약 500, Workspace 약 2,000명/일. 이 값은
+                      기록용이며 발송을 차단하지 않습니다. 시퀀스 자동 발송의 한도는 아래 「시퀀스
+                      자동 발송 안전 설정」에서 적용되고, 캠페인 발송은 Gmail 자체 일일 한도를 따르며
+                      한도에 걸리면 자동으로 멈췄다가 나중에 이어서 발송됩니다.
                     </p>
                   </div>
                 </CardContent>
@@ -301,6 +303,9 @@ export default function SettingsPage() {
                       기준일: {formatDate(profile.daily_send_count_date) || '—'}
                     </span>
                   </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    참고용 수치입니다 — 캠페인 발송량은 아직 이 카운터에 집계되지 않습니다.
+                  </p>
                 </CardContent>
               </Card>
 

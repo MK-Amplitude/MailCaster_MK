@@ -62,6 +62,13 @@ import { useAuth } from '@/hooks/useAuth'
 import { Ban, Plus, Search, Trash2, Undo2, User } from 'lucide-react'
 import { formatDateTime } from '@/lib/utils'
 
+// 078 unsubscribes.source — 수신자 본인 발신 경로. 훅 타입(Unsubscribe)에 아직 없어서 select('*') 결과에서 읽는다.
+const RECIPIENT_OPTOUT_SOURCES = new Set(['link', 'one_click', 'reply'])
+function isRecipientOptOut(u: UnsubscribeWithOwner): boolean {
+  const source = (u as UnsubscribeWithOwner & { source?: string | null }).source
+  return !!source && RECIPIENT_OPTOUT_SOURCES.has(source)
+}
+
 export default function UnsubscribesPage() {
   const { user, isOrgAdmin } = useAuth()
   const [scope, setScope] = useState<UnsubscribeScope>('org')
@@ -76,8 +83,11 @@ export default function UnsubscribesPage() {
   const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
 
-  // RLS: 본인 등록 또는 org admin 만 해제 가능 — UI 도 일치
-  const canMutate = (u: UnsubscribeWithOwner) => u.user_id === user?.id || isOrgAdmin
+  // RLS (078 unsubscribes_update/delete_own_or_admin) 와 일치:
+  //   (본인 등록 AND COALESCE(source,'manual')='manual') OR org admin.
+  //   수신자 본인이 한 수신거부(link / one_click / reply)는 등록자와 무관하게 admin 만 해제 가능.
+  const canMutate = (u: UnsubscribeWithOwner) =>
+    isOrgAdmin || (u.user_id === user?.id && !isRecipientOptOut(u))
 
   // 검색 — email / reason / 등록자 부분 일치, case-insensitive
   const filtered = useMemo(() => {
@@ -232,7 +242,8 @@ export default function UnsubscribesPage() {
                   const mutable = canMutate(u)
                   const ownerLabel =
                     u.profiles?.display_name || u.profiles?.email || '알 수 없음'
-                  const isMine = u.user_id === user?.id
+                  const recipientOptOut = isRecipientOptOut(u)
+                  const isMine = !recipientOptOut && u.user_id === user?.id
                   return (
                     <TableRow
                       key={u.id}
@@ -260,7 +271,7 @@ export default function UnsubscribesPage() {
                           </div>
                           {!isMine && (
                             <div className="lg:hidden text-[10px] text-muted-foreground">
-                              등록자: {ownerLabel}
+                              등록자: {recipientOptOut ? '수신자 요청' : ownerLabel}
                             </div>
                           )}
                         </div>
@@ -269,7 +280,15 @@ export default function UnsubscribesPage() {
                         {u.reason || <span className="italic">—</span>}
                       </TableCell>
                       <TableCell className="hidden lg:table-cell">
-                        {isMine ? (
+                        {recipientOptOut ? (
+                          <Badge
+                            variant="secondary"
+                            className="text-[10px] py-0 px-1.5 h-5"
+                            title="수신자가 직접 수신거부했습니다 (링크/원클릭/회신). 관리자만 해제할 수 있습니다."
+                          >
+                            수신자 요청
+                          </Badge>
+                        ) : isMine ? (
                           <span className="text-xs text-muted-foreground italic">나</span>
                         ) : (
                           <Badge
