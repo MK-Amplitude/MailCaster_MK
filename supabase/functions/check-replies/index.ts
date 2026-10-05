@@ -60,6 +60,9 @@ const CLASSIFY_BUDGET_MS = 2_500
 const BATCH_SIZE = 150
 // 답장 본문 LLM 으로 보낼 때 최대 길이 (긴 thread 의 quoted history 잘라냄).
 const REPLY_BODY_MAX_CHARS = 2000
+// pass1 후보 나이 상한 — 오래된 발송분이 큐를 무한히 키워 신규 캠페인 감지가 늦어지는 것 방지.
+// (반송은 수일 내 도착, 이후 회신은 check-inbox 가 inbound 로 수집)
+const REPLY_CHECK_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
 
 // Phase 11.1 — replied=true 행 thread 메타 갱신 (내가 답장했는지 등) 재방문 주기.
 // 너무 짧으면 Gmail quota 부담, 너무 길면 "내 답장 대기" 인사이트 갱신 지연.
@@ -105,7 +108,14 @@ interface Row {
   sent_at: string | null
   email: string
   contact_id: string | null
-  campaigns: { user_id: string } | { user_id: string }[] | null
+  // pass2 전용 — 첫 답장 시각 (이후 메시지만 수신거부 재검사)
+  replied_at?: string | null
+  campaigns: CampaignJoin | CampaignJoin[] | null
+}
+
+interface CampaignJoin {
+  user_id: string
+  send_mode?: string | null
 }
 
 Deno.serve(async (req) => {
@@ -126,15 +136,17 @@ Deno.serve(async (req) => {
     // 1) 큐에서 BATCH_SIZE 개 집어오기
     // ------------------------------------------------------------
     // partial index idx_recipients_reply_check 로 커버되는 쿼리.
-    // campaigns!inner 로 user_id 조인 (토큰 공유 그룹핑용).
+    // campaigns!inner 로 user_id 조인 (토큰 공유 그룹핑용) + send_mode (bulk = 공유 thread).
+    const maxAgeIso = new Date(runStartedAt - REPLY_CHECK_MAX_AGE_MS).toISOString()
     const { data: rowsRaw, error: qErr } = await supabase
       .schema('mailcaster')
       .from('recipients')
-      .select('id, campaign_id, gmail_thread_id, sent_at, email, contact_id, campaigns!inner(user_id)')
+      .select('id, campaign_id, gmail_thread_id, sent_at, email, contact_id, campaigns!inner(user_id, send_mode)')
       .eq('status', 'sent')
       .not('gmail_thread_id', 'is', null)
       .eq('replied', false)
       .eq('bounced', false)
+      .gte('sent_at', maxAgeIso)
       .order('last_reply_check_at', { ascending: true, nullsFirst: true })
       .limit(BATCH_SIZE)
 
@@ -154,14 +166,22 @@ Deno.serve(async (req) => {
       if (!byUser.has(uid)) byUser.set(uid, [])
       byUser.get(uid)!.push(r)
     }
+    const sharedThreadOf = buildSharedThreadCheck(rows)
+
+    // 같은 run 안에서 thread / DSN 재조회 방지 (bulk 는 수백 행이 thread 1개 공유).
+    const threadCache: ThreadCache = new Map()
+    const dsnCache: DsnCache = new Map()
 
     // 결과 버퍼 — 한 번에 몰아서 DB 반영.
     const noReplyIds: string[] = [] // last_reply_check_at 만 갱신
+    // 토큰/프로필 문제로 조회 못 한 사용자 행 — 회전시켜 다른 사용자 큐를 막지 않게 함.
+    const tokenSkipIds: string[] = []
     const repliedInfos: Array<{
       id: string
       repliedAtIso: string
       cid: string
-      email: string
+      // 수신거부 등록 대상 — 답장 From 주소 (수신자 본인이면 r.email 과 동일)
+      optOutEmail: string
       contactId: string | null
       category: ReplyCategory
       meta: ThreadMeta
@@ -197,8 +217,10 @@ Deno.serve(async (req) => {
         .single()
 
       if (pErr || !profile?.google_refresh_token || !profile?.email) {
-        // 토큰 없는 사용자 — 이번엔 스킵 (rotate 도 안 함: 재로그인 시 즉시 이어받게)
+        // 토큰 없는 사용자 — 스킵하되 회전: 안 하면 이 사용자 행이 매 tick 같은 batch 를 점유해
+        // 다른 사용자 답장/반송 감지가 전부 멈춤.
         console.warn('[check-replies] skip uid=', userId, 'no refresh_token')
+        tokenSkipIds.push(...list.map((r) => r.id))
         continue
       }
 
@@ -213,7 +235,8 @@ Deno.serve(async (req) => {
           userId,
           e instanceof Error ? e.message : e
         )
-        // 토큰 이슈는 재시도 가능 — last_reply_check_at 건드리지 않음
+        // 회전 — 위와 같은 이유 (큐 맨 뒤로 보내고 다음 순환 때 재시도)
+        tokenSkipIds.push(...list.map((r) => r.id))
         continue
       }
 
@@ -222,35 +245,51 @@ Deno.serve(async (req) => {
         if (Date.now() - runStartedAt > RUN_BUDGET_MS - GMAIL_CALL_BUDGET_MS) break userLoop
 
         try {
-          const result = await detectReplyOrBounce(accessToken, r, userEmail)
+          const result = await detectReplyOrBounce(r, {
+            accessToken,
+            userId,
+            userEmailLower: userEmail,
+            shared: sharedThreadOf(r),
+            threadCache,
+            dsnCache,
+            deadlineMs: runStartedAt + RUN_BUDGET_MS - GMAIL_CALL_BUDGET_MS,
+          })
           processed++
           if (result?.kind === 'bounce') {
-            // 반송 — bounce body 에서 reason 추출 (실패해도 최소 from 정보 기록)
-            let reason = `Bounced from ${result.from}`
-            try {
-              const body = await fetchReplyBody(accessToken, result.messageId)
-              const firstLine = extractBounceReason(body)
-              if (firstLine) reason = firstLine
-            } catch {
-              // body 못 가져와도 진행 — from 정보만으로 기록
-            }
             bouncedInfos.push({
               id: r.id,
               bouncedAtIso: result.bouncedAtIso,
               cid: r.campaign_id,
-              reason: reason.slice(0, 500),
+              reason: result.reason.slice(0, 500),
               recipientEmail: r.email,
             })
             campaignIdsTouched.add(r.campaign_id)
           } else if (result?.kind === 'reply') {
-            // 답장 본문 분류 — 실패해도 'unclear' 로 기록하고 진행 (감지 자체는 보존).
-            // 분류 예산 잔량이 부족하면 skip ('unclear' 저장) — 다음 cron tick 에선
-            // replied=true 가 되어 분류 큐에서 제외되니, 사실상 한 번에 처리.
+            // 본문 조회 + 분류 예산이 없으면 이 행은 기록하지 않고 다음 tick 으로 이월
+            // (회전 안 함 → 큐 맨 앞 유지). 'unclear' 로 저장해 버리면 replied=true 가 되어
+            // 수신거부 답장이 영구히 누락됨.
+            if (RUN_BUDGET_MS - (Date.now() - runStartedAt) <= CLASSIFY_BUDGET_MS) break userLoop
+            let bodyText: string
+            try {
+              bodyText = await fetchReplyBody(accessToken, result.messageId)
+            } catch (e) {
+              // 본문 없이 기록하면 수신거부 검사 불가 → 회전 후 다음 순환에서 재시도
+              gmailErrors++
+              console.warn(
+                '[check-replies] reply body fetch fail rid=',
+                r.id,
+                e instanceof Error ? e.message : e
+              )
+              noReplyIds.push(r.id)
+              continue
+            }
+            // 명시적 수신거부 문구는 LLM 과 무관하게 결정적으로 판정 (키 미설정·실패에도 누락 방지).
             let category: ReplyCategory = 'unclear'
-            const remainingMs = RUN_BUDGET_MS - (Date.now() - runStartedAt)
-            if (remainingMs > CLASSIFY_BUDGET_MS) {
+            if (hasExplicitOptOut(bodyText)) {
+              category = 'unsubscribe'
+            } else {
               try {
-                category = await classifyReply(accessToken, result.messageId)
+                category = await classifyReplyText(bodyText)
               } catch (e) {
                 classifyErrors++
                 console.warn(
@@ -264,7 +303,7 @@ Deno.serve(async (req) => {
               id: r.id,
               repliedAtIso: result.repliedAtIso,
               cid: r.campaign_id,
-              email: r.email,
+              optOutEmail: result.fromEmail,
               contactId: r.contact_id,
               category,
               meta: result.meta,
@@ -274,6 +313,8 @@ Deno.serve(async (req) => {
             noReplyIds.push(r.id)
           }
         } catch (e) {
+          // 예산 소진 — 이 행은 손대지 않고 다음 tick 으로 (회전 안 함)
+          if (e instanceof BudgetExceeded) break userLoop
           gmailErrors++
           console.warn(
             '[check-replies] gmail error rid=',
@@ -317,12 +358,12 @@ Deno.serve(async (req) => {
       const { data: didOptOut, error: optErr } = await supabase
         .schema('mailcaster')
         .rpc('record_reply_optout', {
-          p_email: o.email,
+          p_email: o.optOutEmail,
           p_source_campaign_id: o.cid,
           p_reason: '답장에서 수신거부 의사 자동 감지',
         })
-      if (optErr) console.warn('[check-replies] optout fail', o.email, optErr.message)
-      else if (didOptOut) console.log('[check-replies] auto-unsubscribed', o.email)
+      if (optErr) console.warn('[check-replies] optout fail', o.optOutEmail, optErr.message)
+      else if (didOptOut) console.log('[check-replies] auto-unsubscribed', o.optOutEmail)
     }
 
     // 4-1c) 답장한 contact 의 진행 중 시퀀스 자동 정지 (069 — 캠페인 후속 시퀀스 안전장치).
@@ -356,13 +397,14 @@ Deno.serve(async (req) => {
       if (stopErr) console.warn('[check-replies] seq stop fail', info.contactId, stopErr.message)
     }
 
-    // 4-2) 답장 없음 — 한 번에 rotate
-    if (noReplyIds.length > 0) {
+    // 4-2) 답장 없음 + 토큰 문제 사용자 — 한 번에 rotate
+    const rotateIds = [...noReplyIds, ...tokenSkipIds]
+    if (rotateIds.length > 0) {
       const { error } = await supabase
         .schema('mailcaster')
         .from('recipients')
         .update({ last_reply_check_at: nowIso })
-        .in('id', noReplyIds)
+        .in('id', rotateIds)
       if (error) console.warn('[check-replies] rotate fail', error.message)
     }
 
@@ -395,13 +437,20 @@ Deno.serve(async (req) => {
       if (!orgId) continue
 
       // 기존 bounce_count 가져와서 +1
-      const { data: cRows } = await supabase
+      // ilike 는 대소문자 무시용 — `_`/`%` 가 와일드카드로 다른 주소까지 잡지 않게 escape 하고,
+      // PostgREST 의 `*` 와일드카드까지 막기 위해 결과를 정확 일치로 한 번 더 거른다.
+      const bounceEmailLower = normEmail(b.recipientEmail)
+      if (!bounceEmailLower) continue
+      const { data: cRowsRaw } = await supabase
         .schema('mailcaster')
         .from('contacts')
-        .select('id, bounce_count')
+        .select('id, email, bounce_count')
         .eq('org_id', orgId)
-        .ilike('email', b.recipientEmail)
-      if (!cRows || cRows.length === 0) continue
+        .ilike('email', escapeLikePattern(bounceEmailLower))
+      const cRows = (cRowsRaw ?? []).filter(
+        (c: { email: string | null }) => normEmail(c.email) === bounceEmailLower,
+      )
+      if (cRows.length === 0) continue
       for (const c of cRows) {
         const newCount = (Number(c.bounce_count) || 0) + 1
         await supabase
@@ -419,13 +468,16 @@ Deno.serve(async (req) => {
     // ------------------------------------------------------------
     // pass 2 — replied=true 행 thread 메타 갱신 (cooldown 6h)
     // 영업 가치: "내 답장 대기" 인사이트가 갱신됨.
+    // + 첫 답장 이후 수신자 본인이 보낸 새 메시지의 명시적 수신거부 검사
+    //   (pass1 은 첫 답장만 분류 — "자료 부탁" 후 "그만 보내주세요" 가 누락되던 문제).
     // ------------------------------------------------------------
+    let pass2OptOuts = 0
     if (Date.now() - runStartedAt < RUN_BUDGET_MS - GMAIL_CALL_BUDGET_MS) {
       const cooldownIso = new Date(Date.now() - THREAD_RECHECK_COOLDOWN_MS).toISOString()
       const { data: pass2Raw } = await supabase
         .schema('mailcaster')
         .from('recipients')
-        .select('id, campaign_id, gmail_thread_id, sent_at, campaigns!inner(user_id)')
+        .select('id, campaign_id, gmail_thread_id, sent_at, email, contact_id, replied_at, campaigns!inner(user_id, send_mode)')
         .eq('replied', true)
         .not('gmail_thread_id', 'is', null)
         .or(`last_reply_check_at.is.null,last_reply_check_at.lt.${cooldownIso}`)
@@ -443,6 +495,15 @@ Deno.serve(async (req) => {
         pass2ByUser.get(uid)!.push(r)
       }
 
+      const rotatePass2 = async (ids: string[]) => {
+        if (ids.length === 0) return
+        await supabase
+          .schema('mailcaster')
+          .from('recipients')
+          .update({ last_reply_check_at: nowIso })
+          .in('id', ids)
+      }
+
       pass2Loop: for (const [userId, list] of pass2ByUser) {
         if (Date.now() - runStartedAt > RUN_BUDGET_MS - GMAIL_CALL_BUDGET_MS) break
         const { data: profile } = await supabase
@@ -451,11 +512,16 @@ Deno.serve(async (req) => {
           .select('email, google_refresh_token')
           .eq('id', userId)
           .single()
-        if (!profile?.google_refresh_token || !profile?.email) continue
+        if (!profile?.google_refresh_token || !profile?.email) {
+          // 토큰 없는 사용자 행이 pass2 batch 를 점유하지 않도록 회전
+          await rotatePass2(list.map((r) => r.id))
+          continue
+        }
         let accessToken: string
         try {
           accessToken = await refreshGoogleToken(profile.google_refresh_token as string)
         } catch {
+          await rotatePass2(list.map((r) => r.id))
           continue
         }
         const userEmailLower = (profile.email as string).toLowerCase()
@@ -463,14 +529,73 @@ Deno.serve(async (req) => {
         for (const r of list) {
           if (Date.now() - runStartedAt > RUN_BUDGET_MS - GMAIL_CALL_BUDGET_MS) break pass2Loop
           try {
-            const analysis = await fetchThreadAnalysis(accessToken, r, userEmailLower)
+            const analysis = await getThreadCached(
+              threadCache,
+              userId,
+              accessToken,
+              r.gmail_thread_id,
+              userEmailLower,
+            )
             if (!analysis) {
               // thread 삭제됨 — last_reply_check_at 만 갱신해 큐 회전
-              await supabase
+              await rotatePass2([r.id])
+              continue
+            }
+
+            // 첫 답장(pass1 에서 분류됨) 이후 수신자 본인이 보낸 메시지만 — 최근 3통.
+            // (공유 thread 의 타인 메시지는 무시. last_thread_message_at 기준으로 하면 pass1 시점에
+            //  이미 와 있던 두 번째 메시지가 영영 검사되지 않음)
+            const recipientLower = normEmail(r.email)
+            const watermarkMs = Math.max(
+              r.replied_at ? Date.parse(r.replied_at) || 0 : 0,
+              r.sent_at ? Date.parse(r.sent_at) || 0 : 0,
+            )
+            const newFromRecipient = analysis.messages
+              .filter((m) => m.ms > watermarkMs && !!recipientLower && m.fromEmail === recipientLower)
+              .filter((m) => !isBounceFrom(m.fromRaw))
+              .slice(-3)
+            let optOutDetected = false
+            let scanIncomplete = false
+            for (const m of newFromRecipient) {
+              if (RUN_BUDGET_MS - (Date.now() - runStartedAt) <= REPLY_META_BUDGET_MS + GMAIL_CALL_BUDGET_MS) {
+                // 예산 부족 — 이 행은 손대지 않고 다음 tick 에 재검사
+                break pass2Loop
+              }
+              try {
+                const body = await fetchReplyBody(accessToken, m.id)
+                if (hasExplicitOptOut(body)) {
+                  optOutDetected = true
+                  break
+                }
+              } catch {
+                scanIncomplete = true
+              }
+            }
+
+            if (optOutDetected) {
+              const { data: didOptOut, error: optErr } = await supabase
                 .schema('mailcaster')
-                .from('recipients')
-                .update({ last_reply_check_at: nowIso })
-                .eq('id', r.id)
+                .rpc('record_reply_optout', {
+                  p_email: r.email,
+                  p_source_campaign_id: r.campaign_id,
+                  p_reason: '답장에서 수신거부 의사 자동 감지',
+                })
+              if (optErr) {
+                console.warn('[check-replies pass2] optout fail', r.email, optErr.message)
+                scanIncomplete = true
+              } else if (didOptOut) {
+                pass2OptOuts++
+                await supabase
+                  .schema('mailcaster')
+                  .from('recipients')
+                  .update({ reply_category: 'unsubscribe' })
+                  .eq('id', r.id)
+              }
+            }
+
+            if (scanIncomplete) {
+              // 본문 조회/등록 실패 — 메타 갱신 없이 회전 (다음 방문 때 같은 메시지 재검사)
+              await rotatePass2([r.id])
               continue
             }
             const { error: uErr } = await supabase
@@ -491,11 +616,7 @@ Deno.serve(async (req) => {
               e instanceof Error ? e.message : e
             )
             // 일시 오류여도 last_reply_check_at 갱신해 큐 회전
-            await supabase
-              .schema('mailcaster')
-              .from('recipients')
-              .update({ last_reply_check_at: nowIso })
-              .eq('id', r.id)
+            await rotatePass2([r.id])
           }
         }
       }
@@ -516,12 +637,13 @@ Deno.serve(async (req) => {
     let pass3RepliesFound = 0
     let pass3ThreadsProcessed = 0
     let pass3BouncesFound = 0
+    let pass3OptOuts = 0
     if (Date.now() - runStartedAt < RUN_BUDGET_MS - GMAIL_CALL_BUDGET_MS) {
       const pass3CooldownIso = new Date(Date.now() - THREAD_MSG_RECHECK_COOLDOWN_MS).toISOString()
       const { data: pass3Raw } = await supabase
         .schema('mailcaster')
         .from('thread_messages')
-        .select('id, org_id, user_id, gmail_thread_id, gmail_message_id, rfc_message_id, in_reply_to_message_id, campaign_id, sent_at, bounced')
+        .select('id, org_id, user_id, gmail_thread_id, gmail_message_id, rfc_message_id, in_reply_to_message_id, campaign_id, sent_at, bounced, to_email')
         .eq('status', 'sent')
         .eq('bounced', false) // bounce 된 tm 은 다시 폴링 안 함 — Gmail quota 절감
         .not('gmail_thread_id', 'is', null)
@@ -539,6 +661,7 @@ Deno.serve(async (req) => {
         campaign_id: string | null
         sent_at: string | null
         bounced: boolean
+        to_email: string | null
       }
       const pass3Rows = (pass3Raw ?? []) as Tm3Row[]
 
@@ -584,7 +707,12 @@ Deno.serve(async (req) => {
         const userId = key.split('|')[0]
         const auth = await getUserAuth(userId)
         if (!auth) {
-          // 토큰 없음 — last_reply_check_at 건드리지 않고 다음 cron 으로 이월
+          // 토큰 없음 — 회전 (안 하면 이 사용자 행이 매 tick pass3 batch 를 점유해 다른 사용자 회신 폴링이 멈춤)
+          await supabase
+            .schema('mailcaster')
+            .from('thread_messages')
+            .update({ last_reply_check_at: nowIso })
+            .in('id', group.map((r) => r.id))
           continue
         }
 
@@ -631,18 +759,26 @@ Deno.serve(async (req) => {
               )
               const bounceTm = matchTargetTmInThread(group, refs, nr.receivedAtMs)
               if (!bounceTm || bounceTm.bounced) continue
-              // bounce 사유 추출 — raw From 헤더 대신 친화 fallback
+              // 영구 실패(5.x.x / Action: failed) 이면서 이 tm 수신 주소에 대한 DSN 일 때만 반송.
+              // 지연(Delay / 4.x.x) 통지나 판정 불가 메일은 무시 — 조회 실패 시에도 마킹하지 않음.
+              let dsn: DsnInfo
+              try {
+                dsn = await getDsnCached(dsnCache, userId, auth.token, nr.messageId, Number.MAX_SAFE_INTEGER)
+              } catch (e) {
+                console.warn(
+                  '[check-replies pass3] dsn fetch fail mid=',
+                  nr.messageId,
+                  e instanceof Error ? e.message : e,
+                )
+                continue
+              }
+              const verdict = dsnVerdictFor(dsn, normEmail(bounceTm.to_email), false)
+              if (!verdict.permanent) continue
+              // bounce 사유 — raw From 헤더 대신 친화 fallback
               const fromParsedForBounce = parseFromAddress(nr.fromRaw)
               const fromLabel =
                 fromParsedForBounce.email ?? fromParsedForBounce.name ?? '메일 시스템'
-              let bounceReason = `수신 거부 (${fromLabel})`
-              try {
-                const body = await fetchReplyBody(auth.token, nr.messageId)
-                const firstLine = extractBounceReason(body)
-                if (firstLine) bounceReason = firstLine
-              } catch {
-                // body fetch 실패해도 friendly fallback 으로 기록
-              }
+              const bounceReason = verdict.reason ?? `수신 거부 (${fromLabel})`
               const { error: bErr } = await supabase
                 .schema('mailcaster')
                 .from('thread_messages')
@@ -716,6 +852,30 @@ Deno.serve(async (req) => {
               pass3RepliesFound++
               // 캠페인 통계 — 회신 추가된 thread_message 의 campaign 도 갱신
               if (targetTm.campaign_id) campaignIdsTouched.add(targetTm.campaign_id)
+
+              // 명시적 수신거부 — 회신 보낸 사람 본인 주소만 등록 (트리거가 contacts 동기화 → 시퀀스 발송 가드가 정지)
+              if (
+                meta &&
+                fromParsed.email &&
+                fromParsed.email !== auth.emailLower &&
+                hasExplicitOptOut(meta.bodyText)
+              ) {
+                const { data: didOptOut, error: optErr } = await supabase
+                  .schema('mailcaster')
+                  .rpc('record_thread_reply_optout', {
+                    p_org_id: targetTm.org_id,
+                    p_user_id: targetTm.user_id,
+                    p_email: fromParsed.email,
+                    p_source_campaign_id: targetTm.campaign_id,
+                    p_reason: '회신에서 수신거부 의사 자동 감지',
+                  })
+                if (optErr) {
+                  console.warn('[check-replies pass3] optout fail', fromParsed.email, optErr.message)
+                } else if (didOptOut) {
+                  pass3OptOuts++
+                  console.log('[check-replies pass3] auto-unsubscribed', fromParsed.email)
+                }
+              }
             }
           }
 
@@ -781,6 +941,9 @@ Deno.serve(async (req) => {
       pass3_replies_found: pass3RepliesFound,
       pass3_threads_processed: pass3ThreadsProcessed,
       pass3_bounces_found: pass3BouncesFound,
+      pass3_optouts: pass3OptOuts,
+      pass2_optouts: pass2OptOuts,
+      token_skipped: tokenSkipIds.length,
       users: byUser.size,
       batch_fetched: rows.length,
       elapsed_ms: Date.now() - runStartedAt,
@@ -792,15 +955,20 @@ Deno.serve(async (req) => {
 })
 
 // ============================================================
-// Gmail threads.get + 답장 판정
+// Gmail threads.get + 답장/반송 판정
 // ============================================================
 //
-// 판정 기준:
-//   1) thread.messages.length >= 2  (내가 보낸 1통뿐이면 답장 없음)
-//   2) internalDate > r.sent_at     (내 발송 이후 메시지)
-//   3) From 헤더 이메일 != 내 이메일 (타인이 보낸 것)
+// 답장 판정 기준 (행 = 수신자 1명):
+//   1) internalDate > r.sent_at           (내 발송 이후 메시지)
+//   2) From 주소 == 이 수신자 주소          (수신자 본인이 보낸 것)
+//      — bulk 발송은 수백 명이 thread 1개를 공유하므로, 한 명의 답장/수신거부가
+//        모든 행에 귀속되면 안 됨.
+//   3) 단독 thread(개별 발송) 에 한해, 본인 답장이 없으면 외부(비내부 도메인) 발신자의
+//      답장도 답장으로 인정 (별칭 주소·대리 회신). 이때 수신거부는 그 발신자 주소로만 등록.
 //
-// 3개 모두 만족하는 가장 이른 메시지의 시각을 replied_at 으로 사용.
+// 반송 판정: mailer-daemon/postmaster 메일의 DSN 을 파싱해
+//   영구 실패(Action: failed / Status 5.x.x) 이면서 실패 주소 = 이 수신자일 때만.
+//   지연(Delay / 4.x.x) 통지는 반송 아님. 공유 thread 에서 실패 주소를 특정 못 하면 아무에게도 귀속 안 함.
 // ============================================================
 interface ThreadMeta {
   lastMessageAtIso: string
@@ -808,16 +976,31 @@ interface ThreadMeta {
   messageCount: number
 }
 
-interface ThreadAnalysis {
-  // 답장이 있으면 (가장 이른 타인 메시지)
-  reply: { repliedAtIso: string; messageId: string } | null
-  // 반송이 감지되면 (mailer-daemon 등이 가장 이른 메시지로 옴) — reply 보다 우선 처리.
-  bounce: { bouncedAtIso: string; messageId: string; from: string } | null
-  // thread 전체 메타 (마지막 메시지 시각/발신자/총 개수)
+interface ThreadMsg {
+  id: string
+  ms: number
+  fromRaw: string
+  // From 의 주소 부분 (소문자)
+  fromEmail: string
+}
+
+interface ThreadData {
+  // internalDate 오름차순
+  messages: ThreadMsg[]
   meta: ThreadMeta
 }
 
-// 발송 후 thread 에 들어온 메시지의 From 헤더가 이 패턴이면 반송으로 판정.
+type ThreadCache = Map<string, Promise<ThreadData | null>>
+type DsnCache = Map<string, Promise<DsnInfo>>
+
+// 예산 소진 신호 — 호출자는 해당 행을 회전하지 않고 다음 tick 으로 넘긴다.
+class BudgetExceeded extends Error {
+  constructor() {
+    super('run budget exceeded')
+  }
+}
+
+// 발송 후 thread 에 들어온 메시지의 From 헤더가 이 패턴이면 반송 후보 (DSN 파싱으로 최종 판정).
 // 정상 답장에는 절대 안 들어오는 표준 메일 시스템 주소들.
 const BOUNCE_FROM_PATTERNS = [
   /mailer-daemon@/i,
@@ -830,14 +1013,6 @@ const BOUNCE_FROM_PATTERNS = [
 function isBounceFrom(from: string): boolean {
   if (!from) return false
   return BOUNCE_FROM_PATTERNS.some((p) => p.test(from))
-}
-
-// fetchThreadAnalysis 는 사실상 gmail_thread_id 와 sent_at 만 쓴다.
-// Row 전체를 받으면 (recipients 와 thread_messages) 둘을 호환할 때 `as any` 가 필요해지므로
-// 좁은 인터페이스로 한정.
-interface ThreadAnalysisInput {
-  gmail_thread_id: string
-  sent_at: string | null
 }
 
 // Gmail 조회용 fetch — 10초 타임아웃. sendGmail 과 달리 조회 계열엔 타임아웃이 없어
@@ -864,11 +1039,11 @@ async function fetchWithTimeout(
 
 async function fetchThreadAnalysis(
   accessToken: string,
-  r: ThreadAnalysisInput,
+  threadId: string,
   userEmailLower: string
-): Promise<ThreadAnalysis | null> {
+): Promise<ThreadData | null> {
   const url =
-    `https://gmail.googleapis.com/gmail/v1/users/me/threads/${encodeURIComponent(r.gmail_thread_id)}` +
+    `https://gmail.googleapis.com/gmail/v1/users/me/threads/${encodeURIComponent(threadId)}` +
     `?format=metadata&metadataHeaders=From&metadataHeaders=Date`
   const res = await fetchWithTimeout(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -885,122 +1060,396 @@ async function fetchThreadAnalysis(
       payload?: { headers?: Array<{ name: string; value: string }> }
     }>
   } = await res.json()
-  const messages = thread.messages ?? []
-  if (messages.length === 0) return null
+  const raw = thread.messages ?? []
+  if (raw.length === 0) return null
 
   // 가장 늦은 메시지 — 마지막 활동 시각 + 발신자
   let lastMs = 0
   let lastFromMe = false
-  let earliestOther: { ms: number; messageId: string; from: string } | null = null
-  let earliestBounce: { ms: number; messageId: string; from: string } | null = null
-  const sentAtMs = r.sent_at ? Date.parse(r.sent_at) : 0
-
-  for (const m of messages) {
+  const messages: ThreadMsg[] = []
+  for (const m of raw) {
     const ts = Number(m.internalDate ?? 0)
     if (!ts) continue
     const fromRaw = extractFromHeader(m.payload?.headers) ?? ''
-    const from = fromRaw.toLowerCase()
-    const fromMe = from === userEmailLower
-    // 가장 늦은 메시지 추적
+    const fromEmail = normEmail(fromRaw)
     if (ts > lastMs) {
       lastMs = ts
-      lastFromMe = fromMe
+      lastFromMe = fromEmail === userEmailLower
     }
-    // 발송 이후 + 타인 발 메시지만 후보
-    if (!fromMe && ts > sentAtMs) {
-      if (isBounceFrom(fromRaw)) {
-        // 반송 메시지 — 가장 이른 것 채택. reply 후보에선 제외.
-        if (earliestBounce === null || ts < earliestBounce.ms) {
-          earliestBounce = { ms: ts, messageId: m.id, from: fromRaw }
-        }
-      } else {
-        // 정상 답장 후보
-        if (earliestOther === null || ts < earliestOther.ms) {
-          earliestOther = { ms: ts, messageId: m.id, from: fromRaw }
-        }
-      }
-    }
+    messages.push({ id: m.id, ms: ts, fromRaw, fromEmail })
   }
+  messages.sort((a, b) => a.ms - b.ms)
 
   return {
-    reply: earliestOther
-      ? {
-          repliedAtIso: new Date(earliestOther.ms).toISOString(),
-          messageId: earliestOther.messageId,
-        }
-      : null,
-    bounce: earliestBounce
-      ? {
-          bouncedAtIso: new Date(earliestBounce.ms).toISOString(),
-          messageId: earliestBounce.messageId,
-          from: earliestBounce.from,
-        }
-      : null,
+    messages,
     meta: {
       lastMessageAtIso: lastMs > 0 ? new Date(lastMs).toISOString() : new Date().toISOString(),
       lastMessageFromMe: lastFromMe,
-      messageCount: messages.length,
+      messageCount: raw.length,
     },
   }
 }
 
+function getThreadCached(
+  cache: ThreadCache,
+  userId: string,
+  accessToken: string,
+  threadId: string,
+  userEmailLower: string,
+): Promise<ThreadData | null> {
+  const key = `${userId}|${threadId}`
+  let p = cache.get(key)
+  if (!p) {
+    p = fetchThreadAnalysis(accessToken, threadId, userEmailLower)
+    cache.set(key, p)
+  }
+  return p
+}
+
+interface DetectCtx {
+  accessToken: string
+  userId: string
+  userEmailLower: string
+  // 여러 수신자 행이 이 thread 를 공유하는가 (bulk 발송)
+  shared: boolean
+  threadCache: ThreadCache
+  dsnCache: DsnCache
+  // 새 DSN 조회를 시작해도 되는 마지막 시각 (epoch ms)
+  deadlineMs: number
+}
+
 // 답장 또는 반송 감지 — 둘 다 없으면 null. 둘 다 있으면 반송 우선 (먼저 보낸 메일이 반송된 경우).
 async function detectReplyOrBounce(
-  accessToken: string,
   r: Row,
-  userEmailLower: string
+  ctx: DetectCtx,
 ): Promise<
   | {
       kind: 'reply'
       repliedAtIso: string
       messageId: string
+      // 답장 From 주소 (소문자) — 수신거부 등록 대상
+      fromEmail: string
       meta: ThreadMeta
     }
   | {
       kind: 'bounce'
       bouncedAtIso: string
       messageId: string
-      from: string
+      reason: string
       meta: ThreadMeta
     }
   | null
 > {
-  const analysis = await fetchThreadAnalysis(accessToken, r, userEmailLower)
-  if (!analysis) return null
-  if (analysis.bounce) {
-    return {
-      kind: 'bounce',
-      bouncedAtIso: analysis.bounce.bouncedAtIso,
-      messageId: analysis.bounce.messageId,
-      from: analysis.bounce.from,
-      meta: analysis.meta,
+  const thread = await getThreadCached(
+    ctx.threadCache,
+    ctx.userId,
+    ctx.accessToken,
+    r.gmail_thread_id,
+    ctx.userEmailLower,
+  )
+  if (!thread) return null
+  const sentAtMs = r.sent_at ? Date.parse(r.sent_at) : 0
+  const recipientLower = normEmail(r.email)
+  const others = thread.messages.filter(
+    (m) => m.ms > sentAtMs && m.fromEmail !== ctx.userEmailLower,
+  )
+
+  for (const m of others) {
+    if (!isBounceFrom(m.fromRaw)) continue
+    const dsn = await getDsnCached(ctx.dsnCache, ctx.userId, ctx.accessToken, m.id, ctx.deadlineMs)
+    const verdict = dsnVerdictFor(dsn, recipientLower, ctx.shared)
+    if (verdict.permanent) {
+      return {
+        kind: 'bounce',
+        bouncedAtIso: new Date(m.ms).toISOString(),
+        messageId: m.id,
+        reason: verdict.reason ?? `Bounced from ${m.fromRaw}`,
+        meta: thread.meta,
+      }
     }
   }
-  if (analysis.reply) {
-    return {
-      kind: 'reply',
-      repliedAtIso: analysis.reply.repliedAtIso,
-      messageId: analysis.reply.messageId,
-      meta: analysis.meta,
-    }
+
+  const candidates = others.filter((m) => !isBounceFrom(m.fromRaw) && !!m.fromEmail)
+  let reply = recipientLower
+    ? candidates.find((m) => m.fromEmail === recipientLower)
+    : undefined
+  if (!reply && !ctx.shared) {
+    reply = candidates.find(
+      (m) => !isInternalSender(m.fromEmail, ctx.userEmailLower, recipientLower),
+    )
   }
-  return null
+  if (!reply) return null
+  return {
+    kind: 'reply',
+    repliedAtIso: new Date(reply.ms).toISOString(),
+    messageId: reply.id,
+    fromEmail: reply.fromEmail,
+    meta: thread.meta,
+  }
+}
+
+// 이 배치에서 행이 공유 thread 에 속하는지 — send_mode='bulk' 이거나 같은 thread 행이 둘 이상.
+function buildSharedThreadCheck(rows: Row[]): (r: Row) => boolean {
+  const countByThread = new Map<string, number>()
+  for (const r of rows) {
+    countByThread.set(r.gmail_thread_id, (countByThread.get(r.gmail_thread_id) ?? 0) + 1)
+  }
+  return (r: Row) =>
+    sendModeOf(r) === 'bulk' || (countByThread.get(r.gmail_thread_id) ?? 0) > 1
+}
+
+// 개인 메일 도메인 — 같은 도메인이어도 "사내 동료" 로 볼 수 없음
+const FREE_MAIL_DOMAINS = new Set([
+  'gmail.com', 'googlemail.com', 'naver.com', 'daum.net', 'hanmail.net', 'kakao.com',
+  'nate.com', 'outlook.com', 'hotmail.com', 'live.com', 'yahoo.com', 'icloud.com',
+])
+
+// 발송자와 같은 회사 도메인의 발신자 (CC 된 내부 동료의 reply-all 등) — 수신자 답장으로 보지 않음.
+function isInternalSender(fromLower: string, userEmailLower: string, recipientLower: string): boolean {
+  const d = domainOf(fromLower)
+  const myDomain = domainOf(userEmailLower)
+  if (!d || !myDomain || d !== myDomain) return false
+  if (FREE_MAIL_DOMAINS.has(myDomain)) return false
+  // 수신자 자체가 같은 회사면 (사내 발송) 도메인으로 구분 불가 — 내부로 보지 않음
+  return domainOf(recipientLower) !== myDomain
+}
+
+function domainOf(email: string): string {
+  const at = email.lastIndexOf('@')
+  return at >= 0 ? email.slice(at + 1) : ''
 }
 
 // ============================================================
-// Gmail messages.get + OpenAI 분류
+// DSN (Delivery Status Notification) 파싱
 // ============================================================
-// 1) Gmail API 로 답장 메시지 본문 (text/plain 우선, fallback text/html stripped)
-// 2) 인용 부분(>로 시작하는 라인) 과 시그니처 영역을 휴리스틱으로 제거 → 본문만 남김
-// 3) OpenAI 로 5분류 — 짧은 system prompt, 50~100 token 응답.
-async function classifyReply(
+interface DsnRecipient {
+  action: string
+  status: string
+  diagnostic: string
+}
+
+interface DsnInfo {
+  // message/delivery-status 의 수신자별 블록 (Final-Recipient / Original-Recipient 주소 → 결과)
+  recipients: Map<string, DsnRecipient>
+  // X-Failed-Recipients 헤더 (Gmail 등)
+  failedRecipients: Set<string>
+  // 메시지 전체 수준 판정 — 수신자별 정보가 없을 때만 사용
+  kind: 'failure' | 'delay' | 'unknown'
+  humanReason: string | null
+}
+
+const DSN_DELAY_SUBJECT_RE =
+  /\(delay\)|delayed|delay notification|not (?:yet )?been delivered|still (?:being )?(?:retried|trying)|will (?:keep )?retry|지연/i
+const DSN_FAILURE_SUBJECT_RE =
+  /\(failure\)|undeliver|returned mail|returned to sender|delivery (?:has )?fail|failure notice|could not be delivered|mail delivery failed|발송 실패|전송 실패|배달 실패|반송/i
+const DSN_PERMANENT_BODY_RE =
+  /\b5\.\d{1,3}\.\d{1,3}\b|\b55[0-4][\s-]|address not found|user unknown|no such user|mailbox (?:does not exist|not found|unavailable)|recipient address rejected/i
+const DSN_TEMP_BODY_RE = /\b4\.\d{1,3}\.\d{1,3}\b|will (?:keep )?retry|delayed|temporar/i
+
+function getDsnCached(
+  cache: DsnCache,
+  userId: string,
   accessToken: string,
-  messageId: string
-): Promise<ReplyCategory> {
+  messageId: string,
+  deadlineMs: number,
+): Promise<DsnInfo> {
+  const key = `${userId}|${messageId}`
+  let p = cache.get(key)
+  if (!p) {
+    if (Date.now() > deadlineMs) throw new BudgetExceeded()
+    p = fetchDsn(accessToken, messageId)
+    // 실패는 캐시하지 않음 — 다른 행/다음 tick 이 재시도
+    p.catch(() => cache.delete(key))
+    cache.set(key, p)
+  }
+  return p
+}
+
+async function fetchDsn(accessToken: string, messageId: string): Promise<DsnInfo> {
+  const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}?format=full`
+  const res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${accessToken}` } })
+  if (!res.ok) {
+    throw new Error(`Gmail messages.get ${res.status}`)
+  }
+  const msg = (await res.json()) as {
+    payload?: GmailPart & { headers?: Array<{ name: string; value: string }> }
+  }
+  return parseDsn(msg.payload)
+}
+
+function parseDsn(payload?: GmailPart & { headers?: Array<{ name: string; value: string }> }): DsnInfo {
+  const headers = payload?.headers ?? []
+  const getH = (name: string) =>
+    headers.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value ?? ''
+  const subject = getH('Subject')
+  const failedRecipients = new Set(
+    Array.from(getH('X-Failed-Recipients').matchAll(/[^\s,;<>"]+@[^\s,;<>"]+/g)).map((m) =>
+      normEmail(m[0]),
+    ),
+  )
+
+  const recipients = new Map<string, DsnRecipient>()
+  const statusTexts: string[] = []
+  const walk = (part?: GmailPart) => {
+    if (!part) return
+    if (part.mimeType?.toLowerCase() === 'message/delivery-status' && part.body?.data) {
+      statusTexts.push(decodeBase64Url(part.body.data))
+    }
+    for (const p of part.parts ?? []) walk(p)
+  }
+  walk(payload)
+  for (const t of statusTexts) parseDeliveryStatus(t, recipients)
+
+  const human = extractTextBody(payload) ?? ''
+  let kind: DsnInfo['kind'] = 'unknown'
+  if (DSN_DELAY_SUBJECT_RE.test(subject)) kind = 'delay'
+  else if (DSN_FAILURE_SUBJECT_RE.test(subject) || failedRecipients.size > 0) kind = 'failure'
+  else if (DSN_PERMANENT_BODY_RE.test(human)) kind = 'failure'
+  else if (DSN_TEMP_BODY_RE.test(human)) kind = 'delay'
+
+  return { recipients, failedRecipients, kind, humanReason: extractBounceReason(human) }
+}
+
+// RFC 3464 message/delivery-status — 빈 줄로 구분된 블록, 첫 블록은 메시지 단위, 이후 수신자 단위.
+function parseDeliveryStatus(text: string, out: Map<string, DsnRecipient>) {
+  const unfolded = text.replace(/\r\n/g, '\n').replace(/\n[ \t]+/g, ' ')
+  for (const block of unfolded.split(/\n\s*\n/)) {
+    const fields = new Map<string, string>()
+    for (const line of block.split('\n')) {
+      const m = /^\s*([A-Za-z][A-Za-z0-9-]*)\s*:\s*(.*)$/.exec(line)
+      if (m) fields.set(m[1].toLowerCase(), m[2].trim())
+    }
+    const addrs = [fields.get('final-recipient'), fields.get('original-recipient')]
+      .map((v) => (v ? normEmail(v.includes(';') ? v.slice(v.indexOf(';') + 1) : v) : ''))
+      .filter((v) => !!v)
+    if (addrs.length === 0) continue
+    const entry: DsnRecipient = {
+      action: (fields.get('action') ?? '').toLowerCase(),
+      status: fields.get('status') ?? '',
+      diagnostic: fields.get('diagnostic-code') ?? '',
+    }
+    for (const a of addrs) out.set(a, entry)
+  }
+}
+
+// 이 주소에 대한 영구 실패 DSN 인가.
+function dsnVerdictFor(
+  dsn: DsnInfo,
+  emailLower: string,
+  shared: boolean,
+): { permanent: boolean; reason: string | null } {
+  if (!emailLower) return { permanent: false, reason: null }
+  const entry = dsn.recipients.get(emailLower)
+  if (entry) {
+    // Action: failed 는 4.x.x(재시도 만료) 여도 최종 실패. delayed/delivered/relayed 는 반송 아님.
+    const permanent = entry.action === 'failed' || /^5\./.test(entry.status)
+    const reason =
+      (entry.diagnostic && entry.diagnostic.slice(0, 240)) ||
+      dsn.humanReason ||
+      (entry.status ? `Status ${entry.status}` : null)
+    return { permanent, reason }
+  }
+  if (dsn.failedRecipients.size > 0) {
+    return {
+      permanent: dsn.failedRecipients.has(emailLower) && dsn.kind !== 'delay',
+      reason: dsn.humanReason,
+    }
+  }
+  // 다른 주소(CC 등) 에 대한 DSN
+  if (dsn.recipients.size > 0) return { permanent: false, reason: null }
+  // 실패 주소를 특정할 수 없음 — 공유 thread 면 아무에게도 귀속하지 않음
+  if (shared) return { permanent: false, reason: null }
+  return { permanent: dsn.kind === 'failure', reason: dsn.humanReason }
+}
+
+// ============================================================
+// 명시적 수신거부 문구 (결정적 검사)
+// ============================================================
+// LLM 분류가 예산 부족·실패·키 미설정으로 skip 돼도 수신거부가 누락되지 않게 하는 안전망.
+// 인용·서명을 잘라낸 "새로 쓴 부분" 의 앞부분만 검사 — 인용된 우리 원문의 수신거부 안내 문구 오탐 방지.
+const OPT_OUT_PATTERNS: RegExp[] = [
+  /수신\s*거부/,
+  /수신\s*(?:을|를)?\s*(?:원하지|원치)\s*않/,
+  /그만\s*(?:좀\s*)?(?:보내|연락)/,
+  // "보내지 마시고 링크로…" 같은 지시문 제외 — 수식어(더 이상/앞으로/다시) 가 있거나 문장이 끝날 때만
+  /(?:메일|이메일|더\s*이상|앞으로|다시는?)[^\n.]{0,15}(?:보내지|연락\s*(?:하지|주지))\s*(?:말아|마)/,
+  /(?:보내지|연락\s*(?:하지|주지))\s*(?:말아\s*주|마)(?:세요|십시오|십시요|요)?\s*(?:[.!~]|$)/m,
+  /(?:메일|이메일|연락|발송)\s*(?:을|를|은|는)?\s*(?:그만|중단|중지)\s*(?:해|하여|좀|바랍|부탁|요청)/,
+  /광고\s*(?:메일)?\s*사절/,
+  /\bunsubscribe\b/i,
+  /\bremove\s+me\b/i,
+  /\btake\s+me\s+off\b/i,
+  /\bstop\s+(?:e-?mailing|sending|contacting)\b/i,
+  /\bopt[\s-]?out\b/i,
+  /\b(?:do\s+not|don'?t)\s+(?:e-?mail|contact)\s+me\b/i,
+]
+
+// 인용 시작 표지 — 처음 등장하는 위치에서 자른다 (HTML→텍스트 변환으로 줄바꿈이 사라진 본문도 처리).
+const QUOTE_START_PATTERNS: RegExp[] = [
+  /^[ \t]*>/m,
+  /\bOn\b[\s\S]{0,300}?\bwrote:/,
+  /\bwrote:/i,
+  /님이\s*작성/,
+  /작성:/,
+  /-{2,}\s*(?:Original Message|원본 메시지|Forwarded message|전달된 메시지)\s*-{2,}/i,
+  /(?:^|\s)(?:From|보낸\s*사람)\s*:[\s\S]{0,300}?(?:Sent|Date|보낸\s*날짜|날짜)\s*:/i,
+]
+const OPT_OUT_SCAN_MAX_CHARS = 1500
+
+function extractNewReplyText(text: string): string {
+  let cut = text.length
+  for (const re of QUOTE_START_PATTERNS) {
+    const m = re.exec(text)
+    if (m && m.index < cut) cut = m.index
+  }
+  let out = text.slice(0, cut)
+  // 시그니처 구분자 (-- 단독 라인) 이후 제거
+  out = out.replace(/\n--\s*\n[\s\S]*$/m, '')
+  return out.slice(0, OPT_OUT_SCAN_MAX_CHARS)
+}
+
+// 우리 메일 footer 의 수신거부 안내 — send-scheduled-campaigns / useSendCampaign 의
+// unsubscribeFooterHtml 과 같은 문구:
+//   "본 메일의 수신을 원하지 않으시면 <a>수신거부</a>를 눌러주세요."            (개별 발송 + 링크)
+//   "본 메일의 수신을 원하지 않으시면 이 메일에 '수신거부'라고 회신해 주세요."  (일괄 발송)
+// 인용 표지를 못 찾아 인용된 원문이 스캔 범위에 들어와도 이 문구로는 수신거부가 감지되지 않게
+// 패턴 검사 전에 지운다. 클라이언트가 줄바꿈/'>' 인용 표시를 끼워 넣어도 맞도록 [\s>]* 허용.
+const OWN_FOOTER_PATTERNS: RegExp[] = [
+  // 문장 전체 — "주세요/주십시오" 로 끝나는 첫 지점까지 (실제 문구 ~45자, 여유 120자)
+  /본[\s>]*메일의[\s>]*수신을[\s>]*원하지[\s>]*않으시면[\s\S]{0,120}?(?:주세요|주십시오)[.!]?/g,
+  // 끝맺음을 못 찾으면 (잘림/변형) 그 줄 끝까지
+  /본[\s>]*메일의[\s>]*수신을[\s>]*원하지[\s>]*않으시면[^\n]{0,120}/g,
+  // 문장 앞부분이 잘리거나 줄이 나뉜 나머지 조각
+  /['"‘’“”]?수신[\s>]*거부['"‘’“”]?[\s>]*(?:이)?라고[\s>]*회신해[\s>]*(?:주세요|주십시오)[.!]?/g,
+  /수신[\s>]*거부[\s>]*(?:<[^>\s]*>|\[[^\]\s]*\]|\(\s*https?:[^)\s]*\))?[\s>]*를[\s>]*눌러[\s>]*(?:주세요|주십시오)[.!]?/g,
+]
+// footer 링크(…/unsubscribe?t=…) 가 텍스트 변환 본문에 URL 로 남으면 /\bunsubscribe\b/ 에 걸린다.
+// 사용자가 URL 안에 수신거부 의사를 쓰지는 않으므로 URL 은 통째로 제거.
+const URL_PATTERN = /\bhttps?:\/\/[^\s<>"'()]+/gi
+
+function stripOwnFooter(text: string): string {
+  let out = text.replace(URL_PATTERN, ' ')
+  for (const re of OWN_FOOTER_PATTERNS) out = out.replace(re, ' ')
+  return out
+}
+
+function hasExplicitOptOut(bodyText: string): boolean {
+  if (!bodyText) return false
+  const fresh = extractNewReplyText(stripOwnFooter(bodyText))
+  return OPT_OUT_PATTERNS.some((p) => p.test(fresh))
+}
+
+// ============================================================
+// OpenAI 분류
+// ============================================================
+// 1) (호출자가 Gmail messages.get 으로 가져온) 답장 본문 (text/plain 우선, fallback text/html stripped)
+// 2) 인용 부분(>로 시작하는 라인) 과 시그니처 영역을 휴리스틱으로 제거 → 본문만 남김
+// 3) OpenAI 로 6분류 — 짧은 system prompt, 50~100 token 응답.
+async function classifyReplyText(text: string): Promise<ReplyCategory> {
   if (!OPENAI_API_KEY) return 'unclear'
 
-  const text = await fetchReplyBody(accessToken, messageId)
-  const trimmed = stripQuotedAndSignature(text).slice(0, REPLY_BODY_MAX_CHARS)
+  // 인용 제거가 실패해도 우리 footer 의 수신거부 안내 문구로 'unsubscribe' 분류되지 않게 먼저 제거
+  const trimmed = stripQuotedAndSignature(stripOwnFooter(text)).slice(0, REPLY_BODY_MAX_CHARS)
   if (!trimmed.trim()) return 'unclear'
 
   const systemPrompt = `당신은 한국어 B2B 영업 답장의 톤을 6가지로 분류합니다.
@@ -1404,6 +1853,26 @@ function userIdOf(r: Row): string | null {
   if (!c) return null
   if (Array.isArray(c)) return c[0]?.user_id ?? null
   return c.user_id ?? null
+}
+
+function sendModeOf(r: Row): string | null {
+  const c = r.campaigns
+  if (!c) return null
+  if (Array.isArray(c)) return c[0]?.send_mode ?? null
+  return c.send_mode ?? null
+}
+
+// "Name <a@b.com>" / "<a@b.com>" / " A@B.com " → "a@b.com". 주소가 아니면 ''.
+function normEmail(raw: string | null | undefined): string {
+  if (!raw) return ''
+  const angle = /<([^>]+)>/.exec(raw)
+  const s = (angle?.[1] ?? raw).trim().replace(/^mailto:/i, '').toLowerCase()
+  return s.includes('@') ? s : ''
+}
+
+// LIKE/ILIKE 패턴에서 리터럴로 쓰기 위한 escape (Postgres 기본 escape 문자 '\').
+function escapeLikePattern(s: string): string {
+  return s.replace(/[\\%_]/g, (c) => `\\${c}`)
 }
 
 // ============================================================

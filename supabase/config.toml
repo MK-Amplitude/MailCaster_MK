@@ -44,3 +44,7 @@ verify_jwt = false
 [functions.process-sequences]
 # pg_cron 이 Bearer <CRON_SECRET> 으로 자체 인증. (시퀀스 자동 후속 발송 스케줄러)
 verify_jwt = false
+
+[functions.unsubscribe]
+# 메일 수신거부 링크 / List-Unsubscribe 원클릭 POST — 익명 요청. 수신자별 토큰(capability)으로 자체 검증.
+verify_jwt = false
