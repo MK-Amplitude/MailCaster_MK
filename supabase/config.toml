@@ -48,3 +48,24 @@ verify_jwt = false
 [functions.unsubscribe]
 # 메일 수신거부 링크 / List-Unsubscribe 원클릭 POST — 익명 요청. 수신자별 토큰(capability)으로 자체 검증.
 verify_jwt = false
+
+# ── 브라우저에서 사용자 JWT 로 호출하는 AI/검증 함수 ─────────────────────
+# 프로젝트 사용자 JWT 가 ES256 이라 gateway 의 verify_jwt 가 거부할 수 있음 → 끄고,
+# 각 함수가 내부에서 auth.getUser() 로 검증 (실패 시 401, OpenAI/DB/DNS 호출 전에 차단).
+# 항목이 없으면 CLI 배포 시 기본값 verify_jwt=true 가 적용되고 대시보드 토글도 덮어씀.
+
+[functions.generate-personalized-bodies]
+# 사용자 JWT (ES256) 를 함수 내부에서 auth.getUser() 로 검증 + org 멤버십 확인.
+verify_jwt = false
+
+[functions.generate-reply-draft]
+# 사용자 JWT (ES256) 를 함수 내부에서 auth.getUser() 로 검증 + org 멤버십 확인.
+verify_jwt = false
+
+[functions.suggest-contact-group]
+# 사용자 JWT (ES256) 를 함수 내부에서 auth.getUser() 로 검증 + org 멤버십 확인.
+verify_jwt = false
+
+[functions.validate-email-domains]
+# 사용자 JWT (ES256) 를 함수 내부에서 auth.getUser() 로 검증 (DNS 조회 전에 차단).
+verify_jwt = false

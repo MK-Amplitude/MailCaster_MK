@@ -13,6 +13,9 @@
 //   + ORDER BY last_reply_check_at NULLS FIRST.
 // - 체크 후에는 결과에 관계없이 last_reply_check_at 을 NOW() 로 회전 →
 //   같은 수신자가 같은 tick 에 반복 조회되지 않고, 한 tick 에서 못 끝내도 다음 tick 이 이어받음.
+// - 발송 경과 시간 기반 재확인 간격(백오프) — 발송 1일 이내 15분, 7일 이내 1시간, 그 이후(~30일) 6시간.
+//   쿨다운이 없으면 5분마다 같은 150행을 Gmail 조회 + UPDATE(HOT 불가) 해서
+//   recipients 테이블/인덱스가 부풀고 nano 인스턴스 autovacuum 이 계속 바빠짐.
 // - 이렇게 하면 5분 cron × BATCH_SIZE 만큼씩 큐가 순환.
 //   대량 수신자(수천~만 단위) 캠페인이면 한 수신자당 답장 감지 지연이 수 분~수십 분까지 벌어질 수 있음.
 //   실시간 감지가 필요하면 Gmail push (watch API) 도입을 고려 — 현재는 pull 방식.
@@ -63,6 +66,13 @@ const REPLY_BODY_MAX_CHARS = 2000
 // pass1 후보 나이 상한 — 오래된 발송분이 큐를 무한히 키워 신규 캠페인 감지가 늦어지는 것 방지.
 // (반송은 수일 내 도착, 이후 회신은 check-inbox 가 inbound 로 수집)
 const REPLY_CHECK_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
+// pass1 재확인 간격 — 답장 대부분은 발송 직후 도착하므로 최근 발송분만 촘촘히, 오래될수록 드물게.
+const ONE_DAY_MS = 24 * 60 * 60 * 1000
+const REPLY_RECHECK_FRESH_MS = 15 * 60 * 1000     // 발송 1일 이내
+const REPLY_RECHECK_WEEK_MS = 60 * 60 * 1000      // 발송 7일 이내
+const REPLY_RECHECK_OLD_MS = 6 * 60 * 60 * 1000   // 발송 7일 이후 (~REPLY_CHECK_MAX_AGE_MS)
+// OpenAI 분류 / Google OAuth 토큰 갱신 타임아웃 — hang 시 run 전체가 wall-clock 에 죽지 않게.
+const EXTERNAL_API_TIMEOUT_MS = 8_000
 
 // Phase 11.1 — replied=true 행 thread 메타 갱신 (내가 답장했는지 등) 재방문 주기.
 // 너무 짧으면 Gmail quota 부담, 너무 길면 "내 답장 대기" 인사이트 갱신 지연.
@@ -76,6 +86,10 @@ const REPLY_META_BUDGET_MS = 1_500
 // pass3 의 cooldown — thread_messages 의 다중 회신 감지를 위해 replied 상태 무관하게 재방문.
 // pass2 (6시간) 와 같은 값. 너무 짧으면 Gmail quota 부담, 너무 길면 후속 회신 발견 지연.
 const THREAD_MSG_RECHECK_COOLDOWN_MS = 6 * 60 * 60 * 1000
+// pass2/pass3 대상 나이 상한 — 없으면 회신받은 수신자·보낸 1:1 메일 전부를 6시간마다 영구히 재조회해
+// 큐가 비지 않고 매 tick 예산을 다 씀. 이후 메시지는 check-inbox 가 inbound 로 수집.
+const PASS2_MAX_AGE_MS = 60 * ONE_DAY_MS  // replied_at 기준
+const PASS3_MAX_AGE_MS = 60 * ONE_DAY_MS  // sent_at 기준
 
 type ReplyCategory =
   | 'interested'
@@ -138,6 +152,16 @@ Deno.serve(async (req) => {
     // partial index idx_recipients_reply_check 로 커버되는 쿼리.
     // campaigns!inner 로 user_id 조인 (토큰 공유 그룹핑용) + send_mode (bulk = 공유 thread).
     const maxAgeIso = new Date(runStartedAt - REPLY_CHECK_MAX_AGE_MS).toISOString()
+    // 재확인 백오프 — 한 번도 안 봤거나(NULL), 발송 경과 구간별 간격이 지난 행만.
+    //   발송 7일 이후: 6시간 / 발송 7일 이내: 1시간 / 발송 1일 이내: 15분
+    //   (짧은 간격 조건일수록 최근 발송분으로 좁혀지므로 OR 로 합치면 구간별 간격이 됨)
+    const iso = (ms: number) => new Date(ms).toISOString()
+    const recheckFilter = [
+      'last_reply_check_at.is.null',
+      `last_reply_check_at.lt.${iso(runStartedAt - REPLY_RECHECK_OLD_MS)}`,
+      `and(sent_at.gte.${iso(runStartedAt - 7 * ONE_DAY_MS)},last_reply_check_at.lt.${iso(runStartedAt - REPLY_RECHECK_WEEK_MS)})`,
+      `and(sent_at.gte.${iso(runStartedAt - ONE_DAY_MS)},last_reply_check_at.lt.${iso(runStartedAt - REPLY_RECHECK_FRESH_MS)})`,
+    ].join(',')
     const { data: rowsRaw, error: qErr } = await supabase
       .schema('mailcaster')
       .from('recipients')
@@ -147,14 +171,14 @@ Deno.serve(async (req) => {
       .eq('replied', false)
       .eq('bounced', false)
       .gte('sent_at', maxAgeIso)
+      .or(recheckFilter)
       .order('last_reply_check_at', { ascending: true, nullsFirst: true })
       .limit(BATCH_SIZE)
 
     if (qErr) throw qErr
+    // 후보가 0건이어도 조기 return 하지 않음 — 쿨다운으로 pass1 이 비는 tick 이 흔해졌고,
+    // 여기서 끝내면 pass2(수신거부 재검사)/pass3(1:1 회신 폴링) 이 영영 실행되지 않음.
     const rows = (rowsRaw ?? []) as Row[]
-    if (rows.length === 0) {
-      return json({ processed: 0, replies_found: 0, message: 'no candidates' })
-    }
 
     // ------------------------------------------------------------
     // 2) user_id 별 그룹핑 — refresh_token → access_token 은 사용자당 1번만.
@@ -172,11 +196,15 @@ Deno.serve(async (req) => {
     const threadCache: ThreadCache = new Map()
     const dsnCache: DsnCache = new Map()
 
-    // 결과 버퍼 — 한 번에 몰아서 DB 반영.
+    // 결과 집계 — DB 반영은 답장/반송은 행 단위, 회전은 사용자 단위로 즉시 수행.
+    //  (예전엔 루프 끝에서 몰아서 반영 → 외부 API hang 등으로 run 이 강제 종료되면 tick 전체 결과가
+    //   유실되고, 같은 행을 다음 tick 이 다시 조회해 Gmail·OpenAI 비용이 중복으로 나갔음)
     const noReplyIds: string[] = [] // last_reply_check_at 만 갱신
     // 토큰/프로필 문제로 조회 못 한 사용자 행 — 회전시켜 다른 사용자 큐를 막지 않게 함.
     const tokenSkipIds: string[] = []
-    const repliedInfos: Array<{
+    // 위 두 목록 중 아직 DB 에 반영(회전) 안 된 id
+    const pendingRotateIds: string[] = []
+    type RepliedInfo = {
       id: string
       repliedAtIso: string
       cid: string
@@ -185,15 +213,17 @@ Deno.serve(async (req) => {
       contactId: string | null
       category: ReplyCategory
       meta: ThreadMeta
-    }> = []
+    }
     // 반송된 수신자 — recipient 와 contact 양쪽 갱신.
-    const bouncedInfos: Array<{
+    type BouncedInfo = {
       id: string
       bouncedAtIso: string
       cid: string
       reason: string
       recipientEmail: string
-    }> = []
+    }
+    const repliedInfos: RepliedInfo[] = []
+    const bouncedInfos: BouncedInfo[] = []
     const campaignIdsTouched = new Set<string>()
     let processed = 0
     let tokenErrors = 0
@@ -201,10 +231,149 @@ Deno.serve(async (req) => {
     let classifyErrors = 0
     let pass2Updated = 0
 
+    // 회전 대상 등록 — 실제 반영은 flushRotate (사용자 단위 한 번에)
+    const rotateLater = (bucket: string[], ids: string[]) => {
+      bucket.push(...ids)
+      pendingRotateIds.push(...ids)
+    }
+    const flushRotate = async () => {
+      if (pendingRotateIds.length === 0) return
+      const ids = pendingRotateIds.splice(0)
+      const { error } = await supabase
+        .schema('mailcaster')
+        .from('recipients')
+        .update({ last_reply_check_at: new Date().toISOString() })
+        .in('id', ids)
+      if (error) console.warn('[check-replies] rotate fail', error.message)
+    }
+
+    // 캠페인 → org 식별 캐시 (같은 캠페인 반복 조회 방지)
+    const orgIdByCid = new Map<string, string | null>()
+    const orgIdForCampaign = async (cid: string): Promise<string | null> => {
+      const cached = orgIdByCid.get(cid)
+      if (cached !== undefined) return cached
+      const { data } = await supabase
+        .schema('mailcaster')
+        .from('campaigns')
+        .select('org_id')
+        .eq('id', cid)
+        .maybeSingle()
+      const orgId = (data?.org_id as string | undefined) ?? null
+      orgIdByCid.set(cid, orgId)
+      return orgId
+    }
+
+    // 답장 확인된 수신자 1건 반영
+    const applyReplied = async (info: RepliedInfo) => {
+      // (a) replied_at + reply_category + thread meta
+      const { error } = await supabase
+        .schema('mailcaster')
+        .from('recipients')
+        .update({
+          replied: true,
+          replied_at: info.repliedAtIso,
+          reply_category: info.category,
+          last_reply_check_at: new Date().toISOString(),
+          last_thread_message_at: info.meta.lastMessageAtIso,
+          last_thread_message_from_me: info.meta.lastMessageFromMe,
+          thread_message_count: info.meta.messageCount,
+        })
+        .eq('id', info.id)
+      if (error) console.warn('[check-replies] markReplied fail', info.id, error.message)
+
+      // (b) 명시적 수신거부 의사('unsubscribe') → 자동 unsubscribes 등록.
+      //  RPC record_reply_optout 이 캠페인에서 org/user 역추적 후 등록(트리거가 contacts 동기화).
+      //  ON CONFLICT DO NOTHING 으로 중복 안전. 실패해도 답장 기록 자체는 보존.
+      if (info.category === 'unsubscribe') {
+        const { data: didOptOut, error: optErr } = await supabase
+          .schema('mailcaster')
+          .rpc('record_reply_optout', {
+            p_email: info.optOutEmail,
+            p_source_campaign_id: info.cid,
+            p_reason: '답장에서 수신거부 의사 자동 감지',
+          })
+        if (optErr) console.warn('[check-replies] optout fail', info.optOutEmail, optErr.message)
+        else if (didOptOut) console.log('[check-replies] auto-unsubscribed', info.optOutEmail)
+      }
+
+      // (c) 답장한 contact 의 진행 중 시퀀스 자동 정지 (069 — 캠페인 후속 시퀀스 안전장치).
+      //  check-inbox 도 새 inbound 시 정지하지만, 캠페인 스레드 답장이 inbox 폴링보다 먼저
+      //  여기서 감지될 수 있어 contact 기준으로 즉시 정지한다. (idempotent — active 만 영향)
+      if (!info.contactId) return
+      const orgId = await orgIdForCampaign(info.cid)
+      if (!orgId) return
+      const { error: stopErr } = await supabase
+        .schema('mailcaster')
+        .rpc('stop_active_enrollments_for_contact', {
+          p_org_id: orgId,
+          p_contact_id: info.contactId,
+          p_reason: 'replied',
+        })
+      if (stopErr) console.warn('[check-replies] seq stop fail', info.contactId, stopErr.message)
+    }
+
+    // 반송 1건 반영 — recipient 와 contact 동시 갱신.
+    //  - recipient.bounced=true + bounced_at + bounce_reason + status='bounced'
+    //  - contact.is_bounced=true + bounce_count++ + last_bounced_at (email 기준 같은 org 모두)
+    //  - 같은 사람 여러 캠페인에서 반송되면 bounce_count 누적
+    const applyBounced = async (b: BouncedInfo) => {
+      const { error: rErr } = await supabase
+        .schema('mailcaster')
+        .from('recipients')
+        .update({
+          // status 도 'bounced' 로 — analytics RPC (066) 와 useOutboundFeed 가
+          // status='bounced' 를 조회하는데 플래그만 세우면 피드에 "발송됨" 으로 표시됨.
+          status: 'bounced',
+          bounced: true,
+          bounced_at: b.bouncedAtIso,
+          bounce_reason: b.reason,
+          last_reply_check_at: new Date().toISOString(),
+        })
+        .eq('id', b.id)
+      if (rErr) {
+        console.warn('[check-replies] markBounced recipient fail', b.id, rErr.message)
+        return
+      }
+
+      // contact 업데이트 — 같은 org 의 같은 email 모두 (멤버별 사본 일관성)
+      // org 식별은 orgIdForCampaign 캐시 재사용 (같은 캠페인 반복 조회 방지)
+      const orgId = await orgIdForCampaign(b.cid)
+      if (!orgId) return
+
+      // 기존 bounce_count 가져와서 +1
+      // ilike 는 대소문자 무시용 — `_`/`%` 가 와일드카드로 다른 주소까지 잡지 않게 escape 하고,
+      // PostgREST 의 `*` 와일드카드까지 막기 위해 결과를 정확 일치로 한 번 더 거른다.
+      const bounceEmailLower = normEmail(b.recipientEmail)
+      if (!bounceEmailLower) return
+      const { data: cRowsRaw } = await supabase
+        .schema('mailcaster')
+        .from('contacts')
+        .select('id, email, bounce_count')
+        .eq('org_id', orgId)
+        .ilike('email', escapeLikePattern(bounceEmailLower))
+      const cRows = (cRowsRaw ?? []).filter(
+        (c: { email: string | null }) => normEmail(c.email) === bounceEmailLower,
+      )
+      for (const c of cRows) {
+        const newCount = (Number(c.bounce_count) || 0) + 1
+        await supabase
+          .schema('mailcaster')
+          .from('contacts')
+          .update({
+            is_bounced: true,
+            bounce_count: newCount,
+            last_bounced_at: b.bouncedAtIso,
+          })
+          .eq('id', c.id)
+      }
+    }
+
     // ------------------------------------------------------------
     // 3) 사용자 루프 — 각자의 access_token 으로 threads.get
     // ------------------------------------------------------------
     userLoop: for (const [userId, list] of byUser) {
+      // 직전 사용자 회전분 반영 (중간에 run 이 끊겨도 처리한 만큼은 보존)
+      await flushRotate()
       // 남은 예산 체크
       if (Date.now() - runStartedAt > RUN_BUDGET_MS - GMAIL_CALL_BUDGET_MS) break
 
@@ -220,7 +389,7 @@ Deno.serve(async (req) => {
         // 토큰 없는 사용자 — 스킵하되 회전: 안 하면 이 사용자 행이 매 tick 같은 batch 를 점유해
         // 다른 사용자 답장/반송 감지가 전부 멈춤.
         console.warn('[check-replies] skip uid=', userId, 'no refresh_token')
-        tokenSkipIds.push(...list.map((r) => r.id))
+        rotateLater(tokenSkipIds, list.map((r) => r.id))
         continue
       }
 
@@ -236,7 +405,7 @@ Deno.serve(async (req) => {
           e instanceof Error ? e.message : e
         )
         // 회전 — 위와 같은 이유 (큐 맨 뒤로 보내고 다음 순환 때 재시도)
-        tokenSkipIds.push(...list.map((r) => r.id))
+        rotateLater(tokenSkipIds, list.map((r) => r.id))
         continue
       }
 
@@ -256,14 +425,16 @@ Deno.serve(async (req) => {
           })
           processed++
           if (result?.kind === 'bounce') {
-            bouncedInfos.push({
+            const b: BouncedInfo = {
               id: r.id,
               bouncedAtIso: result.bouncedAtIso,
               cid: r.campaign_id,
               reason: result.reason.slice(0, 500),
               recipientEmail: r.email,
-            })
+            }
+            bouncedInfos.push(b)
             campaignIdsTouched.add(r.campaign_id)
+            await applyBounced(b)
           } else if (result?.kind === 'reply') {
             // 본문 조회 + 분류 예산이 없으면 이 행은 기록하지 않고 다음 tick 으로 이월
             // (회전 안 함 → 큐 맨 앞 유지). 'unclear' 로 저장해 버리면 replied=true 가 되어
@@ -280,7 +451,7 @@ Deno.serve(async (req) => {
                 r.id,
                 e instanceof Error ? e.message : e
               )
-              noReplyIds.push(r.id)
+              rotateLater(noReplyIds, [r.id])
               continue
             }
             // 명시적 수신거부 문구는 LLM 과 무관하게 결정적으로 판정 (키 미설정·실패에도 누락 방지).
@@ -299,7 +470,7 @@ Deno.serve(async (req) => {
                 )
               }
             }
-            repliedInfos.push({
+            const info: RepliedInfo = {
               id: r.id,
               repliedAtIso: result.repliedAtIso,
               cid: r.campaign_id,
@@ -307,10 +478,12 @@ Deno.serve(async (req) => {
               contactId: r.contact_id,
               category,
               meta: result.meta,
-            })
+            }
+            repliedInfos.push(info)
             campaignIdsTouched.add(r.campaign_id)
+            await applyReplied(info)
           } else {
-            noReplyIds.push(r.id)
+            rotateLater(noReplyIds, [r.id])
           }
         } catch (e) {
           // 예산 소진 — 이 행은 손대지 않고 다음 tick 으로 (회전 안 함)
@@ -322,148 +495,16 @@ Deno.serve(async (req) => {
             e instanceof Error ? e.message : e
           )
           // 일시적 오류도 rotate → 같은 수신자가 큐를 막지 않도록
-          noReplyIds.push(r.id)
+          rotateLater(noReplyIds, [r.id])
         }
       }
     }
 
     // ------------------------------------------------------------
-    // 4) DB 반영 — 배치로 한 번에
+    // 4) 남은 회전분 반영 (답장/반송은 루프 안에서 행 단위로 이미 반영됨)
     // ------------------------------------------------------------
+    await flushRotate()
     const nowIso = new Date().toISOString()
-
-    // 4-1) 답장 확인된 수신자 — 개별 update (replied_at + reply_category + thread meta)
-    for (const info of repliedInfos) {
-      const { error } = await supabase
-        .schema('mailcaster')
-        .from('recipients')
-        .update({
-          replied: true,
-          replied_at: info.repliedAtIso,
-          reply_category: info.category,
-          last_reply_check_at: nowIso,
-          last_thread_message_at: info.meta.lastMessageAtIso,
-          last_thread_message_from_me: info.meta.lastMessageFromMe,
-          thread_message_count: info.meta.messageCount,
-        })
-        .eq('id', info.id)
-      if (error) console.warn('[check-replies] markReplied fail', info.id, error.message)
-    }
-
-    // 4-1b) 명시적 수신거부 의사('unsubscribe') → 자동 unsubscribes 등록.
-    //  RPC record_reply_optout 이 캠페인에서 org/user 역추적 후 등록(트리거가 contacts 동기화).
-    //  ON CONFLICT DO NOTHING 으로 중복 안전. 실패해도 답장 기록 자체는 보존.
-    const optOuts = repliedInfos.filter((i) => i.category === 'unsubscribe')
-    for (const o of optOuts) {
-      const { data: didOptOut, error: optErr } = await supabase
-        .schema('mailcaster')
-        .rpc('record_reply_optout', {
-          p_email: o.optOutEmail,
-          p_source_campaign_id: o.cid,
-          p_reason: '답장에서 수신거부 의사 자동 감지',
-        })
-      if (optErr) console.warn('[check-replies] optout fail', o.optOutEmail, optErr.message)
-      else if (didOptOut) console.log('[check-replies] auto-unsubscribed', o.optOutEmail)
-    }
-
-    // 4-1c) 답장한 contact 의 진행 중 시퀀스 자동 정지 (069 — 캠페인 후속 시퀀스 안전장치).
-    //  check-inbox 도 새 inbound 시 정지하지만, 캠페인 스레드 답장이 inbox 폴링보다 먼저
-    //  여기서 감지될 수 있어 contact 기준으로 즉시 정지한다. (idempotent — active 만 영향)
-    const orgIdByCid = new Map<string, string | null>()
-    async function orgIdForCampaign(cid: string): Promise<string | null> {
-      const cached = orgIdByCid.get(cid)
-      if (cached !== undefined) return cached
-      const { data } = await supabase
-        .schema('mailcaster')
-        .from('campaigns')
-        .select('org_id')
-        .eq('id', cid)
-        .maybeSingle()
-      const orgId = (data?.org_id as string | undefined) ?? null
-      orgIdByCid.set(cid, orgId)
-      return orgId
-    }
-    for (const info of repliedInfos) {
-      if (!info.contactId) continue
-      const orgId = await orgIdForCampaign(info.cid)
-      if (!orgId) continue
-      const { error: stopErr } = await supabase
-        .schema('mailcaster')
-        .rpc('stop_active_enrollments_for_contact', {
-          p_org_id: orgId,
-          p_contact_id: info.contactId,
-          p_reason: 'replied',
-        })
-      if (stopErr) console.warn('[check-replies] seq stop fail', info.contactId, stopErr.message)
-    }
-
-    // 4-2) 답장 없음 + 토큰 문제 사용자 — 한 번에 rotate
-    const rotateIds = [...noReplyIds, ...tokenSkipIds]
-    if (rotateIds.length > 0) {
-      const { error } = await supabase
-        .schema('mailcaster')
-        .from('recipients')
-        .update({ last_reply_check_at: nowIso })
-        .in('id', rotateIds)
-      if (error) console.warn('[check-replies] rotate fail', error.message)
-    }
-
-    // 4-3) 반송 처리 — recipient 와 contact 동시 갱신.
-    //  - recipient.bounced=true + bounced_at + bounce_reason + status='bounced'
-    //  - contact.is_bounced=true + bounce_count++ + last_bounced_at (email 기준 같은 org 모두)
-    //  - 같은 사람 여러 캠페인에서 반송되면 bounce_count 누적
-    for (const b of bouncedInfos) {
-      const { error: rErr } = await supabase
-        .schema('mailcaster')
-        .from('recipients')
-        .update({
-          // status 도 'bounced' 로 — analytics RPC (066) 와 useOutboundFeed 가
-          // status='bounced' 를 조회하는데 플래그만 세우면 피드에 "발송됨" 으로 표시됨.
-          status: 'bounced',
-          bounced: true,
-          bounced_at: b.bouncedAtIso,
-          bounce_reason: b.reason,
-          last_reply_check_at: nowIso,
-        })
-        .eq('id', b.id)
-      if (rErr) {
-        console.warn('[check-replies] markBounced recipient fail', b.id, rErr.message)
-        continue
-      }
-
-      // contact 업데이트 — 같은 org 의 같은 email 모두 (멤버별 사본 일관성)
-      // org 식별은 위에서 만든 orgIdForCampaign 캐시 재사용 (같은 캠페인 반복 조회 방지)
-      const orgId = await orgIdForCampaign(b.cid)
-      if (!orgId) continue
-
-      // 기존 bounce_count 가져와서 +1
-      // ilike 는 대소문자 무시용 — `_`/`%` 가 와일드카드로 다른 주소까지 잡지 않게 escape 하고,
-      // PostgREST 의 `*` 와일드카드까지 막기 위해 결과를 정확 일치로 한 번 더 거른다.
-      const bounceEmailLower = normEmail(b.recipientEmail)
-      if (!bounceEmailLower) continue
-      const { data: cRowsRaw } = await supabase
-        .schema('mailcaster')
-        .from('contacts')
-        .select('id, email, bounce_count')
-        .eq('org_id', orgId)
-        .ilike('email', escapeLikePattern(bounceEmailLower))
-      const cRows = (cRowsRaw ?? []).filter(
-        (c: { email: string | null }) => normEmail(c.email) === bounceEmailLower,
-      )
-      if (cRows.length === 0) continue
-      for (const c of cRows) {
-        const newCount = (Number(c.bounce_count) || 0) + 1
-        await supabase
-          .schema('mailcaster')
-          .from('contacts')
-          .update({
-            is_bounced: true,
-            bounce_count: newCount,
-            last_bounced_at: b.bouncedAtIso,
-          })
-          .eq('id', c.id)
-      }
-    }
 
     // ------------------------------------------------------------
     // pass 2 — replied=true 행 thread 메타 갱신 (cooldown 6h)
@@ -474,12 +515,15 @@ Deno.serve(async (req) => {
     let pass2OptOuts = 0
     if (Date.now() - runStartedAt < RUN_BUDGET_MS - GMAIL_CALL_BUDGET_MS) {
       const cooldownIso = new Date(Date.now() - THREAD_RECHECK_COOLDOWN_MS).toISOString()
+      // 첫 답장 후 PASS2_MAX_AGE_MS 가 지난 행은 제외 — 몇 년 전 스레드까지 영구 폴링 방지.
+      const pass2MaxAgeIso = new Date(Date.now() - PASS2_MAX_AGE_MS).toISOString()
       const { data: pass2Raw } = await supabase
         .schema('mailcaster')
         .from('recipients')
         .select('id, campaign_id, gmail_thread_id, sent_at, email, contact_id, replied_at, campaigns!inner(user_id, send_mode)')
         .eq('replied', true)
         .not('gmail_thread_id', 'is', null)
+        .gte('replied_at', pass2MaxAgeIso)
         .or(`last_reply_check_at.is.null,last_reply_check_at.lt.${cooldownIso}`)
         .order('last_reply_check_at', { ascending: true, nullsFirst: true })
         .limit(PASS2_BATCH_SIZE)
@@ -640,6 +684,8 @@ Deno.serve(async (req) => {
     let pass3OptOuts = 0
     if (Date.now() - runStartedAt < RUN_BUDGET_MS - GMAIL_CALL_BUDGET_MS) {
       const pass3CooldownIso = new Date(Date.now() - THREAD_MSG_RECHECK_COOLDOWN_MS).toISOString()
+      // 발송 후 PASS3_MAX_AGE_MS 가 지난 tm 은 제외 — 보낸 1:1 메일 전부를 영구 폴링하지 않도록.
+      const pass3MaxAgeIso = new Date(Date.now() - PASS3_MAX_AGE_MS).toISOString()
       const { data: pass3Raw } = await supabase
         .schema('mailcaster')
         .from('thread_messages')
@@ -647,6 +693,7 @@ Deno.serve(async (req) => {
         .eq('status', 'sent')
         .eq('bounced', false) // bounce 된 tm 은 다시 폴링 안 함 — Gmail quota 절감
         .not('gmail_thread_id', 'is', null)
+        .gte('sent_at', pass3MaxAgeIso)
         .or(`last_reply_check_at.is.null,last_reply_check_at.lt.${pass3CooldownIso}`)
         .order('last_reply_check_at', { ascending: true, nullsFirst: true })
         .limit(PASS3_BATCH_SIZE)
@@ -1018,10 +1065,12 @@ function isBounceFrom(from: string): boolean {
 // Gmail 조회용 fetch — 10초 타임아웃. sendGmail 과 달리 조회 계열엔 타임아웃이 없어
 // 한 thread 가 hang 하면 run 전체가 죽고, 결과가 메모리에만 있어 tick 전체가 유실되던
 // 문제 방지 (같은 150건을 다음 tick 이 다시 조회 — Gmail 쿼터 낭비).
+// OpenAI 분류 / Google OAuth 토큰 갱신에도 같은 이유로 사용 (label 로 오류 메시지 구분).
 async function fetchWithTimeout(
   url: string,
   init: RequestInit,
   timeoutMs = 10_000,
+  label = 'Gmail API',
 ): Promise<Response> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -1029,7 +1078,7 @@ async function fetchWithTimeout(
     return await fetch(url, { ...init, signal: controller.signal })
   } catch (e) {
     if ((e as Error).name === 'AbortError') {
-      throw new Error(`Gmail API 호출 타임아웃 (${Math.round(timeoutMs / 1000)}초 초과)`)
+      throw new Error(`${label} 호출 타임아웃 (${Math.round(timeoutMs / 1000)}초 초과)`)
     }
     throw e
   } finally {
@@ -1483,7 +1532,7 @@ async function classifyReplyText(text: string): Promise<ReplyCategory> {
 
   const userPrompt = `답장 본문:\n"""\n${trimmed}\n"""\n\n위 6개 중 하나로 분류:`
 
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+  const res = await fetchWithTimeout('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -1499,7 +1548,7 @@ async function classifyReplyText(text: string): Promise<ReplyCategory> {
       temperature: 0,
       max_tokens: 30,
     }),
-  })
+  }, EXTERNAL_API_TIMEOUT_MS, 'OpenAI')
   if (!res.ok) {
     const body = await res.text()
     throw new Error(`OpenAI ${res.status}: ${body.slice(0, 200)}`)
@@ -1888,7 +1937,7 @@ function json(body: unknown, status = 200) {
 async function refreshGoogleToken(storedToken: string): Promise<string> {
   // DB 에 암호화되어 저장된 토큰 복호화 (평문 저장 기존 토큰도 그대로 통과)
   const refreshToken = await decryptToken(storedToken)
-  const res = await fetch('https://oauth2.googleapis.com/token', {
+  const res = await fetchWithTimeout('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -1897,7 +1946,7 @@ async function refreshGoogleToken(storedToken: string): Promise<string> {
       refresh_token: refreshToken,
       grant_type: 'refresh_token',
     }),
-  })
+  }, EXTERNAL_API_TIMEOUT_MS, 'Google OAuth')
   if (!res.ok) {
     const body = await res.text()
     throw new Error(`Google OAuth 실패 (${res.status}): ${body}`)

@@ -13,7 +13,8 @@ import { toast } from 'sonner'
 // RLS:
 //   - SELECT : 조직 전체 (018 unsubscribes_select_org)
 //   - INSERT : user_id=auth.uid() AND 내가 속한 조직 (018 unsubscribes_insert_own)
-//   - UPDATE/DELETE : 본인 기록 OR org admin (018 ..._own_or_admin)
+//   - UPDATE/DELETE : 본인 수동(source NULL/manual) 기록 OR org admin (078 ..._own_or_admin)
+//     → 수신자 본인 행(link/one_click/reply)은 일반 멤버가 못 건드림. 추가는 DO NOTHING.
 //
 // 정합성 (019 트리거):
 //   - unsubscribes INSERT → trg_unsubscribes_sync_contacts 가 같은 org 의 모든
@@ -41,6 +42,8 @@ export interface Unsubscribe {
   email: string
   reason: string | null
   source_campaign_id: string | null
+  // 078 — NULL/manual: 멤버 수동 등록, link/one_click/reply: 수신자 본인 (admin 만 수정/삭제)
+  source?: 'manual' | 'link' | 'one_click' | 'reply' | null
   unsubscribed_at: string
 }
 
@@ -75,6 +78,26 @@ export function useUnsubscribes(scope: UnsubscribeScope = 'org') {
   })
 }
 
+// PostgREST/Postgres 오류 → 사용자용 한국어 메시지 (원문 영문 RLS 메시지 노출 방지)
+function friendlyUnsubscribeError(e: { code?: string; message?: string }): string {
+  switch (e.code) {
+    case '42501':
+      return '이 조직에 수신거부를 추가할 권한이 없습니다. 조직 멤버십을 확인해주세요.'
+    case '23514':
+    case '22P02':
+      return '입력값이 올바르지 않습니다. 이메일 주소를 확인해주세요.'
+    case '23503':
+      return '조직 또는 사용자 정보를 찾을 수 없습니다. 새로고침 후 다시 시도해주세요.'
+    default:
+      // DB 함수/트리거가 던진 한국어 메시지는 그대로 노출
+      if (e.message && /[가-힣]/.test(e.message)) return e.message
+      if (e.message && /failed to fetch|network/i.test(e.message)) {
+        return '네트워크 오류로 추가하지 못했습니다. 잠시 후 다시 시도해주세요.'
+      }
+      return '수신거부 추가에 실패했습니다. 잠시 후 다시 시도해주세요.'
+  }
+}
+
 export function useCreateUnsubscribe() {
   const { user, currentOrg } = useAuth()
   const qc = useQueryClient()
@@ -90,28 +113,45 @@ export function useCreateUnsubscribe() {
         throw new Error('올바른 이메일 형식이 아닙니다.')
       }
 
-      // unsubscribes upsert — 중복 email 은 reason/등록자만 업데이트.
-      // onConflict: org_id,email — 조직 내 한 번만 등록 가능 (누가 등록했든 합침).
+      // unsubscribes INSERT ... ON CONFLICT (org_id,email) DO NOTHING.
+      //   - 같은 주소가 이미 있으면(수동 등록이든 수신자 본인의 link/one_click/reply 든)
+      //     "이미 수신거부됨" 으로 성공 처리 — 기존 행의 source/reason/user_id 는 절대 덮어쓰지 않음.
+      //   - DO UPDATE(기존 upsert) 는 078 UPDATE 정책 USING 을 통과 못 하는 행(수신자 발신 행)
+      //     에서 일반 멤버에게 RLS 오류를 내고, admin 이면 원래 사유·user_id NULL 이력을 지워버렸다.
+      //   - .select('id') 의 RETURNING 은 실제 INSERT 된 행만 돌려주므로 빈 배열 = 기존 행 존재.
       // contacts 동기화는 019 트리거가 처리하므로 별도 UPDATE 불필요.
-      const { error: upErr } = await supabase.from('unsubscribes').upsert(
-        {
-          user_id: user.id,
-          org_id: currentOrg.id,
-          email: normalizedEmail,
-          reason: reason?.trim() || null,
-        },
-        { onConflict: 'org_id,email' },
-      )
-      if (upErr) throw upErr
+      const { data, error: upErr } = await supabase
+        .from('unsubscribes')
+        .upsert(
+          {
+            user_id: user.id,
+            org_id: currentOrg.id,
+            email: normalizedEmail,
+            reason: reason?.trim() || null,
+            // source 는 생략 → NULL (= manual 로 취급, 078 COALESCE). 생성 타입에 source 컬럼 미반영.
+          },
+          { onConflict: 'org_id,email', ignoreDuplicates: true },
+        )
+        .select('id')
+      if (upErr) {
+        // 동시 등록 경합 등으로 unique 위반이 올라오면 이미 등록된 것으로 간주
+        if (upErr.code === '23505') return { email: normalizedEmail, already: true }
+        console.error('[createUnsubscribe] raw error:', upErr)
+        throw new Error(friendlyUnsubscribeError(upErr))
+      }
 
-      return normalizedEmail
+      return { email: normalizedEmail, already: (data ?? []).length === 0 }
     },
-    onSuccess: () => {
+    onSuccess: ({ already }) => {
       qc.invalidateQueries({ queryKey: [QK] })
       // 트리거가 contacts 를 업데이트하므로 캐시도 invalidate
       qc.invalidateQueries({ queryKey: ['contacts'] })
       qc.invalidateQueries({ queryKey: ['contacts-common'] })
-      toast.success('수신거부 목록에 추가되었습니다.')
+      if (already) {
+        toast.info('이미 수신거부된 주소입니다.')
+      } else {
+        toast.success('수신거부 목록에 추가되었습니다.')
+      }
     },
     onError: (e: Error) => {
       console.error('[createUnsubscribe] failed:', e)
