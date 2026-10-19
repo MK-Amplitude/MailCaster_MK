@@ -185,8 +185,13 @@ async function fetchContexts(
   contactIds: string[]
 ): Promise<ContactContext[]> {
   // contact_engagement view 가 last_campaign JSONB 까지 다 가져옴.
+  // 반드시 mailcaster 스키마 명시 — 이 프로젝트는 다른 앱(Lumvo)과 공유되어
+  // public.* 은 그 앱 소유다. schema 를 빼면 PostgREST 기본(public)으로 조회되어
+  // 뷰를 못 찾거나(→ 매번 500) 남의 테이블을 건드리게 된다.
+  // (뷰는 mailcaster.contact_engagement — 034 에서 최종 정의, security_invoker.
+  //  service_role 이라 RLS 는 우회되므로 org_id 필터 + 위 멤버십 검증이 스코프를 보장.)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const sb = admin as any
+  const sb = admin.schema('mailcaster') as any
   const { data, error } = await sb
     .from('contact_engagement')
     .select(

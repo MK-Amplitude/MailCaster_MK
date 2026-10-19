@@ -7,7 +7,26 @@ import { useQuery } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import type { Database } from '@/types/database.types'
 
-export type InboundMessage = Database['mailcaster']['Tables']['inbound_messages']['Row']
+// inbound 목록/히스토리 UI 가 실제로 쓰는 컬럼만 — body_html 제외.
+// (inbound body_html 은 XSS 위험으로 렌더하지 않는데, select('*') 가 폴링마다 수십 KB 씩 egress 낭비)
+// 사용처: InboxPage(카드·회신 다이얼로그·미응답 판정), ContactMailHistory(카드·회신 다이얼로그)
+export const INBOUND_LIST_COLUMNS =
+  'id, contact_id, gmail_message_id, gmail_thread_id, rfc_message_id, from_email, from_name, subject, snippet, body_text, received_at' as const
+
+export type InboundMessage = Pick<
+  Database['mailcaster']['Tables']['inbound_messages']['Row'],
+  | 'id'
+  | 'contact_id'
+  | 'gmail_message_id'
+  | 'gmail_thread_id'
+  | 'rfc_message_id'
+  | 'from_email'
+  | 'from_name'
+  | 'subject'
+  | 'snippet'
+  | 'body_text'
+  | 'received_at'
+>
 export type OutboundThreadMessage =
   Database['mailcaster']['Tables']['thread_messages']['Row']
 export type CampaignRecipientRow = Database['mailcaster']['Tables']['recipients']['Row']
@@ -45,7 +64,7 @@ export function useContactMailHistory(contactId: string | undefined) {
       // inbound — 받은 메일
       const inboundP = supabase
         .from('inbound_messages')
-        .select('*')
+        .select(INBOUND_LIST_COLUMNS)
         .eq('contact_id', contactId)
         .order('received_at', { ascending: false })
         .limit(100)

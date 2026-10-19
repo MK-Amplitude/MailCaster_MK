@@ -30,12 +30,13 @@ import {
 import { useNavigate } from 'react-router-dom'
 import { ThreadComposeDialog } from '@/components/campaigns/ThreadComposeDialog'
 import { useOutboundFeed, type OutboundItem } from '@/hooks/useOutboundFeed'
-import type { Database } from '@/types/database.types'
+import { INBOUND_LIST_COLUMNS, type InboundMessage } from '@/hooks/useContactMailHistory'
 import { escapeHtml } from '@/lib/utils'
 import { formatSenderLabel } from '@/lib/threadLabels'
 import { useOurRepliesByThread, isInboundUnreplied } from '@/hooks/useOurRepliesByThread'
 
-type InboundRow = Database['mailcaster']['Tables']['inbound_messages']['Row']
+// body_html 제외한 목록용 컬럼만 (60초 폴링 egress 절감) — useContactMailHistory 와 단일 출처
+type InboundRow = InboundMessage
 
 const QK = ['inbox']
 const PAGE_SIZE = 50
@@ -52,7 +53,7 @@ export default function InboxPage() {
     queryFn: async (): Promise<InboundRow[]> => {
       const { data, error } = await supabase
         .from('inbound_messages')
-        .select('*')
+        .select(INBOUND_LIST_COLUMNS)
         .order('received_at', { ascending: false })
         .limit(PAGE_SIZE)
       if (error) throw error
